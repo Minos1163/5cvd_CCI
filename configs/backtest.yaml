@@ -1,0 +1,8 @@
+version: 1.0.0
+backtest:
+  start: "2024-01-01"
+  end: "2025-01-01"
+  initial_capital: 10000
+  fee_bps: 5
+  slippage_bps: 5
+  fill_model: next_bar_open

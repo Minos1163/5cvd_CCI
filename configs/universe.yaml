@@ -1,0 +1,12 @@
+version: 1.0.0
+universe:
+  exchange: binance_futures
+  quote_asset: USDT
+  max_symbols: 20
+  refresh_interval_hours: 24
+  symbols:
+    - BTCUSDT
+    - ETHUSDT
+    - BNBUSDT
+    - SOLUSDT
+    - XRPUSDT

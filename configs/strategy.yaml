@@ -1,0 +1,32 @@
+version: 1.0.0
+strategy:
+  name: macd_cci_cvd_v1
+  mode: research
+  timeframes:
+    trigger: 15m
+    confirm: 30m
+    trend: 1h
+    context: 4h
+indicators:
+  macd:
+    fast: 12
+    slow: 26
+    signal: 9
+  cci:
+    period: 20
+  rsi:
+    period: 14
+  boll:
+    period: 20
+    std: 2
+  atr:
+    period: 14
+entry:
+  cci_long: 100
+  cci_short: -100
+  rsi_reclaim: 50
+  require_cvd_confirm: true
+probe:
+  enabled: true
+  size_ratio: 0.25
+  upgrade_r_multiple: 1.0

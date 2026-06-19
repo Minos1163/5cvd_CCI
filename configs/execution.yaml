@@ -1,0 +1,10 @@
+version: 1.0.0
+execution:
+  mode: dry_run
+  exchange: binance
+  leverage: 3
+  use_market_order: true
+  require_risk_approval: true
+slippage:
+  base_bps: 3
+  high_vol_bps: 8
