@@ -1,6 +1,3 @@
-下面是重新整理后的 `docs/04_multi_timeframe_rules.md` 完整版本，建议直接覆盖原文件，让 Codex 以后按这份实现。
-
-````md
 # Multi Timeframe Rules
 
 Version: V1.0
@@ -159,7 +156,7 @@ Version: V1.0
 - MACD 方向与动量
 - CCI 强弱与恢复状态
 - CVD 资金流方向
-- RSI 是否过热或过冷
+- EMA200 / EMA50 方向与趋势质量
 - BOLL 是否处于合理结构阶段
 
 1H 的结论必须是结构化结论，不允许是模糊描述。
@@ -232,7 +229,7 @@ Version: V1.0
 - CCI 是否维持强势或弱势状态
 - BOLL 是否处于扩张或有效收缩后的启动阶段
 - CVD 是否支持价格运动
-- RSI 是否没有明显追涨杀跌
+- EMA50 斜率是否支持趋势延续
 
 ---
 
@@ -297,9 +294,9 @@ Version: V1.0
 
 - 是否刚刚完成回踩恢复
 - 是否出现突破确认
-- 是否站回关键均线或中轨
+- 是否站稳 EMA9/21 或关键中轨
 - 是否完成微结构确认
-- 是否避免追高追低
+- 是否避免在 EMA 刚穿越后的不稳定区追高追低
 - 是否适合 probe 或 direct
 
 ---
@@ -636,7 +633,7 @@ timeframe_result:
   confidence: 0.78
   reason: MACD_UP_CVD_UP_CCI_STRONG
   quality_flag: true
-````
+```
 
 上层将多个周期结果合并后，生成最终信号。
 

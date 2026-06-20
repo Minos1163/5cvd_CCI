@@ -505,7 +505,3 @@ symbol + strategy_event_id + strategy_state + side
 执行层不应该聪明。
 
 执行层应该可靠。
-
-```
-
-```

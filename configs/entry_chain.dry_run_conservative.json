@@ -1,0 +1,13 @@
+{
+  "direct_threshold": 86.0,
+  "probe_threshold": 74.0,
+  "watch_threshold": 62.0,
+  "daily_max_trades_base": 3,
+  "max_symbol_trades_per_day": 1,
+  "max_active_symbols": 5,
+  "direct_risk_pct": 0.006,
+  "probe_risk_pct": 0.0025,
+  "max_total_exposure_pct": 1.2,
+  "max_same_direction_exposure_pct": 0.9,
+  "margin_buffer_pct": 0.30
+}

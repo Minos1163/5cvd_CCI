@@ -7,6 +7,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from src.backtest.fee_model import fee
 from src.backtest.fill_model import next_bar_market_fill
+from src.backtest.lifecycle_exit import AtrTpExitConfig, simulate_atr_tp_exit
 from src.backtest.metrics import profit_factor, win_rate
 from src.core.models import Candle
 
@@ -180,6 +181,33 @@ class BacktestTrade:
     net_pnl: float
     reason_enter: str
     reason_exit: str
+    partial_exits: tuple[dict[str, Any], ...] = ()
+    total_fees_pct: float = 0.0
+    tp1_reached: bool = False
+    breakeven_active: bool = False
+    hold_bars: int = 0
+    entry_slippage: float = 0.0
+    exit_slippage: float = 0.0
+    mfe_pct: float = 0.0
+    mae_pct: float = 0.0
+    stop_hit_bar_offset: int | None = None
+    leverage: float = 1.0
+    margin_notional: float = 0.0
+    effective_notional: float = 0.0
+    margin_call_proxy: bool = False
+
+
+@dataclass(frozen=True)
+class SimulatedFill:
+    entry_time: int
+    entry_price: float
+    exit_time: int
+    exit_price: float
+    reason_exit: str
+    partial_exits: tuple[dict[str, Any], ...] = ()
+    tp1_reached: bool = False
+    breakeven_active: bool = False
+    hold_bars: int = 0
 
 
 @dataclass(frozen=True)
@@ -312,6 +340,8 @@ def run_backtest(
     state_transitions: list[dict[str, Any]] = []
     equity = request.initial_capital
     peak_equity = request.initial_capital
+    realized_pnl_by_day: dict[int, float] = {}
+    realized_pnl_by_week: dict[int, float] = {}
     fee_bps = float(request.fee_model.get("fee_bps", request.fee_model.get("taker_bps", 0.0)) or 0.0)
     slippage_bps = float(request.slippage_model.get("slippage_bps", request.slippage_model.get("base_bps", 0.0)) or 0.0)
     funding_bps = float(request.funding_model.get("funding_bps", 0.0) or 0.0)
@@ -355,6 +385,27 @@ def run_backtest(
                 events.append(_event("BACKTEST_STEP_COMPLETED", symbol, current_bar.timestamp, {"step_order": BACKTEST_STEP_ORDER}))
                 continue
 
+            breaker_reason = _circuit_breaker_reason(
+                request,
+                current_bar.timestamp,
+                request.initial_capital,
+                realized_pnl_by_day,
+                realized_pnl_by_week,
+            )
+            if breaker_reason:
+                sample = _failed_sample("risk_blocked", symbol, current_bar.timestamp, signal, breaker_reason)
+                failed_samples.append(sample)
+                risk_event = _event(
+                    "RISK_BLOCKED",
+                    symbol,
+                    current_bar.timestamp,
+                    {"reason": breaker_reason, "signal": signal},
+                )
+                events.append(risk_event)
+                risk_events.append(risk_event)
+                events.append(_event("BACKTEST_STEP_COMPLETED", symbol, current_bar.timestamp, {"step_order": BACKTEST_STEP_ORDER}))
+                continue
+
             fill = _simulate_fill(request, signal, current_bar, bars, index, slippage_bps)
             events.append(_event("ORDER_SUBMITTED", symbol, current_bar.timestamp, {"signal": signal}))
             step_events.append("ORDER_SUBMITTED")
@@ -365,16 +416,28 @@ def run_backtest(
                 events.append(_event("BACKTEST_STEP_COMPLETED", symbol, current_bar.timestamp, {"step_order": BACKTEST_STEP_ORDER}))
                 continue
 
-            entry_time, entry_price, exit_time, exit_price = fill
+            entry_time = fill.entry_time
+            entry_price = fill.entry_price
+            exit_time = fill.exit_time
+            exit_price = fill.exit_price
+            reason_exit = fill.reason_exit
             side = str(signal.get("signal_side", signal.get("side", signal.get("signal_type", "LONG")))).upper()
             entry_mode = str(signal.get("entry_mode", signal.get("mode", "DIRECT"))).upper()
-            notional = float(signal.get("notional", request.capital_constraints.get("notional_per_trade", 100.0)) or 100.0)
-            quantity = notional / entry_price if entry_price > 0 else 0.0
-            gross_pnl = _gross_pnl(side, entry_price, exit_price, quantity)
-            fees = fee(notional, fee_bps) + fee(abs(quantity * exit_price), fee_bps)
-            explicit_slippage = abs(entry_price - _raw_reference_fill_price(request, signal, current_bar, bars, index)) * quantity
-            funding = fee(notional, funding_bps)
+            margin_notional = float(signal.get("notional", request.capital_constraints.get("notional_per_trade", 100.0)) or 100.0)
+            leverage = _resolve_leverage(request, signal)
+            effective_notional = margin_notional * leverage
+            quantity = effective_notional / entry_price if entry_price > 0 else 0.0
+            gross_pnl = _trade_gross_pnl(side, entry_price, exit_price, quantity, fill.partial_exits)
+            fees = _trade_fees(effective_notional, quantity, exit_price, fee_bps, fill.partial_exits)
+            entry_slippage = abs(entry_price - _raw_reference_fill_price(request, signal, current_bar, bars, index)) * quantity
+            exit_slippage = _trade_exit_slippage(quantity, slippage_bps, fill.partial_exits)
+            explicit_slippage = entry_slippage + exit_slippage
+            funding = fee(effective_notional, funding_bps)
             net_pnl = gross_pnl - fees - explicit_slippage - funding
+            realized_pnl_by_day[_day_bucket(exit_time)] = realized_pnl_by_day.get(_day_bucket(exit_time), 0.0) + net_pnl
+            realized_pnl_by_week[_week_bucket(exit_time)] = realized_pnl_by_week.get(_week_bucket(exit_time), 0.0) + net_pnl
+            mfe_pct = _mfe_pct(side, entry_price, bars, entry_time, exit_time)
+            mae_pct = _mae_pct(side, entry_price, bars, entry_time, exit_time)
             equity += net_pnl
             peak_equity = max(peak_equity, equity)
             drawdown = 0.0 if peak_equity == 0 else (peak_equity - equity) / peak_equity
@@ -393,7 +456,25 @@ def run_backtest(
                 funding=funding,
                 net_pnl=net_pnl,
                 reason_enter=str(signal.get("reason", "strategy_signal")),
-                reason_exit="one_bar_exit",
+                reason_exit=reason_exit,
+                partial_exits=fill.partial_exits,
+                total_fees_pct=fees / effective_notional if effective_notional > 0 else 0.0,
+                tp1_reached=fill.tp1_reached,
+                breakeven_active=fill.breakeven_active,
+                hold_bars=fill.hold_bars,
+                entry_slippage=entry_slippage,
+                exit_slippage=exit_slippage,
+                mfe_pct=mfe_pct,
+                mae_pct=mae_pct,
+                stop_hit_bar_offset=_stop_hit_bar_offset(fill.partial_exits),
+                leverage=leverage,
+                margin_notional=margin_notional,
+                effective_notional=effective_notional,
+                margin_call_proxy=_margin_call_proxy(
+                    mae_pct,
+                    leverage,
+                    float(request.risk_constraints.get("maintenance_margin_pct", 0.005) or 0.005),
+                ),
             )
             trades.append(trade)
             equity_curve.append({"timestamp": exit_time, "equity": equity})
@@ -513,16 +594,19 @@ def _simulate_fill(
     bars: Sequence[BacktestBar],
     index: int,
     slippage_bps: float,
-) -> tuple[int, float, int, float] | None:
+) -> SimulatedFill | None:
     side = str(signal.get("signal_side", signal.get("side", signal.get("signal_type", "LONG")))).upper()
     if request.fill_model == "TRIGGER_PRICE":
         if index + 1 >= len(bars):
             return None
         entry_time = current_bar.timestamp
         entry_price = _apply_trigger_slippage(current_bar.close, side, slippage_bps)
+        lifecycle = _simulate_lifecycle_exit(request, signal, side, entry_time, entry_price, bars[index + 1 :])
+        if lifecycle is not None:
+            return lifecycle
         exit_bar = bars[index + 1]
         assert_no_lookahead(exit_bar.timestamp, exit_bar.timestamp)
-        return entry_time, entry_price, exit_bar.timestamp, exit_bar.open
+        return SimulatedFill(entry_time, entry_price, exit_bar.timestamp, exit_bar.open, "one_bar_exit")
     if index + 2 >= len(bars):
         return None
     next_bar = bars[index + 1]
@@ -537,8 +621,85 @@ def _simulate_fill(
     else:
         order_side = "BUY" if side == "LONG" else "SELL"
         entry_price = next_bar_market_fill(next_bar.open, order_side, slippage_bps)
+    lifecycle = _simulate_lifecycle_exit(request, signal, side, next_bar.timestamp, entry_price, bars[index + 1 :])
+    if lifecycle is not None:
+        return lifecycle
     exit_bar = bars[index + 2]
-    return next_bar.timestamp, entry_price, exit_bar.timestamp, exit_bar.open
+    return SimulatedFill(next_bar.timestamp, entry_price, exit_bar.timestamp, exit_bar.open, "one_bar_exit")
+
+
+def _simulate_lifecycle_exit(
+    request: BacktestRequest,
+    signal: Mapping[str, Any],
+    side: str,
+    entry_time: int,
+    entry_price: float,
+    bars_after_entry: Sequence[BacktestBar],
+):
+    if str(request.risk_constraints.get("exit_model", "synthetic")).lower() != "atr_tp":
+        return None
+    atr_pct = float(signal.get("atr_pct", request.risk_constraints.get("default_atr_pct", 0.01)) or 0.01)
+    config = AtrTpExitConfig(
+        atr_stop_mult=float(request.risk_constraints.get("atr_stop_mult", 1.5) or 1.5),
+        min_stop_pct=float(request.risk_constraints.get("min_stop_pct", 0.005) or 0.005),
+        max_stop_pct=float(request.risk_constraints.get("max_stop_pct", 0.03) or 0.03),
+        default_atr_pct=float(request.risk_constraints.get("default_atr_pct", 0.010) or 0.010),
+        tp_levels=_tuple_from_constraint(request.risk_constraints.get("tp_levels"), (1.0, 2.0, 3.0)),
+        tp_fractions=_tuple_from_constraint(request.risk_constraints.get("tp_fractions"), (0.40, 0.35, 0.25)),
+        max_hold_bars=int(request.risk_constraints.get("max_hold_bars", 16) or 16),
+        breakeven_buffer_pct=float(request.risk_constraints.get("breakeven_buffer_pct", 0.001) or 0.001),
+        adverse_reduce_enabled=bool(request.risk_constraints.get("adverse_reduce_enabled", False)),
+        adverse_reduce_r=float(request.risk_constraints.get("adverse_reduce_r", 0.6) or 0.6),
+        adverse_reduce_fraction=float(request.risk_constraints.get("adverse_reduce_fraction", 0.5) or 0.5),
+        adverse_volume_spike_mult=float(request.risk_constraints.get("adverse_volume_spike_mult", 1.5) or 1.5),
+        adverse_volume_lookback=int(request.risk_constraints.get("adverse_volume_lookback", 20) or 20),
+        time_reduce_enabled=bool(request.risk_constraints.get("time_reduce_enabled", False)),
+        time_reduce_bars=int(request.risk_constraints.get("time_reduce_bars", 12) or 12),
+        time_reduce_min_profit_r=float(request.risk_constraints.get("time_reduce_min_profit_r", 0.3) or 0.3),
+        time_reduce_fraction=float(request.risk_constraints.get("time_reduce_fraction", 0.5) or 0.5),
+    )
+    result = simulate_atr_tp_exit(
+        side=side,
+        entry_time=entry_time,
+        entry_price=entry_price,
+        bars_after_entry=bars_after_entry,
+        atr_pct=atr_pct,
+        config=config,
+    )
+    if result is None:
+        return None
+    return SimulatedFill(
+        entry_time=entry_time,
+        entry_price=entry_price,
+        exit_time=result.exit_time,
+        exit_price=result.average_exit_price,
+        reason_exit=result.reason_exit,
+        partial_exits=tuple(
+            {
+                "timestamp": item.timestamp,
+                "price": item.price,
+                "fraction": item.fraction,
+                "reason": item.reason,
+                "bar_offset": item.bar_offset,
+            }
+            for item in result.partial_exits
+        ),
+        tp1_reached=result.tp1_reached,
+        breakeven_active=result.breakeven_active,
+        hold_bars=result.hold_bars,
+    )
+
+
+def _tuple_from_constraint(value: Any, default: tuple[float, float, float]) -> tuple[float, float, float]:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+    else:
+        parts = list(value)
+    if len(parts) != 3:
+        raise ValueError("ATR/TP constraints require exactly three values")
+    return (float(parts[0]), float(parts[1]), float(parts[2]))
 
 
 def _raw_reference_fill_price(
@@ -566,6 +727,133 @@ def _gross_pnl(side: str, entry_price: float, exit_price: float, quantity: float
     if side == "SHORT":
         return (entry_price - exit_price) * quantity
     return (exit_price - entry_price) * quantity
+
+
+def _trade_gross_pnl(
+    side: str,
+    entry_price: float,
+    exit_price: float,
+    quantity: float,
+    partial_exits: Sequence[Mapping[str, Any]],
+) -> float:
+    if not partial_exits:
+        return _gross_pnl(side, entry_price, exit_price, quantity)
+    return sum(
+        _gross_pnl(side, entry_price, float(item["price"]), quantity * float(item["fraction"]))
+        for item in partial_exits
+    )
+
+
+def _trade_fees(
+    entry_notional: float,
+    quantity: float,
+    exit_price: float,
+    fee_bps: float,
+    partial_exits: Sequence[Mapping[str, Any]],
+) -> float:
+    entry_fee = fee(entry_notional, fee_bps)
+    if not partial_exits:
+        return entry_fee + fee(abs(quantity * exit_price), fee_bps)
+    exit_fees = sum(
+        fee(abs(quantity * float(item["fraction"]) * float(item["price"])), fee_bps)
+        for item in partial_exits
+    )
+    return entry_fee + exit_fees
+
+
+def _trade_exit_slippage(
+    quantity: float,
+    slippage_bps: float,
+    partial_exits: Sequence[Mapping[str, Any]],
+) -> float:
+    if not partial_exits:
+        return 0.0
+    return sum(
+        abs(quantity * float(item["fraction"]) * float(item["price"])) * slippage_bps / 10000
+        for item in partial_exits
+    )
+
+
+def _bars_between(bars: Sequence[BacktestBar], entry_time: int, exit_time: int) -> list[BacktestBar]:
+    return [bar for bar in bars if entry_time <= bar.timestamp <= exit_time]
+
+
+def _mfe_pct(side: str, entry_price: float, bars: Sequence[BacktestBar], entry_time: int, exit_time: int) -> float:
+    if entry_price <= 0:
+        return 0.0
+    window = _bars_between(bars, entry_time, exit_time)
+    if not window:
+        return 0.0
+    if side == "SHORT":
+        favorable = min(bar.low for bar in window)
+        return round((entry_price - favorable) / entry_price, 10)
+    favorable = max(bar.high for bar in window)
+    return round((favorable - entry_price) / entry_price, 10)
+
+
+def _mae_pct(side: str, entry_price: float, bars: Sequence[BacktestBar], entry_time: int, exit_time: int) -> float:
+    if entry_price <= 0:
+        return 0.0
+    window = _bars_between(bars, entry_time, exit_time)
+    if not window:
+        return 0.0
+    if side == "SHORT":
+        adverse = max(bar.high for bar in window)
+        return round((entry_price - adverse) / entry_price, 10)
+    adverse = min(bar.low for bar in window)
+    return round((adverse - entry_price) / entry_price, 10)
+
+
+def _stop_hit_bar_offset(partial_exits: Sequence[Mapping[str, Any]]) -> int | None:
+    for item in partial_exits:
+        reason = str(item.get("reason", ""))
+        if "STOP" in reason:
+            return int(item.get("bar_offset", 0))
+    return None
+
+
+def _resolve_leverage(request: BacktestRequest, signal: Mapping[str, Any]) -> float:
+    if not bool(request.risk_constraints.get("enable_leverage_simulation", False)):
+        return 1.0
+    fixed = request.risk_constraints.get("fixed_leverage")
+    if fixed is not None:
+        leverage = float(fixed)
+    else:
+        leverage = float(signal.get("leverage", 1.0) or 1.0)
+    minimum = float(request.risk_constraints.get("min_leverage", 1.0) or 1.0)
+    maximum = float(request.risk_constraints.get("max_leverage", 5.0) or 5.0)
+    return max(minimum, min(maximum, leverage))
+
+
+def _margin_call_proxy(mae_pct: float, leverage: float, maintenance_margin_pct: float) -> bool:
+    if leverage <= 1:
+        return False
+    liquidation_buffer = max(0.0, (1.0 / leverage) - maintenance_margin_pct)
+    return abs(min(0.0, mae_pct)) >= liquidation_buffer
+
+
+def _day_bucket(timestamp: int) -> int:
+    return timestamp // 86400
+
+
+def _week_bucket(timestamp: int) -> int:
+    return timestamp // (7 * 86400)
+
+
+def _circuit_breaker_reason(
+    request: BacktestRequest,
+    timestamp: int,
+    initial_capital: float,
+    realized_pnl_by_day: Mapping[int, float],
+    realized_pnl_by_week: Mapping[int, float],
+) -> str | None:
+    daily = float(request.risk_constraints.get("daily_hard_loss_pct", 0.0) or 0.0)
+    weekly = float(request.risk_constraints.get("weekly_hard_loss_pct", 0.0) or 0.0)
+    if daily > 0 and realized_pnl_by_day.get(_day_bucket(timestamp), 0.0) <= -initial_capital * daily:
+        return "DAILY_HARD_LOSS_CIRCUIT"
+    if weekly > 0 and realized_pnl_by_week.get(_week_bucket(timestamp), 0.0) <= -initial_capital * weekly:
+        return "WEEKLY_HARD_LOSS_CIRCUIT"
+    return None
 
 
 def _is_trade_signal(signal: Mapping[str, Any]) -> bool:

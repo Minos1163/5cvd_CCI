@@ -1,9 +1,18 @@
 version: 1.0.0
 universe:
   exchange: binance_futures
+  contract_type: USDT_PERPETUAL
   quote_asset: USDT
   max_symbols: 20
-  refresh_interval_hours: 24
+  max_symbols_hard_cap: 30
+  min_market_cap_rank: 20
+  max_market_cap_rank: 30
+  min_24h_volume_usd: 300000000
+  min_listing_days: 365
+  max_spread_pct: 0.05
+  max_missing_bar_ratio: 0.005
+  update_frequency: weekly
+  universe_version: 2026W01
   symbols:
     - BTCUSDT
     - ETHUSDT

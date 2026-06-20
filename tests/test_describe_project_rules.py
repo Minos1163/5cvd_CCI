@@ -65,3 +65,22 @@ def test_describe_project_rules_outputs_expanded_project_overview_contract():
     ]
     assert project["implementation_principles"][0] == "contract_first"
     assert "stable_position_and_order_recovery" in project["operational_success_standards"]
+
+
+def test_describe_project_rules_outputs_expanded_market_universe_contract():
+    result = subprocess.run(
+        [sys.executable, "scripts/describe_project_rules.py"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    universe = payload["universe"]
+    assert universe["scope"] == "binance_usdt_perpetual"
+    assert universe["max_symbols"] == 20
+    assert universe["max_symbols_hard_cap"] == 30
+    assert universe["min_24h_volume_usd"] == 300000000
+    assert universe["min_listing_days"] == 365
+    assert universe["max_spread_pct"] == 0.05
+    assert universe["required_timeframes"] == ["15m", "30m", "1h", "4h"]
+    assert universe["statuses"] == ["ACTIVE", "SUSPENDED", "REMOVED"]

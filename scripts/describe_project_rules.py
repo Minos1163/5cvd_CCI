@@ -53,6 +53,19 @@ from src.core.strategy_philosophy import (
     UNCERTAINTY_ACTIONS,
     UNCERTAINTY_FORBIDDEN_ACTIONS,
 )
+from src.data.universe_filter import (
+    MAX_MISSING_BAR_RATIO,
+    MAX_SPREAD_PCT,
+    MAX_SYMBOLS,
+    MAX_SYMBOLS_HARD_CAP,
+    MEME_POLICY,
+    MIN_LISTING_DAYS,
+    RECOMMENDED_MIN_24H_VOLUME_USD,
+    REQUIRED_TIMEFRAMES,
+    UNIVERSE_SCOPE,
+    UNIVERSE_STATUSES,
+    UPDATE_FREQUENCY,
+)
 
 
 def main() -> None:
@@ -102,7 +115,17 @@ def main() -> None:
             "forbidden_patterns": PHILOSOPHY_FORBIDDEN_PATTERNS,
         },
         "universe": {
-            "max_symbols": 20,
+            "scope": UNIVERSE_SCOPE,
+            "max_symbols": MAX_SYMBOLS,
+            "max_symbols_hard_cap": MAX_SYMBOLS_HARD_CAP,
+            "min_24h_volume_usd": RECOMMENDED_MIN_24H_VOLUME_USD,
+            "min_listing_days": MIN_LISTING_DAYS,
+            "max_spread_pct": MAX_SPREAD_PCT,
+            "max_missing_bar_ratio": MAX_MISSING_BAR_RATIO,
+            "update_frequency": UPDATE_FREQUENCY,
+            "required_timeframes": REQUIRED_TIMEFRAMES,
+            "statuses": UNIVERSE_STATUSES,
+            "meme_policy": MEME_POLICY,
             "max_simultaneous_positions": 5,
             "recommended_positions": 3,
             "single_symbol_exposure": 0.20,

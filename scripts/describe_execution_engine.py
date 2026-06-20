@@ -66,6 +66,14 @@ def _sample_result():
         timestamp=1,
         risk_snapshot={"allow_trade": True},
         position_snapshot={"position_side": "LONG"},
+        entry_chain_snapshot={
+            "action": "DIRECT",
+            "side": "LONG",
+            "risk_allowed": True,
+            "notional_hint": 5_000.0,
+            "score": 88.0,
+            "reasons": ["DESCRIBE_SAMPLE"],
+        },
     )
     return ExecutionEngine(_DescribeAdapter()).submit_order(request).to_dict()
 

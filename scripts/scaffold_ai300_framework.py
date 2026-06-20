@@ -90,9 +90,18 @@ slippage:
 version: 1.0.0
 universe:
   exchange: binance_futures
+  contract_type: USDT_PERPETUAL
   quote_asset: USDT
   max_symbols: 20
-  refresh_interval_hours: 24
+  max_symbols_hard_cap: 30
+  min_market_cap_rank: 20
+  max_market_cap_rank: 30
+  min_24h_volume_usd: 300000000
+  min_listing_days: 365
+  max_spread_pct: 0.05
+  max_missing_bar_ratio: 0.005
+  update_frequency: weekly
+  universe_version: 2026W01
   symbols:
     - BTCUSDT
     - ETHUSDT
@@ -183,8 +192,18 @@ CONFIG_REQUIRED_FIELDS = {
     ],
     "universe.yaml": [
         "version",
-        "universe.refresh_interval_hours",
+        "universe.contract_type",
+        "universe.quote_asset",
         "universe.max_symbols",
+        "universe.max_symbols_hard_cap",
+        "universe.min_market_cap_rank",
+        "universe.max_market_cap_rank",
+        "universe.min_24h_volume_usd",
+        "universe.min_listing_days",
+        "universe.max_spread_pct",
+        "universe.max_missing_bar_ratio",
+        "universe.update_frequency",
+        "universe.universe_version",
     ],
     "logging.yaml": [
         "version",
@@ -434,6 +453,7 @@ def test_config_schema_lists_required_files_sections_and_precedence():
     assert "strategy.timeframes.trigger" in CONFIG_REQUIRED_FIELDS["strategy.yaml"]
     assert "risk.risk_per_trade_pct" in CONFIG_REQUIRED_FIELDS["risk.yaml"]
     assert "execution.exchange" in CONFIG_REQUIRED_FIELDS["execution.yaml"]
+    assert "universe.update_frequency" in CONFIG_REQUIRED_FIELDS["universe.yaml"]
 
 
 def test_existing_configs_validate_against_schema():
@@ -498,6 +518,16 @@ def test_config_forbidden_rules_match_doc_boundary():
         "module_mutates_config",
         "hot_update_strategy_core",
     ]
+
+
+def test_universe_config_requires_v1_market_universe_fields():
+    required = CONFIG_REQUIRED_FIELDS["universe.yaml"]
+    assert "universe.update_frequency" in required
+    assert "universe.min_24h_volume_usd" in required
+    assert "universe.min_listing_days" in required
+    assert "universe.max_spread_pct" in required
+    assert "universe.max_missing_bar_ratio" in required
+    assert "universe.universe_version" in required
 """,
     "tests/test_describe_config_schema.py": """
 import json
@@ -1754,12 +1784,31 @@ class MarketDataLoader:
     "src/data/universe_filter.py": """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+
+UNIVERSE_SCOPE = "binance_usdt_perpetual"
+MAX_SYMBOLS = 20
+MAX_SYMBOLS_HARD_CAP = 30
+RECOMMENDED_MIN_24H_VOLUME_USD = 300_000_000
+MIN_LISTING_DAYS = 365
+MAX_SPREAD_PCT = 0.05
+MAX_MISSING_BAR_RATIO = 0.005
+UPDATE_FREQUENCY = "weekly"
+REQUIRED_TIMEFRAMES = ("15m", "30m", "1h", "4h")
+UNIVERSE_STATUSES = ("ACTIVE", "SUSPENDED", "REMOVED")
+MEME_POLICY = "exclude_by_default_even_if_large_cap"
 
 
 TIER_A = {"BTCUSDT", "ETHUSDT"}
 TIER_B = {"BNBUSDT", "SOLUSDT", "XRPUSDT"}
 DEFAULT_EXCLUDED_MEME = {"DOGEUSDT", "SHIBUSDT", "PEPEUSDT", "FLOKIUSDT"}
+
+
+@dataclass(frozen=True)
+class UniverseCheck:
+    passed: bool
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -1771,6 +1820,42 @@ class UniverseCandidate:
     listed_days: int
     is_meme: bool = False
     delisting: bool = False
+    contract_type: str = "USDT_PERPETUAL"
+    quote_asset: str = "USDT"
+    volume_rank: int = 0
+    spread_pct: float = 0.0
+    missing_bar_ratio: float = 0.0
+    timeframes: tuple[str, ...] = REQUIRED_TIMEFRAMES
+    monitoring_tag: bool = False
+    abnormal_wick_count: int = 0
+
+    def with_updates(self, **updates) -> "UniverseCandidate":
+        return replace(self, **updates)
+
+
+@dataclass(frozen=True)
+class UniverseMember:
+    symbol: str
+    market_cap_rank: int
+    volume_rank: int
+    status: str
+    added_time: int
+    removed_time: int | None
+    version: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class UniverseSnapshot:
+    version: str
+    members: list[UniverseMember]
+    created_at: int
+    effective_from: int
+    effective_to: int | None
+    update_reason: str
+
+    def active_symbols(self) -> list[str]:
+        return [member.symbol for member in self.members if member.status == "ACTIVE"]
 
 
 def normalize_symbol(symbol: str) -> str:
@@ -1795,20 +1880,64 @@ def filter_universe(
     valid = []
     for candidate in candidates:
         symbol = normalize_symbol(candidate.symbol)
-        if not symbol.endswith("USDT"):
+        adjusted = candidate.with_updates(symbol=symbol)
+        check = validate_candidate(adjusted)
+        if not check.passed:
             continue
-        if candidate.market_cap_rank > max_symbols:
+        if adjusted.market_cap_rank > max_symbols:
             continue
-        if candidate.volume_24h < min_volume_24h:
+        if adjusted.volume_24h < min_volume_24h:
             continue
-        if candidate.listed_days < min_listed_days:
+        if adjusted.listed_days < min_listed_days:
             continue
-        if candidate.delisting:
-            continue
-        if candidate.is_meme or symbol in DEFAULT_EXCLUDED_MEME:
-            continue
-        valid.append(candidate)
+        valid.append(adjusted)
     return sorted(valid, key=lambda item: item.market_cap_rank)[:max_symbols]
+
+
+def validate_candidate(candidate: UniverseCandidate) -> UniverseCheck:
+    symbol = normalize_symbol(candidate.symbol)
+    if not symbol.endswith("USDT") or candidate.quote_asset != "USDT":
+        return UniverseCheck(False, "only USDT symbols are allowed")
+    if candidate.contract_type != "USDT_PERPETUAL":
+        return UniverseCheck(False, "only USDT perpetual contracts are allowed")
+    if candidate.market_cap_rank > MAX_SYMBOLS_HARD_CAP:
+        return UniverseCheck(False, "market cap rank outside hard cap")
+    if candidate.volume_24h < RECOMMENDED_MIN_24H_VOLUME_USD:
+        return UniverseCheck(False, "24h volume below V1 threshold")
+    if candidate.listed_days < MIN_LISTING_DAYS:
+        return UniverseCheck(False, "listing age below V1 threshold")
+    if candidate.spread_pct > MAX_SPREAD_PCT:
+        return UniverseCheck(False, "spread too wide")
+    if candidate.missing_bar_ratio > MAX_MISSING_BAR_RATIO:
+        return UniverseCheck(False, "missing bar ratio too high")
+    if set(REQUIRED_TIMEFRAMES) - set(candidate.timeframes):
+        return UniverseCheck(False, "missing required timeframe history")
+    if candidate.delisting or candidate.monitoring_tag:
+        return UniverseCheck(False, "delisting or monitoring risk")
+    if candidate.is_meme or symbol in DEFAULT_EXCLUDED_MEME:
+        return UniverseCheck(False, MEME_POLICY)
+    if candidate.abnormal_wick_count > 0:
+        return UniverseCheck(False, "abnormal wick risk")
+    return UniverseCheck(True, "candidate approved")
+
+
+def build_universe_snapshot(version: str, members: list[UniverseMember], created_at: int) -> UniverseSnapshot:
+    return UniverseSnapshot(
+        version=version,
+        members=members,
+        created_at=created_at,
+        effective_from=created_at,
+        effective_to=None,
+        update_reason="weekly_refresh",
+    )
+
+
+def validate_snapshot_for_backtest(snapshot: UniverseSnapshot, backtest_start: int) -> UniverseCheck:
+    if snapshot.effective_from > backtest_start:
+        return UniverseCheck(False, "snapshot starts after backtest period")
+    if snapshot.effective_to is not None and snapshot.effective_to < backtest_start:
+        return UniverseCheck(False, "snapshot ended before backtest period")
+    return UniverseCheck(True, "historical universe snapshot approved")
 
 
 def get_risk_tier(symbol: str) -> str:
@@ -1945,36 +2074,129 @@ def rsi(values: list[float], period: int = 14) -> float | None:
     "src/indicators/indicator_spec.py": """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Mapping
+
+from src.data.data_contract import INDICATOR_REQUIRED_OUTPUTS, QUALITY_FLAGS
+
 
 DEFAULT_INDICATOR_PARAMS = {
     "MACD": {"fast": 12, "slow": 26, "signal": 9},
-    "RSI": {"period": 14},
     "CCI": {"period": 20},
     "BOLL": {"period": 20, "std": 2.0},
-    "ATR": {"period": 14},
+    "RSI": {"period": 14},
     "CVD": {},
+    "ATR": {"period": 14},
 }
 
+INDICATOR_NAMES = ("MACD", "CCI", "BOLL", "RSI", "CVD", "ATR")
 INDICATOR_RESPONSIBILITIES = {
-    "MACD": "trend",
-    "RSI": "pullback",
-    "CCI": "strength",
-    "BOLL": "structure",
-    "CVD": "fund_flow",
-    "ATR": "risk",
+    "MACD": "trend_momentum",
+    "CCI": "strength_deviation_recovery",
+    "BOLL": "volatility_structure",
+    "RSI": "pullback_quality_overheat",
+    "CVD": "active_buy_sell_pressure",
+    "ATR": "volatility_stop_position_risk",
 }
+INDICATOR_INPUT_FIELDS = (
+    "symbol",
+    "timeframe",
+    "open_time",
+    "close_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "quote_volume",
+    "trade_count",
+    "taker_buy_base_volume",
+    "taker_buy_quote_volume",
+    "is_closed",
+    "quality_flag",
+)
+INDICATOR_OUTPUT_FIELDS = (
+    "name",
+    "symbol",
+    "timeframe",
+    "timestamp",
+    "value",
+    "signal",
+    "trend",
+    "strength",
+    "quality_flag",
+    "metadata",
+)
+INDICATOR_CONFLICT_PRIORITY = (
+    "data_quality",
+    "cvd_divergence",
+    "macd_trend_direction",
+    "cci_strength",
+    "boll_structure",
+    "rsi_timing",
+    "atr_risk",
+)
+INDICATOR_PRIORITY = INDICATOR_CONFLICT_PRIORITY
+TIMEFRAME_INDICATOR_MAP = {
+    "4h": ("MACD", "BOLL", "CCI"),
+    "1h": ("MACD", "CCI", "CVD", "RSI"),
+    "30m": ("MACD", "BOLL", "CCI", "CVD"),
+    "15m": ("RSI", "MACD", "CVD", "BOLL"),
+}
+INDICATOR_CACHE_FIELDS = ("version", "timestamp", "timeframe", "indicator", "quality_flag")
+INDICATOR_FORBIDDEN_USAGES = {
+    "MACD": ("sole_entry", "position_size", "unfinished_bar_final", "execution_reinterpretation"),
+    "CCI": ("sole_direction", "risk_control", "only_trend_proof"),
+    "BOLL": ("sole_direction", "position_size", "replace_trend_logic"),
+    "RSI": ("replace_trend", "replace_fund_flow", "guaranteed_reversal"),
+    "CVD": ("sole_direction", "replace_price_structure", "force_signal_without_data", "execution_priority"),
+    "ATR": ("direction", "long_short_signal", "replace_trend", "non_risk_module_mixing"),
+}
+GLOBAL_FORBIDDEN_INDICATOR_ACTIONS = (
+    "create_order",
+    "final_position_size",
+    "bypass_state_machine",
+    "must_trade",
+)
 
-INDICATOR_PRIORITY = ("MACD", "CVD", "RSI", "CCI", "BOLL")
+
+@dataclass(frozen=True)
+class IndicatorSpecCheck:
+    passed: bool
+    reason: str
+
+
+def required_outputs_for(indicator: str) -> tuple[str, ...]:
+    return tuple(INDICATOR_REQUIRED_OUTPUTS.get(indicator.upper(), ()))
+
+
+def quality_allows_signal_use(quality_flag: bool | str) -> bool:
+    return quality_flag in (True, "degraded")
+
+
+def validate_indicator_input_contract(payload: Mapping[str, object]) -> IndicatorSpecCheck:
+    missing = sorted(field for field in INDICATOR_INPUT_FIELDS if field not in payload)
+    if missing:
+        return IndicatorSpecCheck(False, f"missing indicator input fields: {missing}")
+    if payload["is_closed"] is not True:
+        return IndicatorSpecCheck(False, "indicator input candle must be closed")
+    if payload["quality_flag"] not in QUALITY_FLAGS:
+        return IndicatorSpecCheck(False, "unsupported quality_flag")
+    if not quality_allows_signal_use(payload["quality_flag"]):
+        return IndicatorSpecCheck(False, "quality_flag cannot drive indicator signal use")
+    return IndicatorSpecCheck(True, "indicator input contract approved")
 
 
 def validate_indicator_usage(indicator: str, usage: str) -> tuple[bool, str]:
     key = indicator.upper()
-    responsibility = INDICATOR_RESPONSIBILITIES.get(key)
-    if responsibility is None:
+    if key not in INDICATOR_NAMES:
         return False, f"unknown indicator: {indicator}"
-    if key == "ATR" and usage == "direction":
-        return False, "ATR is reserved for risk and must not be used for direction"
-    return True, f"{key} allowed for {usage}"
+    normalized_usage = usage.strip().lower()
+    if normalized_usage in GLOBAL_FORBIDDEN_INDICATOR_ACTIONS:
+        return False, f"{normalized_usage} is globally forbidden for indicator layer"
+    if normalized_usage in INDICATOR_FORBIDDEN_USAGES.get(key, ()):
+        return False, f"{key} usage forbidden: {normalized_usage}"
+    return True, f"{key} allowed for {normalized_usage}"
 
 
 def classify_rsi(value: float) -> str:
@@ -1998,10 +2220,12 @@ def classify_cci(value: float) -> str:
 from __future__ import annotations
 
 from src.core.models import Candle, IndicatorSnapshot
+from src.data.data_contract import IndicatorResult, MarketCandle, market_candle_to_candle
 from src.indicators.atr import atr
 from src.indicators.boll import bollinger
 from src.indicators.cci import cci
 from src.indicators.cvd import cumulative_cvd, cvd_delta
+from src.indicators.indicator_spec import quality_allows_signal_use
 from src.indicators.macd import macd
 from src.indicators.rsi import rsi
 
@@ -2032,6 +2256,195 @@ def compute_indicator_snapshot(candles: list[Candle]) -> IndicatorSnapshot:
         cvd=cvd_values[-1] if cvd_values else None,
         cvd_delta=cvd_delta(last.taker_buy_volume, last.volume),
     )
+
+
+def compute_indicator_results(candles: list[MarketCandle]) -> list[IndicatorResult]:
+    if not candles:
+        raise ValueError("candles must not be empty")
+    _validate_market_candles_for_indicator_results(candles)
+    core_candles = [market_candle_to_candle(item) for item in candles]
+    snapshot = compute_indicator_snapshot(core_candles)
+    closes = [item.close for item in core_candles]
+    quality_flag = _combined_quality_flag(candles)
+
+    return [
+        _build_macd_result(snapshot, closes, quality_flag),
+        _build_cci_result(snapshot, core_candles, quality_flag),
+        _build_boll_result(snapshot, closes, quality_flag),
+        _build_rsi_result(snapshot, closes, quality_flag),
+        _build_cvd_result(snapshot, core_candles, quality_flag),
+        _build_atr_result(snapshot, core_candles, quality_flag),
+    ]
+
+
+def _validate_market_candles_for_indicator_results(candles: list[MarketCandle]) -> None:
+    first_symbol = candles[0].symbol
+    first_timeframe = candles[0].timeframe
+    previous_open_time = -1
+    for candle in candles:
+        if candle.symbol != first_symbol:
+            raise ValueError("indicator candles must use one symbol")
+        if candle.timeframe != first_timeframe:
+            raise ValueError("indicator candles must use one timeframe")
+        if candle.open_time <= previous_open_time:
+            raise ValueError("indicator candles must be ordered by open_time")
+        if candle.is_closed is not True:
+            raise ValueError("indicator candles must be closed")
+        if not quality_allows_signal_use(candle.quality_flag):
+            raise ValueError("indicator candle quality cannot drive indicator signal use")
+        previous_open_time = candle.open_time
+
+
+def _combined_quality_flag(candles: list[MarketCandle]) -> bool | str:
+    if any(item.quality_flag == "degraded" for item in candles):
+        return "degraded"
+    return True
+
+
+def _base_result(
+    snapshot: IndicatorSnapshot,
+    name: str,
+    value: dict,
+    signal: str,
+    trend: str,
+    strength: float,
+    quality_flag: bool | str,
+) -> IndicatorResult:
+    return IndicatorResult(
+        name=name,
+        symbol=snapshot.symbol,
+        timeframe=snapshot.timeframe,
+        value=value,
+        signal=signal,
+        trend=trend,
+        strength=max(0.0, min(float(strength), 1.0)),
+        timestamp=snapshot.close_time,
+        metadata=dict(value),
+        quality_flag=quality_flag,
+    )
+
+
+def _build_macd_result(snapshot: IndicatorSnapshot, closes: list[float], quality_flag: bool | str) -> IndicatorResult:
+    previous = macd(closes[:-1]) if len(closes) > 1 else None
+    histogram = snapshot.macd_hist if snapshot.macd_hist is not None else 0.0
+    previous_histogram = previous[2] if previous else histogram
+    slope = histogram - previous_histogram
+    if snapshot.macd is not None and snapshot.macd_signal is not None and snapshot.macd > snapshot.macd_signal:
+        cross_state = "golden_cross"
+    elif snapshot.macd is not None and snapshot.macd_signal is not None and snapshot.macd < snapshot.macd_signal:
+        cross_state = "death_cross"
+    else:
+        cross_state = "neutral"
+    trend = "UP" if histogram > 0 else "DOWN" if histogram < 0 else "NEUTRAL"
+    signal = "BULLISH" if histogram > 0 and slope >= 0 else "BEARISH" if histogram < 0 and slope <= 0 else "NEUTRAL"
+    value = {
+        "macd_line": snapshot.macd,
+        "signal_line": snapshot.macd_signal,
+        "histogram": snapshot.macd_hist,
+        "histogram_slope": slope,
+        "cross_state": cross_state,
+    }
+    return _base_result(snapshot, "MACD", value, signal, trend, min(abs(histogram), 1.0), quality_flag)
+
+
+def _build_cci_result(snapshot: IndicatorSnapshot, candles: list[Candle], quality_flag: bool | str) -> IndicatorResult:
+    previous = cci(candles[:-1]) if len(candles) > 1 else None
+    current = snapshot.cci if snapshot.cci is not None else 0.0
+    slope = current - (previous if previous is not None else current)
+    extreme = abs(current) > 150
+    recovery = previous is not None and abs(previous) > 100 and abs(current) <= 100
+    trend = "UP" if current > 100 else "DOWN" if current < -100 else "NEUTRAL"
+    signal = "STRONG" if current > 100 else "WEAK" if current < -100 else "NEUTRAL"
+    value = {"cci": snapshot.cci, "cci_slope": slope, "extreme_flag": extreme, "recovery_flag": recovery}
+    return _base_result(snapshot, "CCI", value, signal, trend, min(abs(current) / 200, 1.0), quality_flag)
+
+
+def _build_boll_result(snapshot: IndicatorSnapshot, closes: list[float], quality_flag: bool | str) -> IndicatorResult:
+    previous = bollinger(closes[:-1]) if len(closes) > 1 else None
+    width = 0.0
+    previous_width = 0.0
+    if snapshot.boll_upper is not None and snapshot.boll_lower is not None and snapshot.boll_mid:
+        width = (snapshot.boll_upper - snapshot.boll_lower) / snapshot.boll_mid
+    if previous and previous[0]:
+        previous_width = (previous[1] - previous[2]) / previous[0]
+    expansion = width > previous_width
+    contraction = width < previous_width
+    close = closes[-1]
+    if snapshot.boll_upper is not None and close >= snapshot.boll_upper:
+        position = "above_upper"
+    elif snapshot.boll_lower is not None and close <= snapshot.boll_lower:
+        position = "below_lower"
+    elif snapshot.boll_mid is not None and close >= snapshot.boll_mid:
+        position = "above_middle"
+    else:
+        position = "below_middle"
+    trend = "UP" if position in {"above_upper", "above_middle"} else "DOWN"
+    signal = "EXPANSION" if expansion else "CONTRACTION" if contraction else "NEUTRAL"
+    value = {
+        "middle_band": snapshot.boll_mid,
+        "upper_band": snapshot.boll_upper,
+        "lower_band": snapshot.boll_lower,
+        "band_width": width,
+        "band_expansion_flag": expansion,
+        "band_contraction_flag": contraction,
+        "price_position": position,
+    }
+    return _base_result(snapshot, "BOLL", value, signal, trend, min(width, 1.0), quality_flag)
+
+
+def _build_rsi_result(snapshot: IndicatorSnapshot, closes: list[float], quality_flag: bool | str) -> IndicatorResult:
+    previous = rsi(closes[:-1]) if len(closes) > 1 else None
+    current = snapshot.rsi if snapshot.rsi is not None else 50.0
+    slope = current - (previous if previous is not None else current)
+    overbought = current > 70
+    oversold = current < 30
+    midline_state = "above_midline" if current > 55 else "below_midline" if current < 45 else "near_midline"
+    trend = "UP" if current > 55 else "DOWN" if current < 45 else "NEUTRAL"
+    signal = "OVERBOUGHT" if overbought else "OVERSOLD" if oversold else "NEUTRAL"
+    value = {
+        "rsi": snapshot.rsi,
+        "rsi_slope": slope,
+        "overbought_flag": overbought,
+        "oversold_flag": oversold,
+        "midline_state": midline_state,
+    }
+    return _base_result(snapshot, "RSI", value, signal, trend, abs(current - 50) / 50, quality_flag)
+
+
+def _build_cvd_result(snapshot: IndicatorSnapshot, candles: list[Candle], quality_flag: bool | str) -> IndicatorResult:
+    cvd_values = cumulative_cvd(candles)
+    previous_cvd = cvd_values[-2] if len(cvd_values) > 1 else cvd_values[-1]
+    current_cvd = cvd_values[-1]
+    slope = current_cvd - previous_cvd
+    price_delta = candles[-1].close - candles[-2].close if len(candles) > 1 else 0.0
+    divergence = (price_delta > 0 and slope < 0) or (price_delta < 0 and slope > 0)
+    buy_pressure = max(snapshot.cvd_delta or 0.0, 0.0)
+    sell_pressure = abs(min(snapshot.cvd_delta or 0.0, 0.0))
+    trend = "UP" if slope > 0 else "DOWN" if slope < 0 else "NEUTRAL"
+    signal = "DIVERGENCE" if divergence else "BUY_PRESSURE" if slope > 0 else "SELL_PRESSURE" if slope < 0 else "NEUTRAL"
+    value = {
+        "cvd": snapshot.cvd,
+        "cvd_delta": snapshot.cvd_delta,
+        "cvd_slope": slope,
+        "cvd_divergence_flag": divergence,
+        "buy_pressure": buy_pressure,
+        "sell_pressure": sell_pressure,
+    }
+    return _base_result(snapshot, "CVD", value, signal, trend, min(abs(slope) / 100, 1.0), quality_flag)
+
+
+def _build_atr_result(snapshot: IndicatorSnapshot, candles: list[Candle], quality_flag: bool | str) -> IndicatorResult:
+    current_atr = snapshot.atr if snapshot.atr is not None else 0.0
+    close = candles[-1].close
+    atr_pct = current_atr / close if close else 0.0
+    if atr_pct >= 0.05:
+        volatility_state = "high"
+    elif atr_pct <= 0.01:
+        volatility_state = "low"
+    else:
+        volatility_state = "normal"
+    value = {"atr": snapshot.atr, "atr_pct": atr_pct, "volatility_state": volatility_state}
+    return _base_result(snapshot, "ATR", value, "RISK_ONLY", "NEUTRAL", min(atr_pct * 10, 1.0), quality_flag)
 """,
     "src/context/__init__.py": '"""Market context builders."""',
     "src/context/multi_tf_context.py": """
@@ -2064,8 +2477,52 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Mapping
 
 from src.core.models import IndicatorSnapshot
+
+
+TIMEFRAME_ROLES = {
+    "4h": "background_reference",
+    "1h": "direction_confirmation",
+    "30m": "trend_quality_confirmation",
+    "15m": "execution_trigger",
+}
+TIMEFRAME_PRIORITY = (
+    "data_quality",
+    "risk_constraints",
+    "4h_background",
+    "1h_direction",
+    "30m_quality",
+    "15m_trigger",
+    "position_executability",
+    "execution_layer",
+)
+TIMEFRAME_OUTPUT_FIELDS = (
+    "symbol",
+    "timeframe",
+    "timestamp",
+    "state",
+    "confidence",
+    "reason",
+    "sub_reasons",
+    "quality_flag",
+    "metadata",
+)
+TIMEFRAME_FORBIDDEN_ACTIONS = (
+    "4h_hard_veto",
+    "15m_direction_override",
+    "independent_timeframe_commands",
+    "unfinished_high_tf_final_signal",
+    "nested_patch_conditions",
+    "execution_reinterprets_context",
+)
+TIMEFRAME_STATE_SETS = {
+    "4h": ("BULL", "BEAR", "NEUTRAL"),
+    "1h": ("LONG_ALLOWED", "SHORT_ALLOWED", "NO_TRADE"),
+    "30m": ("CONFIRMED", "WEAK", "INVALID", "TRANSITION"),
+    "15m": ("DIRECT", "PROBE", "WAIT", "NO_TRADE"),
+}
 
 
 class TimeframeDecision(str, Enum):
@@ -2075,12 +2532,36 @@ class TimeframeDecision(str, Enum):
     LONG_ALLOWED = "LONG_ALLOWED"
     SHORT_ALLOWED = "SHORT_ALLOWED"
     NO_TRADE = "NO_TRADE"
+    CONFIRMED = "CONFIRMED"
+    INVALID = "INVALID"
+    TRANSITION = "TRANSITION"
     LONG_CONFIRM = "LONG_CONFIRM"
     SHORT_CONFIRM = "SHORT_CONFIRM"
     WEAK = "WEAK"
     LONG_TRIGGER = "LONG_TRIGGER"
     SHORT_TRIGGER = "SHORT_TRIGGER"
+    DIRECT = "DIRECT"
+    PROBE = "PROBE"
     WAIT = "WAIT"
+
+
+@dataclass(frozen=True)
+class TimeframeRuleCheck:
+    passed: bool
+    reason: str
+
+
+@dataclass(frozen=True)
+class TimeframeResult:
+    symbol: str
+    timeframe: str
+    timestamp: int
+    state: str
+    confidence: float
+    reason: str
+    sub_reasons: tuple[str, ...]
+    quality_flag: bool | str
+    metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -2093,6 +2574,8 @@ class MultiTimeframeDecision:
     quality_30m: str
     trigger_15m: str
     reason: str
+    quality_flag: bool | str = True
+    timeframe_results: tuple[TimeframeResult, ...] = ()
 
 
 def evaluate_4h_context(snapshot: IndicatorSnapshot) -> TimeframeDecision:
@@ -2119,6 +2602,15 @@ def evaluate_30m_quality(snapshot: IndicatorSnapshot) -> TimeframeDecision:
     return TimeframeDecision.WEAK
 
 
+def evaluate_30m_quality_state(snapshot: IndicatorSnapshot) -> TimeframeDecision:
+    directional = evaluate_30m_quality(snapshot)
+    if directional in {TimeframeDecision.LONG_CONFIRM, TimeframeDecision.SHORT_CONFIRM}:
+        return TimeframeDecision.CONFIRMED
+    if (snapshot.macd_hist is not None and abs(snapshot.macd_hist) < 0.000001) or snapshot.cci is None:
+        return TimeframeDecision.TRANSITION
+    return TimeframeDecision.WEAK
+
+
 def evaluate_15m_trigger(snapshot: IndicatorSnapshot, previous_rsi: float | None = None) -> TimeframeDecision:
     rsi = snapshot.rsi
     cvd_delta = snapshot.cvd_delta or 0
@@ -2131,37 +2623,138 @@ def evaluate_15m_trigger(snapshot: IndicatorSnapshot, previous_rsi: float | None
     return TimeframeDecision.WAIT
 
 
+def build_timeframe_results(
+    tf_4h: IndicatorSnapshot,
+    tf_1h: IndicatorSnapshot,
+    tf_30m: IndicatorSnapshot,
+    tf_15m: IndicatorSnapshot,
+    previous_15m_rsi: float | None = None,
+    quality_flags: Mapping[str, bool | str] | None = None,
+) -> tuple[TimeframeResult, ...]:
+    flags = dict(quality_flags or {})
+    context = evaluate_4h_context(tf_4h)
+    permission = evaluate_1h_permission(tf_1h)
+    quality = evaluate_30m_quality_state(tf_30m)
+    trigger = evaluate_15m_trigger(tf_15m, previous_rsi=previous_15m_rsi)
+
+    return (
+        _timeframe_result(tf_4h, "4h", context.value, _confidence_from_snapshot(tf_4h), "4h_background", ("BACKGROUND",), flags.get("4h", True)),
+        _timeframe_result(tf_1h, "1h", permission.value, _confidence_from_snapshot(tf_1h), "1h_direction", ("DIRECTION",), flags.get("1h", True)),
+        _timeframe_result(
+            tf_30m,
+            "30m",
+            quality.value,
+            _confidence_from_snapshot(tf_30m),
+            "30m_quality",
+            (evaluate_30m_quality(tf_30m).value,),
+            flags.get("30m", True),
+            {"directional_quality": evaluate_30m_quality(tf_30m).value},
+        ),
+        _timeframe_result(tf_15m, "15m", _trigger_state_for_result(trigger), _confidence_from_snapshot(tf_15m), "15m_trigger", (trigger.value,), flags.get("15m", True)),
+    )
+
+
+def validate_timeframe_result(result: TimeframeResult) -> TimeframeRuleCheck:
+    if result.timeframe not in TIMEFRAME_ROLES:
+        return TimeframeRuleCheck(False, f"unsupported timeframe: {result.timeframe}")
+    if result.quality_flag in {False, "stale"}:
+        return TimeframeRuleCheck(False, "timeframe result quality cannot drive context")
+    if result.state not in TIMEFRAME_STATE_SETS[result.timeframe]:
+        return TimeframeRuleCheck(False, f"unsupported state for {result.timeframe}: {result.state}")
+    if not 0 <= result.confidence <= 1:
+        return TimeframeRuleCheck(False, "confidence must be between 0 and 1")
+    return TimeframeRuleCheck(True, "timeframe result approved")
+
+
 def build_multi_tf_decision(
     tf_4h: IndicatorSnapshot,
     tf_1h: IndicatorSnapshot,
     tf_30m: IndicatorSnapshot,
     tf_15m: IndicatorSnapshot,
     previous_15m_rsi: float | None = None,
+    quality_flags: Mapping[str, bool | str] | None = None,
 ) -> MultiTimeframeDecision:
+    results = build_timeframe_results(tf_4h, tf_1h, tf_30m, tf_15m, previous_15m_rsi, quality_flags)
+    invalid = [item for item in results if not validate_timeframe_result(item).passed]
     context = evaluate_4h_context(tf_4h)
     permission = evaluate_1h_permission(tf_1h)
     quality = evaluate_30m_quality(tf_30m)
     trigger = evaluate_15m_trigger(tf_15m, previous_rsi=previous_15m_rsi)
 
+    if invalid:
+        return _decision(tf_15m.symbol, "NO_TRADE", "NONE", context, permission, quality, trigger, "data quality invalid", False, results)
+
     if permission == TimeframeDecision.LONG_ALLOWED:
         if quality == TimeframeDecision.SHORT_CONFIRM:
-            return _decision(tf_15m.symbol, "NO_TRADE", "NONE", context, permission, quality, trigger, "direction conflict")
+            return _decision(tf_15m.symbol, "NO_TRADE", "NONE", context, permission, quality, trigger, "direction conflict", True, results)
         if quality == TimeframeDecision.LONG_CONFIRM and trigger == TimeframeDecision.LONG_TRIGGER:
-            return _decision(tf_15m.symbol, "DIRECT", "LONG", context, permission, quality, trigger, "long direct confirmed")
+            if _background_conflicts(context, "LONG"):
+                return _decision(tf_15m.symbol, "PROBE", "LONG", context, permission, quality, trigger, "4h conflict downgraded direct", True, results)
+            return _decision(tf_15m.symbol, "DIRECT", "LONG", context, permission, quality, trigger, "long direct confirmed", True, results)
         if quality == TimeframeDecision.LONG_CONFIRM:
-            return _decision(tf_15m.symbol, "PROBE", "LONG", context, permission, quality, trigger, "long higher timeframes confirmed")
-        return _decision(tf_15m.symbol, "WAIT", "NONE", context, permission, quality, trigger, "waiting for 30m/15m confirmation")
+            return _decision(tf_15m.symbol, "PROBE", "LONG", context, permission, quality, trigger, "long higher timeframes confirmed", True, results)
+        return _decision(tf_15m.symbol, "WAIT", "NONE", context, permission, quality, trigger, "waiting for 30m/15m confirmation", True, results)
 
     if permission == TimeframeDecision.SHORT_ALLOWED:
         if quality == TimeframeDecision.LONG_CONFIRM:
-            return _decision(tf_15m.symbol, "NO_TRADE", "NONE", context, permission, quality, trigger, "direction conflict")
+            return _decision(tf_15m.symbol, "NO_TRADE", "NONE", context, permission, quality, trigger, "direction conflict", True, results)
         if quality == TimeframeDecision.SHORT_CONFIRM and trigger == TimeframeDecision.SHORT_TRIGGER:
-            return _decision(tf_15m.symbol, "DIRECT", "SHORT", context, permission, quality, trigger, "short direct confirmed")
+            if _background_conflicts(context, "SHORT"):
+                return _decision(tf_15m.symbol, "PROBE", "SHORT", context, permission, quality, trigger, "4h conflict downgraded direct", True, results)
+            return _decision(tf_15m.symbol, "DIRECT", "SHORT", context, permission, quality, trigger, "short direct confirmed", True, results)
         if quality == TimeframeDecision.SHORT_CONFIRM:
-            return _decision(tf_15m.symbol, "PROBE", "SHORT", context, permission, quality, trigger, "short higher timeframes confirmed")
-        return _decision(tf_15m.symbol, "WAIT", "NONE", context, permission, quality, trigger, "waiting for 30m/15m confirmation")
+            return _decision(tf_15m.symbol, "PROBE", "SHORT", context, permission, quality, trigger, "short higher timeframes confirmed", True, results)
+        return _decision(tf_15m.symbol, "WAIT", "NONE", context, permission, quality, trigger, "waiting for 30m/15m confirmation", True, results)
 
-    return _decision(tf_15m.symbol, "NO_TRADE", "NONE", context, permission, quality, trigger, "1h direction not allowed")
+    return _decision(tf_15m.symbol, "NO_TRADE", "NONE", context, permission, quality, trigger, "1h direction not allowed", True, results)
+
+
+def _timeframe_result(
+    snapshot: IndicatorSnapshot,
+    timeframe: str,
+    state: str,
+    confidence: float,
+    reason: str,
+    sub_reasons: tuple[str, ...],
+    quality_flag: bool | str,
+    metadata: dict[str, Any] | None = None,
+) -> TimeframeResult:
+    return TimeframeResult(
+        symbol=snapshot.symbol,
+        timeframe=timeframe,
+        timestamp=snapshot.close_time,
+        state=state,
+        confidence=max(0.0, min(confidence, 1.0)),
+        reason=reason,
+        sub_reasons=sub_reasons,
+        quality_flag=quality_flag,
+        metadata=metadata or {},
+    )
+
+
+def _trigger_state_for_result(trigger: TimeframeDecision) -> str:
+    if trigger in {TimeframeDecision.LONG_TRIGGER, TimeframeDecision.SHORT_TRIGGER}:
+        return TimeframeDecision.DIRECT.value
+    return TimeframeDecision.WAIT.value
+
+
+def _confidence_from_snapshot(snapshot: IndicatorSnapshot) -> float:
+    score = 0.0
+    if snapshot.macd is not None:
+        score += 0.25
+    if snapshot.cci is not None:
+        score += 0.25
+    if snapshot.cvd_delta is not None:
+        score += 0.25
+    if snapshot.rsi is not None or snapshot.boll_mid is not None:
+        score += 0.25
+    return min(score, 1.0)
+
+
+def _background_conflicts(context: TimeframeDecision, side: str) -> bool:
+    return (side == "LONG" and context == TimeframeDecision.BEAR) or (
+        side == "SHORT" and context == TimeframeDecision.BULL
+    )
 
 
 def _decision(
@@ -2173,6 +2766,8 @@ def _decision(
     quality: TimeframeDecision,
     trigger: TimeframeDecision,
     reason: str,
+    quality_flag: bool | str,
+    timeframe_results: tuple[TimeframeResult, ...],
 ) -> MultiTimeframeDecision:
     return MultiTimeframeDecision(
         symbol=symbol,
@@ -2183,6 +2778,8 @@ def _decision(
         quality_30m=quality.value,
         trigger_15m=trigger.value,
         reason=reason,
+        quality_flag=quality_flag,
+        timeframe_results=timeframe_results,
     )
 """,
     "src/signals/__init__.py": '"""Signal generation boundary."""',
@@ -2663,6 +3260,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Mapping
+
+
+ENTRY_STATE_VERSION = "1.0"
 
 
 class EntryState(str, Enum):
@@ -2680,18 +3281,71 @@ class EntryState(str, Enum):
 
 
 ALLOWED_TRANSITIONS = {
-    EntryState.FLAT: {EntryState.WATCH_LONG, EntryState.WATCH_SHORT},
+    EntryState.FLAT: {
+        EntryState.WATCH_LONG,
+        EntryState.WATCH_SHORT,
+        EntryState.PROBE_LONG,
+        EntryState.PROBE_SHORT,
+        EntryState.DIRECT_LONG,
+        EntryState.DIRECT_SHORT,
+    },
     EntryState.WATCH_LONG: {EntryState.PROBE_LONG, EntryState.DIRECT_LONG, EntryState.FLAT},
     EntryState.WATCH_SHORT: {EntryState.PROBE_SHORT, EntryState.DIRECT_SHORT, EntryState.FLAT},
-    EntryState.PROBE_LONG: {EntryState.DIRECT_LONG, EntryState.EXIT_LONG},
-    EntryState.PROBE_SHORT: {EntryState.DIRECT_SHORT, EntryState.EXIT_SHORT},
-    EntryState.DIRECT_LONG: {EntryState.MANAGE_LONG, EntryState.EXIT_LONG},
-    EntryState.DIRECT_SHORT: {EntryState.MANAGE_SHORT, EntryState.EXIT_SHORT},
-    EntryState.MANAGE_LONG: {EntryState.EXIT_LONG},
-    EntryState.MANAGE_SHORT: {EntryState.EXIT_SHORT},
+    EntryState.PROBE_LONG: {EntryState.MANAGE_LONG, EntryState.EXIT_LONG, EntryState.FLAT, EntryState.DIRECT_LONG},
+    EntryState.PROBE_SHORT: {EntryState.MANAGE_SHORT, EntryState.EXIT_SHORT, EntryState.FLAT, EntryState.DIRECT_SHORT},
+    EntryState.DIRECT_LONG: {EntryState.MANAGE_LONG, EntryState.EXIT_LONG, EntryState.FLAT},
+    EntryState.DIRECT_SHORT: {EntryState.MANAGE_SHORT, EntryState.EXIT_SHORT, EntryState.FLAT},
+    EntryState.MANAGE_LONG: {EntryState.EXIT_LONG, EntryState.FLAT},
+    EntryState.MANAGE_SHORT: {EntryState.EXIT_SHORT, EntryState.FLAT},
     EntryState.EXIT_LONG: {EntryState.FLAT},
     EntryState.EXIT_SHORT: {EntryState.FLAT},
 }
+
+ENTRY_STATE_CATEGORIES = {
+    "watch": ("WATCH_LONG", "WATCH_SHORT"),
+    "probe": ("PROBE_LONG", "PROBE_SHORT"),
+    "direct": ("DIRECT_LONG", "DIRECT_SHORT"),
+    "manage": ("MANAGE_LONG", "MANAGE_SHORT"),
+    "exit": ("EXIT_LONG", "EXIT_SHORT"),
+}
+TRANSITION_LOG_FIELDS = (
+    "symbol",
+    "timestamp",
+    "state_before",
+    "state_after",
+    "reason",
+    "signal_type",
+    "entry_mode",
+    "risk_level",
+    "quality_flag",
+    "price",
+    "version",
+)
+TRANSITION_SOURCES = (
+    "signal_engine",
+    "risk_engine",
+    "execution_result",
+    "position_sync",
+    "cooldown",
+    "data_quality",
+)
+TRANSITION_BLOCKERS = (
+    "invalid_transition",
+    "missing_reason",
+    "risk_blocked",
+    "data_quality_blocked",
+    "cooldown_active",
+    "position_not_executable",
+)
+ENTRY_STATE_FORBIDDEN_ACTIONS = (
+    "calculate_indicators",
+    "judge_trend_direction",
+    "calculate_final_position_size",
+    "generate_orders",
+    "call_exchange_adapter",
+    "rewrite_risk_decision",
+    "unlogged_transition",
+)
 
 
 def transition(current: EntryState, target: EntryState) -> EntryState:
@@ -2701,27 +3355,95 @@ def transition(current: EntryState, target: EntryState) -> EntryState:
 
 
 @dataclass(frozen=True)
+class TransitionDecision:
+    allowed: bool
+    state_before: EntryState
+    state_after: EntryState
+    reason: str
+    blockers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class EntryTransition:
     symbol: str
     from_state: EntryState
     to_state: EntryState
     reason: str
-    ts: int
+    ts: Any
     price: float
+    signal_type: str = "NO_TRADE"
+    entry_mode: str = "NONE"
+    risk_level: str = "NORMAL"
+    quality_flag: bool = True
+    version: str = ENTRY_STATE_VERSION
+    source: str = "state_machine"
     position_size: float = 0.0
     risk_value: float = 0.0
 
-    def to_log_dict(self) -> dict:
+    @property
+    def timestamp(self) -> Any:
+        return self.ts
+
+    @property
+    def state_before(self) -> EntryState:
+        return self.from_state
+
+    @property
+    def state_after(self) -> EntryState:
+        return self.to_state
+
+    def to_log_dict(self) -> dict[str, Any]:
         return {
             "symbol": self.symbol,
+            "timestamp": self.ts,
+            "state_before": self.from_state.value,
+            "state_after": self.to_state.value,
+            "reason": self.reason,
+            "signal_type": self.signal_type,
+            "entry_mode": self.entry_mode,
+            "risk_level": self.risk_level,
+            "quality_flag": self.quality_flag,
+            "price": self.price,
+            "version": self.version,
+            "source": self.source,
             "from_state": self.from_state.value,
             "to_state": self.to_state.value,
-            "reason": self.reason,
             "ts": self.ts,
-            "price": self.price,
             "position_size": self.position_size,
             "risk_value": self.risk_value,
         }
+
+
+def evaluate_transition(
+    current: EntryState,
+    target: EntryState,
+    *,
+    reason: str,
+    risk_allowed: bool = True,
+    quality_flag: bool = True,
+    cooldown_active: bool = False,
+    position_executable: bool = True,
+) -> TransitionDecision:
+    blockers: list[str] = []
+    if target not in ALLOWED_TRANSITIONS[current]:
+        blockers.append("invalid_transition")
+    if not str(reason).strip():
+        blockers.append("missing_reason")
+    if not risk_allowed:
+        blockers.append("risk_blocked")
+    if not quality_flag:
+        blockers.append("data_quality_blocked")
+    if cooldown_active:
+        blockers.append("cooldown_active")
+    if not position_executable:
+        blockers.append("position_not_executable")
+    return TransitionDecision(
+        allowed=not blockers,
+        state_before=current,
+        state_after=target,
+        reason=reason,
+        blockers=tuple(blockers),
+    )
 
 
 class EntryStateMachine:
@@ -2734,77 +3456,193 @@ class EntryStateMachine:
         self,
         target: EntryState,
         reason: str,
-        ts: int,
+        ts: Any,
         price: float,
         position_size: float = 0.0,
         risk_value: float = 0.0,
+        *,
+        signal_type: str = "NO_TRADE",
+        entry_mode: str = "NONE",
+        risk_level: str = "NORMAL",
+        quality_flag: bool = True,
+        risk_allowed: bool = True,
+        cooldown_active: bool = False,
+        position_executable: bool = True,
+        source: str = "state_machine",
+        version: str = ENTRY_STATE_VERSION,
     ) -> EntryTransition:
-        source = self.current_state
-        transition(source, target)
-        record = EntryTransition(self.symbol, source, target, reason, ts, price, position_size, risk_value)
+        source_state = self.current_state
+        decision = evaluate_transition(
+            source_state,
+            target,
+            reason=reason,
+            risk_allowed=risk_allowed,
+            quality_flag=quality_flag,
+            cooldown_active=cooldown_active,
+            position_executable=position_executable,
+        )
+        if not decision.allowed:
+            raise ValueError(
+                f"blocked transition: {source_state.value} -> {target.value}; blockers={','.join(decision.blockers)}"
+            )
+        record = EntryTransition(
+            symbol=self.symbol,
+            from_state=source_state,
+            to_state=target,
+            reason=reason,
+            ts=ts,
+            price=price,
+            signal_type=signal_type,
+            entry_mode=entry_mode,
+            risk_level=risk_level,
+            quality_flag=quality_flag,
+            version=version,
+            source=source,
+            position_size=position_size,
+            risk_value=risk_value,
+        )
         self.current_state = target
         self.history.append(record)
         return record
 
     def apply_signal(
         self,
-        signal: dict,
-        ts: int,
+        signal: Mapping[str, Any],
+        ts: Any,
         price: float,
         position_size: float = 0.0,
         risk_value: float = 0.0,
     ) -> list[EntryTransition]:
         signal_type = str(signal.get("signal_type", "")).upper()
-        side = str(signal.get("side", "")).upper()
-        reason = str(signal.get("reason", signal_type))
-        if signal_type in {"WAIT", "NO_TRADE"}:
+        side = str(signal.get("side", signal.get("signal_side", ""))).upper()
+        entry_mode = str(signal.get("entry_mode", signal.get("mode", signal_type))).upper()
+        reason = str(signal.get("reason", signal_type or entry_mode))
+        quality_flag = bool(signal.get("quality_flag", True))
+        risk_level = str(signal.get("risk_level", "NORMAL")).upper()
+
+        if signal_type in {"WAIT", "NO_TRADE"} or entry_mode == "NONE":
             return []
         if self.current_state != EntryState.FLAT:
             raise ValueError(f"signal entries require FLAT state, got {self.current_state.value}")
-        if signal_type == "DIRECT" and side == "LONG":
-            return [
-                self.apply_transition(EntryState.WATCH_LONG, reason, ts, price, position_size, risk_value),
-                self.apply_transition(EntryState.DIRECT_LONG, reason, ts, price, position_size, risk_value),
-            ]
-        if signal_type == "DIRECT" and side == "SHORT":
-            return [
-                self.apply_transition(EntryState.WATCH_SHORT, reason, ts, price, position_size, risk_value),
-                self.apply_transition(EntryState.DIRECT_SHORT, reason, ts, price, position_size, risk_value),
-            ]
-        if signal_type == "PROBE" and side == "LONG":
-            return [
-                self.apply_transition(EntryState.WATCH_LONG, reason, ts, price, position_size, risk_value),
-                self.apply_transition(EntryState.PROBE_LONG, reason, ts, price, position_size, risk_value),
-            ]
-        if signal_type == "PROBE" and side == "SHORT":
-            return [
-                self.apply_transition(EntryState.WATCH_SHORT, reason, ts, price, position_size, risk_value),
-                self.apply_transition(EntryState.PROBE_SHORT, reason, ts, price, position_size, risk_value),
-            ]
-        raise ValueError(f"unsupported signal: {signal_type}/{side}")
 
-    def maybe_upgrade_probe(self, r_multiple: float, ts: int, price: float) -> EntryTransition | None:
+        target = _entry_target(signal_type, side, entry_mode)
+        if target is None:
+            raise ValueError(f"unsupported signal: {signal_type}/{side}/{entry_mode}")
+        return [
+            self.apply_transition(
+                target,
+                reason,
+                ts,
+                price,
+                position_size,
+                risk_value,
+                signal_type=signal_type,
+                entry_mode=_entry_mode_from_state(target),
+                risk_level=risk_level,
+                quality_flag=quality_flag,
+                source="signal_engine",
+            )
+        ]
+
+    def maybe_upgrade_probe(self, r_multiple: float, ts: Any, price: float) -> EntryTransition | None:
         if r_multiple < 1.0:
             return None
         if self.current_state == EntryState.PROBE_LONG:
-            return self.apply_transition(EntryState.DIRECT_LONG, "probe reached 1R", ts, price)
+            return self.apply_transition(
+                EntryState.DIRECT_LONG,
+                "probe reached 1R",
+                ts,
+                price,
+                signal_type="LONG",
+                entry_mode="DIRECT",
+                source="signal_engine",
+            )
         if self.current_state == EntryState.PROBE_SHORT:
-            return self.apply_transition(EntryState.DIRECT_SHORT, "probe reached 1R", ts, price)
+            return self.apply_transition(
+                EntryState.DIRECT_SHORT,
+                "probe reached 1R",
+                ts,
+                price,
+                signal_type="SHORT",
+                entry_mode="DIRECT",
+                source="signal_engine",
+            )
         return None
 
-    def exit_current(self, reason: str, ts: int, price: float) -> list[EntryTransition]:
+    def mark_position_opened(self, reason: str, ts: Any, price: float) -> EntryTransition | None:
+        if self.current_state == EntryState.PROBE_LONG:
+            return self.apply_transition(EntryState.MANAGE_LONG, reason, ts, price, source="execution_result")
+        if self.current_state == EntryState.PROBE_SHORT:
+            return self.apply_transition(EntryState.MANAGE_SHORT, reason, ts, price, source="execution_result")
+        if self.current_state == EntryState.DIRECT_LONG:
+            return self.apply_transition(EntryState.MANAGE_LONG, reason, ts, price, source="execution_result")
+        if self.current_state == EntryState.DIRECT_SHORT:
+            return self.apply_transition(EntryState.MANAGE_SHORT, reason, ts, price, source="execution_result")
+        return None
+
+    def rollback_rejected_order(self, reason: str, ts: Any, price: float) -> EntryTransition | None:
+        if self.current_state in {
+            EntryState.PROBE_LONG,
+            EntryState.PROBE_SHORT,
+            EntryState.DIRECT_LONG,
+            EntryState.DIRECT_SHORT,
+        }:
+            return self.apply_transition(EntryState.FLAT, reason, ts, price, source="execution_result")
+        return None
+
+    def exit_current(self, reason: str, ts: Any, price: float) -> list[EntryTransition]:
         if self.current_state in {EntryState.FLAT, EntryState.WATCH_LONG, EntryState.WATCH_SHORT}:
             return []
         if self.current_state in {EntryState.PROBE_LONG, EntryState.DIRECT_LONG, EntryState.MANAGE_LONG}:
             exit_state = EntryState.EXIT_LONG
         elif self.current_state in {EntryState.PROBE_SHORT, EntryState.DIRECT_SHORT, EntryState.MANAGE_SHORT}:
             exit_state = EntryState.EXIT_SHORT
+        elif self.current_state in {EntryState.EXIT_LONG, EntryState.EXIT_SHORT}:
+            exit_state = self.current_state
         else:
             raise ValueError(f"cannot exit from {self.current_state.value}")
-        return [
-            self.apply_transition(exit_state, reason, ts, price),
-            self.apply_transition(EntryState.FLAT, reason, ts, price),
-        ]
+
+        records: list[EntryTransition] = []
+        if self.current_state != exit_state:
+            records.append(self.apply_transition(exit_state, reason, ts, price, source="risk_engine"))
+        records.append(self.apply_transition(EntryState.FLAT, reason, ts, price, source="position_sync"))
+        return records
+
+
+class EntryStateStore:
+    def __init__(self) -> None:
+        self._machines: dict[str, EntryStateMachine] = {}
+
+    def get(self, symbol: str) -> EntryStateMachine:
+        normalized = symbol.upper()
+        if normalized not in self._machines:
+            self._machines[normalized] = EntryStateMachine(normalized)
+        return self._machines[normalized]
+
+    def state_of(self, symbol: str) -> EntryState:
+        return self.get(symbol).current_state
+
+
+def _entry_target(signal_type: str, side: str, entry_mode: str) -> EntryState | None:
+    mode = entry_mode if entry_mode in {"PROBE", "DIRECT"} else signal_type
+    direction = side if side in {"LONG", "SHORT"} else signal_type
+    if mode == "PROBE" and direction == "LONG":
+        return EntryState.PROBE_LONG
+    if mode == "PROBE" and direction == "SHORT":
+        return EntryState.PROBE_SHORT
+    if mode == "DIRECT" and direction == "LONG":
+        return EntryState.DIRECT_LONG
+    if mode == "DIRECT" and direction == "SHORT":
+        return EntryState.DIRECT_SHORT
+    return None
+
+
+def _entry_mode_from_state(state: EntryState) -> str:
+    if state in {EntryState.PROBE_LONG, EntryState.PROBE_SHORT}:
+        return "PROBE"
+    if state in {EntryState.DIRECT_LONG, EntryState.DIRECT_SHORT}:
+        return "DIRECT"
+    return "NONE"
 """,
     "src/risk/__init__.py": '"""Risk controls and sizing."""',
     "src/risk/position_sizer.py": """
@@ -4381,14 +5219,29 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.state_machine.entry_state_machine import ALLOWED_TRANSITIONS, EntryState
+from src.state_machine.entry_state_machine import (
+    ALLOWED_TRANSITIONS,
+    ENTRY_STATE_CATEGORIES,
+    ENTRY_STATE_FORBIDDEN_ACTIONS,
+    ENTRY_STATE_VERSION,
+    TRANSITION_BLOCKERS,
+    TRANSITION_LOG_FIELDS,
+    TRANSITION_SOURCES,
+    EntryState,
+)
 
 
 def main() -> None:
     payload = {
+        "version": ENTRY_STATE_VERSION,
         "initial_state": EntryState.FLAT.value,
         "states": [state.value for state in EntryState],
+        "state_categories": ENTRY_STATE_CATEGORIES,
         "probe_upgrade_r": 1.0,
+        "required_log_fields": list(TRANSITION_LOG_FIELDS),
+        "transition_sources": list(TRANSITION_SOURCES),
+        "transition_blockers": list(TRANSITION_BLOCKERS),
+        "forbidden_actions": list(ENTRY_STATE_FORBIDDEN_ACTIONS),
         "allowed_transitions": {
             state.value: sorted(target.value for target in targets)
             for state, targets in ALLOWED_TRANSITIONS.items()
@@ -4580,14 +5433,36 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.core.strategy_philosophy import TIMEFRAME_ROLES
+from src.context.multi_tf_rules import (
+    TIMEFRAME_FORBIDDEN_ACTIONS,
+    TIMEFRAME_OUTPUT_FIELDS,
+    TIMEFRAME_PRIORITY,
+    TIMEFRAME_ROLES,
+    TIMEFRAME_STATE_SETS,
+)
 
 
 def main() -> None:
     payload = {
         "roles": TIMEFRAME_ROLES,
+        "priority": TIMEFRAME_PRIORITY,
+        "output_fields": TIMEFRAME_OUTPUT_FIELDS,
+        "state_sets": TIMEFRAME_STATE_SETS,
         "outputs": ["DIRECT", "PROBE", "WAIT", "NO_TRADE"],
-        "rule": "4h is reference only; 1h permission controls direction",
+        "rule": "4h is reference only; 1h permission controls direction; 15m controls timing only",
+        "conflict_policy": {
+            "4h_vs_1h": "downgrade_direct_to_probe_or_wait",
+            "1h_vs_30m": "weak_quality_cannot_direct",
+            "30m_vs_15m": "wait_when_trigger_missing",
+            "15m_vs_cvd": "divergence_downgrades_to_wait_or_no_trade",
+        },
+        "signal_mapping_examples": [
+            {"4h": "NEUTRAL", "1h": "LONG_ALLOWED", "30m": "CONFIRMED", "15m": "DIRECT", "signal": "DIRECT_LONG"},
+            {"4h": "BULL", "1h": "LONG_ALLOWED", "30m": "WEAK", "15m": "DIRECT", "signal": "PROBE_LONG"},
+            {"4h": "BEAR", "1h": "NO_TRADE", "30m": "CONFIRMED", "15m": "DIRECT", "signal": "NO_TRADE"},
+            {"4h": "NEUTRAL", "1h": "SHORT_ALLOWED", "30m": "TRANSITION", "15m": "WAIT", "signal": "WAIT_SHORT"},
+        ],
+        "forbidden_actions": TIMEFRAME_FORBIDDEN_ACTIONS,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
@@ -4607,15 +5482,35 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.indicators.indicator_spec import DEFAULT_INDICATOR_PARAMS, INDICATOR_PRIORITY, INDICATOR_RESPONSIBILITIES
+from src.data.data_contract import INDICATOR_REQUIRED_OUTPUTS, QUALITY_FLAGS
+from src.indicators.indicator_spec import (
+    DEFAULT_INDICATOR_PARAMS,
+    GLOBAL_FORBIDDEN_INDICATOR_ACTIONS,
+    INDICATOR_CACHE_FIELDS,
+    INDICATOR_CONFLICT_PRIORITY,
+    INDICATOR_FORBIDDEN_USAGES,
+    INDICATOR_INPUT_FIELDS,
+    INDICATOR_NAMES,
+    INDICATOR_OUTPUT_FIELDS,
+    INDICATOR_RESPONSIBILITIES,
+    TIMEFRAME_INDICATOR_MAP,
+)
 
 
 def main() -> None:
     payload = {
+        "indicator_names": INDICATOR_NAMES,
         "params": DEFAULT_INDICATOR_PARAMS,
         "responsibilities": INDICATOR_RESPONSIBILITIES,
-        "priority": INDICATOR_PRIORITY,
-        "forbidden": ["ATR direction"],
+        "input_fields": INDICATOR_INPUT_FIELDS,
+        "output_fields": INDICATOR_OUTPUT_FIELDS,
+        "quality_flags": QUALITY_FLAGS,
+        "required_outputs": INDICATOR_REQUIRED_OUTPUTS,
+        "timeframe_indicator_map": TIMEFRAME_INDICATOR_MAP,
+        "conflict_priority": INDICATOR_CONFLICT_PRIORITY,
+        "forbidden_usages": INDICATOR_FORBIDDEN_USAGES,
+        "global_forbidden_actions": GLOBAL_FORBIDDEN_INDICATOR_ACTIONS,
+        "cache_fields": INDICATOR_CACHE_FIELDS,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
@@ -4754,6 +5649,19 @@ from src.core.strategy_philosophy import (
     UNCERTAINTY_ACTIONS,
     UNCERTAINTY_FORBIDDEN_ACTIONS,
 )
+from src.data.universe_filter import (
+    MAX_MISSING_BAR_RATIO,
+    MAX_SPREAD_PCT,
+    MAX_SYMBOLS,
+    MAX_SYMBOLS_HARD_CAP,
+    MEME_POLICY,
+    MIN_LISTING_DAYS,
+    RECOMMENDED_MIN_24H_VOLUME_USD,
+    REQUIRED_TIMEFRAMES,
+    UNIVERSE_SCOPE,
+    UNIVERSE_STATUSES,
+    UPDATE_FREQUENCY,
+)
 
 
 def main() -> None:
@@ -4803,7 +5711,17 @@ def main() -> None:
             "forbidden_patterns": PHILOSOPHY_FORBIDDEN_PATTERNS,
         },
         "universe": {
-            "max_symbols": 20,
+            "scope": UNIVERSE_SCOPE,
+            "max_symbols": MAX_SYMBOLS,
+            "max_symbols_hard_cap": MAX_SYMBOLS_HARD_CAP,
+            "min_24h_volume_usd": RECOMMENDED_MIN_24H_VOLUME_USD,
+            "min_listing_days": MIN_LISTING_DAYS,
+            "max_spread_pct": MAX_SPREAD_PCT,
+            "max_missing_bar_ratio": MAX_MISSING_BAR_RATIO,
+            "update_frequency": UPDATE_FREQUENCY,
+            "required_timeframes": REQUIRED_TIMEFRAMES,
+            "statuses": UNIVERSE_STATUSES,
+            "meme_policy": MEME_POLICY,
             "max_simultaneous_positions": 5,
             "recommended_positions": 3,
             "single_symbol_exposure": 0.20,
@@ -5035,11 +5953,33 @@ def test_describe_project_rules_outputs_expanded_project_overview_contract():
     ]
     assert project["implementation_principles"][0] == "contract_first"
     assert "stable_position_and_order_recovery" in project["operational_success_standards"]
+
+
+def test_describe_project_rules_outputs_expanded_market_universe_contract():
+    result = subprocess.run(
+        [sys.executable, "scripts/describe_project_rules.py"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    universe = payload["universe"]
+    assert universe["scope"] == "binance_usdt_perpetual"
+    assert universe["max_symbols"] == 20
+    assert universe["max_symbols_hard_cap"] == 30
+    assert universe["min_24h_volume_usd"] == 300000000
+    assert universe["min_listing_days"] == 365
+    assert universe["max_spread_pct"] == 0.05
+    assert universe["required_timeframes"] == ["15m", "30m", "1h", "4h"]
+    assert universe["statuses"] == ["ACTIVE", "SUSPENDED", "REMOVED"]
 """,
     "tests/test_framework_scaffold.py": """
+from pathlib import Path
+
 from src.backtest.fill_model import next_bar_market_fill
 from src.risk.position_sizer import reject_if_below_min_notional, size_notional
 from src.state_machine.entry_state_machine import EntryState, transition
+from scripts.scaffold_ai300_framework import FILES
 
 
 def test_probe_is_quarter_direct():
@@ -5060,6 +6000,195 @@ def test_buy_slippage_increases_price():
 
 def test_valid_state_transition():
     assert transition(EntryState.FLAT, EntryState.WATCH_LONG) == EntryState.WATCH_LONG
+
+
+def test_scaffold_includes_signal_engine_16_templates():
+    assert "src/signals/signal_engine.py" in FILES
+    assert "scripts/describe_signal_engine.py" in FILES
+    assert "tests/test_signal_engine.py" in FILES
+    assert "tests/test_describe_signal_engine.py" in FILES
+    assert "SignalResult" in FILES["src/signals/signal_engine.py"]
+
+
+def test_scaffold_includes_risk_engine_17_templates():
+    assert "src/risk/risk_engine.py" in FILES
+    assert "scripts/describe_risk_engine.py" in FILES
+    assert "tests/test_risk_engine.py" in FILES
+    assert "tests/test_describe_risk_engine.py" in FILES
+    assert "RiskResult" in FILES["src/risk/risk_engine.py"]
+
+
+def test_scaffold_includes_execution_engine_18_templates():
+    assert "src/execution/execution_engine.py" in FILES
+    assert "scripts/describe_execution_engine.py" in FILES
+    assert "tests/test_execution_engine.py" in FILES
+    assert "tests/test_describe_execution_engine.py" in FILES
+    assert "ExecutionEngine" in FILES["src/execution/execution_engine.py"]
+
+
+def test_scaffold_includes_backtest_engine_19_templates():
+    assert "src/backtest/engine.py" in FILES
+    assert "scripts/describe_backtest_engine.py" in FILES
+    assert "tests/test_backtest_engine.py" in FILES
+    assert "tests/test_describe_backtest_engine.py" in FILES
+    assert "BacktestRequest" in FILES["src/backtest/engine.py"]
+    assert "BACKTEST_STEP_ORDER" in FILES["src/backtest/engine.py"]
+
+
+def test_scaffold_includes_deployment_architecture_20_templates():
+    assert "src/deployment/deployment_architecture.py" in FILES
+    assert "scripts/describe_deployment_architecture.py" in FILES
+    assert "tests/test_deployment_architecture.py" in FILES
+    assert "tests/test_describe_deployment_architecture.py" in FILES
+    assert "DeploymentPlan" in FILES["src/deployment/deployment_architecture.py"]
+    assert "PROTECTION_MODE_TRIGGERS" in FILES["src/deployment/deployment_architecture.py"]
+
+
+def test_scaffold_includes_expanded_strategy_philosophy_templates():
+    template = FILES["src/core/strategy_philosophy.py"]
+    assert "STRATEGY_IDENTITY" in template
+    assert "DECISION_PRIORITY" in template
+    assert "PHILOSOPHY_FORBIDDEN_PATTERNS" in template
+    assert "validate_uncertainty_response" in template
+    assert "validate_long_short_symmetry" in template
+
+
+def test_scaffold_templates_include_expanded_project_contract():
+    content = Path("scripts/scaffold_ai300_framework.py").read_text(encoding="utf-8")
+    assert 'PROJECT_NAME = "多周期主流虚拟币趋势交易系统"' in content
+    assert '"background_reference_only"' in content
+    assert '"position_sizing"' in content
+    assert '"monitoring"' in content
+    assert "stable_position_and_order_recovery" in content
+
+
+def test_scaffold_still_protects_binance_client():
+    content = Path("scripts/scaffold_ai300_framework.py").read_text(encoding="utf-8")
+    assert "src/api/binance_client.py" in content
+    assert "scaffold must not modify src/binance_client.py" in content
+
+
+def test_scaffold_includes_expanded_market_universe_templates():
+    template = FILES["src/data/universe_filter.py"]
+    assert "UNIVERSE_SCOPE" in template
+    assert "UniverseSnapshot" in template
+    assert "validate_snapshot_for_backtest" in template
+    assert "MAX_MISSING_BAR_RATIO" in template
+""",
+    "tests/test_market_universe.py": """
+from src.data.universe_filter import (
+    MAX_MISSING_BAR_RATIO,
+    MAX_SPREAD_PCT,
+    MAX_SYMBOLS,
+    MAX_SYMBOLS_HARD_CAP,
+    MIN_LISTING_DAYS,
+    RECOMMENDED_MIN_24H_VOLUME_USD,
+    REQUIRED_TIMEFRAMES,
+    UNIVERSE_SCOPE,
+    UNIVERSE_STATUSES,
+    UniverseCandidate,
+    UniverseMember,
+    UniverseSnapshot,
+    build_universe_snapshot,
+    choose_by_correlation_preference,
+    filter_universe,
+    get_risk_tier,
+    max_position_multiplier,
+    validate_candidate,
+    validate_snapshot_for_backtest,
+)
+
+
+def test_filter_universe_keeps_valid_usdt_perps_only():
+    candidates = [
+        UniverseCandidate("BTCUSDT", 1, 2_000_000_000, 500, 365, False, False),
+        UniverseCandidate("DOGEUSDT", 9, 500_000_000, 0.25, 365, True, False),
+        UniverseCandidate("NEWUSDT", 18, 100_000_000, 10, 10, False, False),
+        UniverseCandidate("ETHBTC", 2, 1_000_000_000, 1, 365, False, False),
+    ]
+    selected = filter_universe(candidates, max_symbols=20, min_volume_24h=50_000_000)
+    assert [item.symbol for item in selected] == ["BTCUSDT"]
+
+
+def test_risk_tiers_and_multipliers():
+    assert get_risk_tier("BTCUSDT") == "A"
+    assert max_position_multiplier("ETHUSDT") == 2.0
+    assert max_position_multiplier("SOLUSDT") == 1.0
+    assert max_position_multiplier("LINKUSDT") == 0.75
+
+
+def test_correlation_preference_prefers_btc_over_eth():
+    selected = choose_by_correlation_preference(["ETHUSDT", "BTCUSDT"])
+    assert selected == ["BTCUSDT"]
+
+
+def test_universe_v1_thresholds_match_doc():
+    assert UNIVERSE_SCOPE == "binance_usdt_perpetual"
+    assert MAX_SYMBOLS == 20
+    assert MAX_SYMBOLS_HARD_CAP == 30
+    assert RECOMMENDED_MIN_24H_VOLUME_USD == 300_000_000
+    assert MIN_LISTING_DAYS == 365
+    assert MAX_SPREAD_PCT == 0.05
+    assert MAX_MISSING_BAR_RATIO == 0.005
+    assert REQUIRED_TIMEFRAMES == ("15m", "30m", "1h", "4h")
+    assert UNIVERSE_STATUSES == ("ACTIVE", "SUSPENDED", "REMOVED")
+
+
+def test_validate_candidate_rejects_spread_missing_history_and_monitoring_tag():
+    good = UniverseCandidate(
+        "BTCUSDT",
+        market_cap_rank=1,
+        volume_24h=1_000_000_000,
+        price=50_000,
+        listed_days=1000,
+        contract_type="USDT_PERPETUAL",
+        quote_asset="USDT",
+        volume_rank=1,
+        spread_pct=0.03,
+        missing_bar_ratio=0.0,
+        timeframes=("15m", "30m", "1h", "4h"),
+    )
+    assert validate_candidate(good).passed is True
+
+    wide = good.with_updates(symbol="WIDEUSDT", spread_pct=0.20)
+    assert validate_candidate(wide).passed is False
+
+    missing = good.with_updates(symbol="MISSUSDT", missing_bar_ratio=0.01)
+    assert validate_candidate(missing).passed is False
+
+    monitored = good.with_updates(symbol="TAGUSDT", monitoring_tag=True)
+    assert validate_candidate(monitored).passed is False
+
+
+def test_universe_snapshot_tracks_version_status_and_reasons():
+    member = UniverseMember(
+        symbol="BTCUSDT",
+        market_cap_rank=1,
+        volume_rank=1,
+        status="ACTIVE",
+        added_time=1_700_000_000,
+        removed_time=None,
+        version="2026W01",
+        reason="passes_v1_filters",
+    )
+    snapshot = build_universe_snapshot("2026W01", [member], created_at=1_700_000_000)
+
+    assert snapshot.version == "2026W01"
+    assert snapshot.active_symbols() == ["BTCUSDT"]
+    assert snapshot.members[0].reason == "passes_v1_filters"
+
+
+def test_backtest_must_use_historical_universe_version():
+    snapshot = UniverseSnapshot(
+        version="2026W01",
+        members=[],
+        created_at=1_700_000_000,
+        effective_from=1_700_000_000,
+        effective_to=1_700_604_800,
+        update_reason="weekly_refresh",
+    )
+    assert validate_snapshot_for_backtest(snapshot, backtest_start=1_700_100_000).passed is True
+    assert validate_snapshot_for_backtest(snapshot, backtest_start=1_600_000_000).passed is False
 """,
     "tests/test_position_sizing.py": """
 import pytest
@@ -9615,4 +10744,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
 

@@ -1,0 +1,19 @@
+{
+  "direct_threshold": 84.0,
+  "probe_threshold": 72.0,
+  "watch_threshold": 60.0,
+  "daily_max_trades_base": 4,
+  "max_symbol_trades_per_day": 1,
+  "max_active_symbols": 5,
+  "direct_risk_pct": 0.006,
+  "probe_risk_pct": 0.0025,
+  "max_total_exposure_pct": 1.2,
+  "max_same_direction_exposure_pct": 0.9,
+  "margin_buffer_pct": 0.30,
+  "use_ema_architecture": true,
+  "ema200_gate_mode": "hard",
+  "ema200_buffer_pct": 0.003,
+  "ema200_min_bars_stable": 3,
+  "ema50_min_for_direct": 0.60,
+  "ema50_min_for_probe": 0.40
+}

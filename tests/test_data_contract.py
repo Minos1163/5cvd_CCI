@@ -249,6 +249,16 @@ def test_indicator_contract_fields_and_required_outputs_match_doc():
         "quality_flag",
     ]
     assert INDICATOR_REQUIRED_OUTPUTS["MACD"] == ["macd_line", "signal_line", "histogram", "histogram_slope", "cross_state"]
+    assert INDICATOR_REQUIRED_OUTPUTS["EMA"] == [
+        "ema_9",
+        "ema_21",
+        "ema_50",
+        "ema_200",
+        "ema50_slope",
+        "ema9_21_gap",
+        "bars_since_ema50_cross",
+        "bars_since_ema200_cross",
+    ]
     assert INDICATOR_REQUIRED_OUTPUTS["ATR"] == ["atr", "atr_pct", "volatility_state"]
 
 

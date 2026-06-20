@@ -12,6 +12,7 @@ from src.execution.live_execution_contract import (
     SUPPORTED_ORDER_TYPES,
     ExecutionInstruction,
     ExecutionResponse,
+    ExecutionValidation,
     build_execution_log,
     build_partial_fill_snapshot,
     normalize_reject_reason,
@@ -137,6 +138,7 @@ class ExecutionRequest:
     timestamp: int
     risk_snapshot: Mapping[str, Any] = field(default_factory=dict)
     position_snapshot: Mapping[str, Any] = field(default_factory=dict)
+    entry_chain_snapshot: Mapping[str, Any] = field(default_factory=dict)
 
     def to_instruction(self, client_order_id: str) -> ExecutionInstruction:
         return ExecutionInstruction(
@@ -242,6 +244,33 @@ class ExecutionEngine:
                     executed_notional=0.0,
                     reject_reason=validation.reason,
                     raw_response={"validation": validation.reason},
+                    latency_ms=0,
+                    ts=request.timestamp,
+                ),
+                lifecycle,
+                ["ORDER_REJECTED"],
+                retry_count=0,
+            )
+            self.consecutive_rejects += 1
+            self._results_by_idempotency_key[idempotency_key] = result
+            return result
+
+        entry_chain_validation = validate_entry_chain_execution(request)
+        if not entry_chain_validation.passed:
+            lifecycle.append(self._lifecycle(client_order_id, "rejected", request.timestamp, entry_chain_validation.reason))
+            result = self._result_from_response(
+                request,
+                instruction,
+                ExecutionResponse(
+                    order_id="",
+                    client_order_id=client_order_id,
+                    status="rejected",
+                    filled_qty=0.0,
+                    avg_price=0.0,
+                    commission=0.0,
+                    executed_notional=0.0,
+                    reject_reason=entry_chain_validation.reason,
+                    raw_response={"entry_chain_validation": entry_chain_validation.reason},
                     latency_ms=0,
                     ts=request.timestamp,
                 ),
@@ -409,6 +438,7 @@ class ExecutionEngine:
             "idempotency_key": instruction.client_order_id,
             "forbidden_actions": EXECUTION_FORBIDDEN_ENGINE_ACTIONS,
             "partial_fill": None,
+            "entry_chain_snapshot": dict(request.entry_chain_snapshot),
         }
         if status == "partially_filled":
             metadata["partial_fill"] = build_partial_fill_snapshot(
@@ -458,6 +488,35 @@ def build_execution_idempotency_key(request: ExecutionRequest) -> str:
             request.entry_mode.strip().upper(),
         ]
     )
+
+
+def validate_entry_chain_execution(request: ExecutionRequest) -> ExecutionValidation:
+    if request.reduce_only or request.risk_tag.strip().lower() != "entry":
+        return ExecutionValidation(True, "validated")
+    snapshot = dict(request.entry_chain_snapshot or {})
+    if not snapshot:
+        return ExecutionValidation(False, "entry chain approval is required for entry orders")
+    if not bool(snapshot.get("risk_allowed", False)):
+        return ExecutionValidation(False, "entry chain risk approval is false")
+    approved_action = str(snapshot.get("action", "NO_TRADE")).strip().upper()
+    if approved_action not in {"PROBE", "DIRECT"}:
+        return ExecutionValidation(False, "entry chain action does not allow execution")
+    if _action_rank(request.entry_mode) > _action_rank(approved_action):
+        return ExecutionValidation(False, "execution entry mode exceeds entry chain approval")
+    approved_side = str(snapshot.get("side", "")).strip().upper()
+    if approved_side in {"LONG", "SHORT"} and approved_side != request.expected_position_side.strip().upper():
+        return ExecutionValidation(False, "execution side differs from entry chain approval")
+    reference_price = request.price or request.stop_price or request.take_profit_price
+    notional_hint = float(snapshot.get("notional_hint", 0.0) or 0.0)
+    if reference_price is not None and notional_hint > 0:
+        requested_notional = request.quantity * reference_price
+        if requested_notional > notional_hint + 1e-9:
+            return ExecutionValidation(False, "entry order exceeds entry chain approved notional")
+    return ExecutionValidation(True, "validated")
+
+
+def _action_rank(action: str) -> int:
+    return {"NO_TRADE": 0, "NONE": 0, "WATCH": 1, "PROBE": 2, "DIRECT": 3}.get(action.strip().upper(), 0)
 
 
 def normalize_order_status(status: str) -> str:

@@ -1,0 +1,15 @@
+[Unit]
+Description=AIBOT dry-run strategy observer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/AIBOT
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/AIBOT/.venv/bin/python scripts/run_live_dry_run.py --config configs/entry_chain.dry_run_highest_win.json --target-tier aggressive --market-data-source public-binance --log-root /root/AIBOT/logs --align-to-kline-close --post-close-delay-seconds 5
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

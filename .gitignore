@@ -7,6 +7,8 @@ __pycache__/
 venv/
 env/
 logs/
+/data/
+/reports/
 *.log
 .env
 .env.*

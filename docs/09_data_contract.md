@@ -49,7 +49,7 @@ Version: V1.0
 - 原始市场数据：保存交易所返回的原始行情
 - 标准化行情数据：统一字段、统一时区、统一精度
 - 多周期聚合数据：生成 15m / 30m / 1H / 4H
-- 指标结果数据：保存 MACD、CCI、BOLL、RSI、CVD、ATR 结果
+- 指标结果数据：保存 MACD、CCI、BOLL、EMA、CVD、ATR 结果
 - 策略上下文数据：输出给信号引擎和状态机
 
 ---
@@ -340,22 +340,25 @@ MACD 模块至少输出：
 
 ---
 
-# 14. RSI 数据契约
+# 14. EMA 数据契约
 
-RSI 模块至少输出：
+EMA 模块至少输出：
 
-* `rsi`
-* `rsi_slope`
-* `overbought_flag`
-* `oversold_flag`
-* `midline_state`
+* `ema_9`
+* `ema_21`
+* `ema_50`
+* `ema_200`
+* `ema50_slope`
+* `ema9_21_gap`
+* `bars_since_ema50_cross`
+* `bars_since_ema200_cross`
 
 用于判断：
 
-* 超买超卖
-* 回调质量
-* 趋势恢复
-* 入场是否过热
+* EMA200 方向合法性
+* EMA50 趋势质量
+* EMA9/21 短线动量共振
+* 均线穿越后的稳定程度
 
 ---
 
@@ -698,8 +701,3 @@ StrategyContext {
 因此，任何模块的第一准则都是：
 
 先看数据契约，再写逻辑。
-
-```
-
-如果你要，我下一步可以把 :contentReference[oaicite:0]{index=0}，方便你直接交给 Codex。
-```

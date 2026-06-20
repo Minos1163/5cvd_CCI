@@ -83,9 +83,23 @@ def valid_request(**overrides):
     return ExecutionRequest(**values)
 
 
+def entry_chain_snapshot(**overrides):
+    values = {
+        "action": "DIRECT",
+        "side": "LONG",
+        "risk_allowed": True,
+        "notional_hint": 5_000.0,
+        "max_symbol_exposure_pct": 0.30,
+        "score": 88.0,
+        "reasons": ["ALL_GATES_PASSED"],
+    }
+    values.update(overrides)
+    return values
+
+
 def test_submit_market_order_records_result_lifecycle_and_events():
     engine = ExecutionEngine(FakeAdapter())
-    result = engine.submit_order(valid_request())
+    result = engine.submit_order(valid_request(entry_chain_snapshot=entry_chain_snapshot()))
 
     assert result.status == "filled"
     assert result.client_order_id == "BTCUSDT:evt-1:DIRECT_LONG:BUY:DIRECT"
@@ -104,8 +118,9 @@ def test_submit_market_order_records_result_lifecycle_and_events():
 def test_idempotent_duplicate_request_returns_cached_result():
     adapter = FakeAdapter()
     engine = ExecutionEngine(adapter)
-    first = engine.submit_order(valid_request())
-    second = engine.submit_order(valid_request())
+    request = valid_request(entry_chain_snapshot=entry_chain_snapshot())
+    first = engine.submit_order(request)
+    second = engine.submit_order(request)
 
     assert first is second
     assert adapter.submit_calls == 1
@@ -127,7 +142,7 @@ def test_partial_fill_is_reported_without_new_signal_or_auto_fill():
         submit_response={"order_id": "ord-2", "status": "partially_filled", "filled_qty": 0.04, "avg_price": 50_000}
     )
     engine = ExecutionEngine(adapter)
-    result = engine.submit_order(valid_request())
+    result = engine.submit_order(valid_request(entry_chain_snapshot=entry_chain_snapshot()))
 
     assert result.status == "partially_filled"
     assert result.metadata["partial_fill"] == {
@@ -144,7 +159,7 @@ def test_partial_fill_is_reported_without_new_signal_or_auto_fill():
 def test_rejected_exchange_response_is_normalized_and_counted():
     adapter = FakeAdapter(submit_response={"status": "rejected", "message": "-2019 margin insufficient"})
     engine = ExecutionEngine(adapter)
-    result = engine.submit_order(valid_request())
+    result = engine.submit_order(valid_request(entry_chain_snapshot=entry_chain_snapshot()))
 
     assert result.status == "rejected"
     assert result.reject_reason == "INSUFFICIENT_MARGIN"
@@ -177,7 +192,7 @@ def test_sync_failure_enters_protection_mode_after_threshold():
 def test_retry_reuses_same_instruction_for_retryable_error():
     adapter = FakeAdapter(submit_errors=["timeout waiting exchange"])
     engine = ExecutionEngine(adapter)
-    result = engine.submit_order(valid_request())
+    result = engine.submit_order(valid_request(entry_chain_snapshot=entry_chain_snapshot()))
 
     assert result.status == "filled"
     assert result.metadata["retry_count"] == 1
@@ -188,7 +203,7 @@ def test_retry_reuses_same_instruction_for_retryable_error():
 def test_non_retryable_error_rejects_without_changing_intent():
     adapter = FakeAdapter(submit_errors=["precision over maximum"])
     engine = ExecutionEngine(adapter)
-    result = engine.submit_order(valid_request())
+    result = engine.submit_order(valid_request(entry_chain_snapshot=entry_chain_snapshot()))
 
     assert result.status == "rejected"
     assert result.reject_reason == "PRECISION_ERROR"
@@ -209,9 +224,51 @@ def test_execution_engine_public_contract_constants():
     assert normalize_order_status("cancelled") == "canceled"
 
 
+def test_live_entry_request_requires_entry_chain_approval():
+    adapter = FakeAdapter()
+    engine = ExecutionEngine(adapter)
+    result = engine.submit_order(valid_request())
+
+    assert result.status == "rejected"
+    assert result.reject_reason == "entry chain approval is required for entry orders"
+    assert adapter.submit_calls == 0
+
+
+def test_execution_cannot_upgrade_probe_to_direct():
+    adapter = FakeAdapter()
+    engine = ExecutionEngine(adapter)
+    result = engine.submit_order(
+        valid_request(
+            entry_mode="DIRECT",
+            strategy_state="DIRECT_LONG",
+            entry_chain_snapshot=entry_chain_snapshot(action="PROBE"),
+        )
+    )
+
+    assert result.status == "rejected"
+    assert result.reject_reason == "execution entry mode exceeds entry chain approval"
+    assert adapter.submit_calls == 0
+
+
+def test_execution_rejects_order_above_entry_chain_notional_hint():
+    adapter = FakeAdapter()
+    engine = ExecutionEngine(adapter)
+    result = engine.submit_order(
+        valid_request(
+            quantity=0.2,
+            price=50_000,
+            entry_chain_snapshot=entry_chain_snapshot(notional_hint=5_000.0),
+        )
+    )
+
+    assert result.status == "rejected"
+    assert result.reject_reason == "entry order exceeds entry chain approved notional"
+    assert adapter.submit_calls == 0
+
+
 def test_unknown_lifecycle_status_is_not_accepted():
     engine = ExecutionEngine(FakeAdapter(submit_response={"status": "mystery"}))
-    result = engine.submit_order(valid_request())
+    result = engine.submit_order(valid_request(entry_chain_snapshot=entry_chain_snapshot()))
 
     assert result.status == "rejected"
     assert result.events == ["ORDER_SUBMITTED", "ORDER_REJECTED"]

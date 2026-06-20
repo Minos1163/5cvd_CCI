@@ -1,0 +1,6 @@
+# Runtime dependencies for AI300 dry-run/backtest tooling.
+requests>=2.31,<3
+urllib3>=2,<3
+
+# Test/development verification.
+pytest>=8,<9

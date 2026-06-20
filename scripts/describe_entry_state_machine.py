@@ -9,14 +9,29 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.state_machine.entry_state_machine import ALLOWED_TRANSITIONS, EntryState
+from src.state_machine.entry_state_machine import (
+    ALLOWED_TRANSITIONS,
+    ENTRY_STATE_CATEGORIES,
+    ENTRY_STATE_FORBIDDEN_ACTIONS,
+    ENTRY_STATE_VERSION,
+    TRANSITION_BLOCKERS,
+    TRANSITION_LOG_FIELDS,
+    TRANSITION_SOURCES,
+    EntryState,
+)
 
 
 def main() -> None:
     payload = {
+        "version": ENTRY_STATE_VERSION,
         "initial_state": EntryState.FLAT.value,
         "states": [state.value for state in EntryState],
+        "state_categories": ENTRY_STATE_CATEGORIES,
         "probe_upgrade_r": 1.0,
+        "required_log_fields": list(TRANSITION_LOG_FIELDS),
+        "transition_sources": list(TRANSITION_SOURCES),
+        "transition_blockers": list(TRANSITION_BLOCKERS),
+        "forbidden_actions": list(ENTRY_STATE_FORBIDDEN_ACTIONS),
         "allowed_transitions": {
             state.value: sorted(target.value for target in targets)
             for state, targets in ALLOWED_TRANSITIONS.items()

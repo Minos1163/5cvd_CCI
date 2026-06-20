@@ -37,8 +37,14 @@ def test_config_schema_lists_required_files_sections_and_precedence():
     assert CONFIG_PRECEDENCE == ["default", "environment", "user_override"]
     assert CONFIG_REQUIRED_FIELDS["strategy.yaml"][0] == "version"
     assert "strategy.timeframes.trigger" in CONFIG_REQUIRED_FIELDS["strategy.yaml"]
+    assert "indicators.ema.fast" in CONFIG_REQUIRED_FIELDS["strategy.yaml"]
+    assert "indicators.ema.gate" in CONFIG_REQUIRED_FIELDS["strategy.yaml"]
+    assert "entry.ema200_gate_mode" in CONFIG_REQUIRED_FIELDS["strategy.yaml"]
+    assert "indicators.rsi.period" not in CONFIG_REQUIRED_FIELDS["strategy.yaml"]
+    assert "entry.rsi_reclaim" not in CONFIG_REQUIRED_FIELDS["strategy.yaml"]
     assert "risk.risk_per_trade_pct" in CONFIG_REQUIRED_FIELDS["risk.yaml"]
     assert "execution.exchange" in CONFIG_REQUIRED_FIELDS["execution.yaml"]
+    assert "universe.update_frequency" in CONFIG_REQUIRED_FIELDS["universe.yaml"]
 
 
 def test_existing_configs_validate_against_schema():
@@ -103,3 +109,13 @@ def test_config_forbidden_rules_match_doc_boundary():
         "module_mutates_config",
         "hot_update_strategy_core",
     ]
+
+
+def test_universe_config_requires_v1_market_universe_fields():
+    required = CONFIG_REQUIRED_FIELDS["universe.yaml"]
+    assert "universe.update_frequency" in required
+    assert "universe.min_24h_volume_usd" in required
+    assert "universe.min_listing_days" in required
+    assert "universe.max_spread_pct" in required
+    assert "universe.max_missing_bar_ratio" in required
+    assert "universe.universe_version" in required

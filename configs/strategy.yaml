@@ -1,6 +1,6 @@
 version: 1.0.0
 strategy:
-  name: macd_cci_cvd_v1
+  name: macd_cci_cvd_ema_v1
   mode: research
   timeframes:
     trigger: 15m
@@ -14,8 +14,12 @@ indicators:
     signal: 9
   cci:
     period: 20
-  rsi:
-    period: 14
+  ema:
+    fast: 9
+    slow: 21
+    trend: 50
+    gate: 200
+    slope_lookback: 5
   boll:
     period: 20
     std: 2
@@ -24,7 +28,9 @@ indicators:
 entry:
   cci_long: 100
   cci_short: -100
-  rsi_reclaim: 50
+  ema200_gate_mode: hard
+  ema200_buffer_pct: 0.003
+  ema200_min_bars_stable: 3
   require_cvd_confirm: true
 probe:
   enabled: true

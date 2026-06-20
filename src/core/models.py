@@ -29,6 +29,14 @@ class IndicatorSnapshot:
     macd_hist: float | None = None
     cci: float | None = None
     rsi: float | None = None
+    ema_9: float | None = None
+    ema_21: float | None = None
+    ema_50: float | None = None
+    ema_200: float | None = None
+    ema50_slope: float | None = None
+    ema9_21_gap: float | None = None
+    bars_since_ema50_cross: int | None = None
+    bars_since_ema200_cross: int | None = None
     boll_mid: float | None = None
     boll_upper: float | None = None
     boll_lower: float | None = None

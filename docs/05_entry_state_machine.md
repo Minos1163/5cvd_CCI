@@ -1,6 +1,3 @@
-下面是重新整理后的 `docs/05_entry_state_machine.md` 完整版本，建议直接覆盖原文件，让 Codex 以后按这份实现。
-
-````md
 # Entry State Machine
 
 Version: V1.0
@@ -617,7 +614,7 @@ FLAT
   -> MANAGE_LONG
   -> EXIT_LONG
   -> FLAT
-````
+```
 
 ```text
 FLAT
@@ -868,3 +865,4 @@ quality_flag: true
 把“能不能做、做多少、何时退出”以清晰、稳定、可追踪的方式串起来。
 
 如果状态机混乱，整个系统就一定会再次回到不可维护状态。
+

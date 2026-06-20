@@ -26,6 +26,19 @@ def test_valid_state_transition():
     assert transition(EntryState.FLAT, EntryState.WATCH_LONG) == EntryState.WATCH_LONG
 
 
+def test_scaffold_includes_refreshed_entry_state_machine_templates():
+    template = FILES["src/state_machine/entry_state_machine.py"]
+    describe_template = FILES["scripts/describe_entry_state_machine.py"]
+
+    assert "TRANSITION_LOG_FIELDS" in template
+    assert "TRANSITION_BLOCKERS" in template
+    assert "EntryStateStore" in template
+    assert "rollback_rejected_order" in template
+    assert "EntryState.DIRECT_LONG" in template
+    assert "required_log_fields" in describe_template
+    assert "transition_sources" in describe_template
+
+
 def test_scaffold_includes_signal_engine_16_templates():
     assert "src/signals/signal_engine.py" in FILES
     assert "scripts/describe_signal_engine.py" in FILES
@@ -90,3 +103,35 @@ def test_scaffold_still_protects_binance_client():
     content = Path("scripts/scaffold_ai300_framework.py").read_text(encoding="utf-8")
     assert "src/api/binance_client.py" in content
     assert "scaffold must not modify src/binance_client.py" in content
+
+
+def test_scaffold_includes_expanded_market_universe_templates():
+    template = FILES["src/data/universe_filter.py"]
+    assert "UNIVERSE_SCOPE" in template
+    assert "UniverseSnapshot" in template
+    assert "validate_snapshot_for_backtest" in template
+    assert "MAX_MISSING_BAR_RATIO" in template
+
+
+def test_scaffold_includes_refreshed_indicator_spec_templates():
+    spec_template = FILES["src/indicators/indicator_spec.py"]
+    engine_template = FILES["src/indicators/indicator_engine.py"]
+    describe_template = FILES["scripts/describe_indicator_rules.py"]
+
+    assert "INDICATOR_CONFLICT_PRIORITY" in spec_template
+    assert "TIMEFRAME_INDICATOR_MAP" in spec_template
+    assert "INDICATOR_FORBIDDEN_USAGES" in spec_template
+    assert "compute_indicator_results" in engine_template
+    assert "IndicatorResult" in engine_template
+    assert "required_outputs" in describe_template
+
+
+def test_scaffold_includes_refreshed_multi_timeframe_templates():
+    rules_template = FILES["src/context/multi_tf_rules.py"]
+    describe_template = FILES["scripts/describe_multi_tf_rules.py"]
+
+    assert "TimeframeResult" in rules_template
+    assert "TIMEFRAME_PRIORITY" in rules_template
+    assert "TIMEFRAME_FORBIDDEN_ACTIONS" in rules_template
+    assert "build_timeframe_results" in rules_template
+    assert "conflict_policy" in describe_template

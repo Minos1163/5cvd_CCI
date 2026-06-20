@@ -73,7 +73,16 @@ INDICATOR_CONTRACT_FIELDS = [
 ]
 INDICATOR_REQUIRED_OUTPUTS = {
     "MACD": ["macd_line", "signal_line", "histogram", "histogram_slope", "cross_state"],
-    "RSI": ["rsi", "rsi_slope", "overbought_flag", "oversold_flag", "midline_state"],
+    "EMA": [
+        "ema_9",
+        "ema_21",
+        "ema_50",
+        "ema_200",
+        "ema50_slope",
+        "ema9_21_gap",
+        "bars_since_ema50_cross",
+        "bars_since_ema200_cross",
+    ],
     "CCI": ["cci", "cci_slope", "extreme_flag", "recovery_flag"],
     "BOLL": [
         "middle_band",
