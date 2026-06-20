@@ -17,6 +17,7 @@
   "ema50_min_for_direct": 0.60,
   "ema50_min_for_probe": 0.40,
   "disable_probe": true,
+  "dry_run_symbols": ["DOGEUSDT", "SOLUSDT", "ZECUSDT", "XLMUSDT", "BNBUSDT", "TRXUSDT"],
   "blacklist_symbols": ["XRPUSDT"],
   "watch_only_symbols": ["ADAUSDT", "XMRUSDT"],
   "long_threshold_offset": 10.0,

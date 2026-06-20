@@ -52,6 +52,11 @@ def test_live_dry_run_once_writes_audit_files(tmp_path):
     assert paper_summary["open_positions"] >= 0
     assert "realized_pnl" in paper_summary
     assert "profit_factor" in paper_summary
+    assert "updated_at" in paper_summary
+    assert "latest_kline_timestamp" in paper_summary
+    paper_equity = json.loads((tmp_path / "paper_equity.json").read_text(encoding="utf-8"))
+    assert "updated_at" in paper_equity
+    assert "latest_kline_timestamp" in paper_equity
 
 
 def test_live_dry_run_decision_json_contains_warmup_and_context_snapshot(tmp_path):
@@ -105,6 +110,41 @@ def test_live_dry_run_paper_ledger_records_open_position_when_draft_is_approved(
     trade_rows = [json.loads(line) for line in (tmp_path / "paper_trades.jsonl").read_text(encoding="utf-8").splitlines()]
     assert positions["BNBUSDT"]["entry_price"] > 0
     assert trade_rows[0]["event"] == "PAPER_OPEN"
+
+
+def test_live_dry_run_uses_configured_symbols_when_cli_symbols_are_omitted(tmp_path):
+    config_path = tmp_path / "entry_chain.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "direct_threshold": 99,
+                "probe_threshold": 98,
+                "watch_threshold": 97,
+                "dry_run_symbols": ["dogeusdt", " solusdt ", "BNBUSDT"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_live_dry_run.py",
+            "--config",
+            str(config_path),
+            "--once",
+            "--output-dir",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    health = json.loads((tmp_path / "health.json").read_text(encoding="utf-8"))
+    rows = [json.loads(line) for line in (tmp_path / "decisions.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert health["symbols"] == ["DOGEUSDT", "SOLUSDT", "BNBUSDT"]
+    assert [row["symbol"] for row in rows] == ["DOGEUSDT", "SOLUSDT", "BNBUSDT"]
 
 
 def test_live_dry_run_attribution_json_contains_decision_and_execution_events(tmp_path):

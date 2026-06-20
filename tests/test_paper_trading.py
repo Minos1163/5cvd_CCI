@@ -41,6 +41,12 @@ def test_paper_trading_ledger_opens_position_and_writes_snapshots(tmp_path):
     assert (tmp_path / "paper_trades.jsonl").exists()
     assert (tmp_path / "paper_equity.json").exists()
     assert (tmp_path / "paper_summary.json").exists()
+    equity = json.loads((tmp_path / "paper_equity.json").read_text(encoding="utf-8"))
+    summary = json.loads((tmp_path / "paper_summary.json").read_text(encoding="utf-8"))
+    assert equity["latest_kline_timestamp"] == 1000
+    assert summary["latest_kline_timestamp"] == 1000
+    assert "updated_at" in equity
+    assert "updated_at" in summary
 
 
 def test_paper_trading_ledger_closes_on_conservative_stop_before_tp(tmp_path):
@@ -96,3 +102,38 @@ def test_paper_trading_ledger_tracks_tp_ladder_profit_factor(tmp_path):
     assert summary["realized_pnl"] > 0
     assert summary["profit_factor"] > 0
 
+
+def test_paper_trading_ledger_deduplicates_hold_bars_by_kline_timestamp(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision, draft = approved_decision()
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1000,
+    )
+
+    for _ in range(3):
+        ledger.on_decision(
+            symbol="SOLUSDT",
+            decision_payload={"action": "NO_TRADE"},
+            draft_payload={"approved": False},
+            kline={"close": 100.1, "high": 100.1, "low": 100},
+            timestamp=1900,
+        )
+
+    positions = json.loads((tmp_path / "paper_positions.json").read_text(encoding="utf-8"))
+    assert positions["SOLUSDT"]["hold_bars"] == 1
+    assert positions["SOLUSDT"]["last_processed_kline_ts"] == 1900
+
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 100.2, "high": 100.2, "low": 100},
+        timestamp=2800,
+    )
+
+    positions = json.loads((tmp_path / "paper_positions.json").read_text(encoding="utf-8"))
+    assert positions["SOLUSDT"]["hold_bars"] == 2

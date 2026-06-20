@@ -9,6 +9,7 @@ def test_load_entry_chain_config_from_json(tmp_path):
         '{"direct_threshold": 86, "daily_max_trades_base": 2, '
         '"disable_probe": true, "blacklist_symbols": ["XRPUSDT"], '
         '"watch_only_symbols": ["ADAUSDT"], '
+        '"dry_run_symbols": ["bnbusdt", " solusdt "], '
         '"long_threshold_offset": 10, "short_threshold_offset": 0, '
         '"long_min_cvd_direct_score": 0.7}',
         encoding="utf-8",
@@ -23,6 +24,7 @@ def test_load_entry_chain_config_from_json(tmp_path):
     assert config.disable_probe is True
     assert config.blacklist_symbols == ("XRPUSDT",)
     assert config.watch_only_symbols == ("ADAUSDT",)
+    assert config.dry_run_symbols == ("BNBUSDT", "SOLUSDT")
     assert config.long_threshold_offset == 10
     assert config.short_threshold_offset == 0
     assert config.long_min_cvd_direct_score == 0.7

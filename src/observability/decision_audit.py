@@ -16,7 +16,14 @@ class DecisionAuditWriter:
         self._decisions = (self.output_dir / "decisions.jsonl").open("a", encoding="utf-8")
         self._drafts = (self.output_dir / "order_drafts.jsonl").open("a", encoding="utf-8")
         self._attribution = (self.output_dir / "attribution.jsonl").open("a", encoding="utf-8")
-        self._gate_rows: list[dict[str, object]] = []
+        self._gate_rejections = (self.output_dir / "gate_rejections.jsonl").open("a", encoding="utf-8")
+        gate_csv_path = self.output_dir / "gate_rejections.csv"
+        needs_header = not gate_csv_path.exists() or gate_csv_path.stat().st_size == 0
+        self._gate_csv = gate_csv_path.open("a", encoding="utf-8", newline="")
+        self._gate_csv_writer = csv.DictWriter(self._gate_csv, fieldnames=GATE_REJECTION_FIELDS)
+        if needs_header:
+            self._gate_csv_writer.writeheader()
+            self._gate_csv.flush()
 
     def write_decision(self, row: Mapping[str, object]) -> None:
         payload = dict(row)
@@ -25,31 +32,34 @@ class DecisionAuditWriter:
         if action not in {"PROBE", "DIRECT"}:
             reasons = payload.get("reasons", [])
             reason_list = [str(item) for item in reasons] if isinstance(reasons, list) else [str(reasons)]
-            self._gate_rows.append(
-                {
-                    "timestamp": payload.get("timestamp", ""),
-                    "symbol": payload.get("symbol", ""),
-                    "action": action,
-                    "score": payload.get("score", ""),
-                    "primary_reason": reason_list[0] if reason_list else "",
-                    "reasons": "|".join(reason_list),
-                }
-            )
+            gate_row = {
+                "timestamp": payload.get("timestamp", ""),
+                "symbol": payload.get("symbol", ""),
+                "action": action,
+                "score": payload.get("score", ""),
+                "primary_reason": reason_list[0] if reason_list else "",
+                "reasons": "|".join(reason_list),
+            }
+            self._gate_rejections.write(json.dumps(gate_row, ensure_ascii=False, sort_keys=True) + "\n")
+            self._gate_rejections.flush()
+            self._gate_csv_writer.writerow(gate_row)
+            self._gate_csv.flush()
+        self._decisions.flush()
 
     def write_order_draft(self, row: Mapping[str, object]) -> None:
         self._drafts.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
+        self._drafts.flush()
 
     def write_attribution(self, row: Mapping[str, object]) -> None:
         self._attribution.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
+        self._attribution.flush()
 
     def close(self) -> None:
         self._decisions.close()
         self._drafts.close()
         self._attribution.close()
-        with (self.output_dir / "gate_rejections.csv").open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=GATE_REJECTION_FIELDS)
-            writer.writeheader()
-            writer.writerows(self._gate_rows)
+        self._gate_rejections.close()
+        self._gate_csv.close()
 
     def __enter__(self) -> "DecisionAuditWriter":
         return self

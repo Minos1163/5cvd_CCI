@@ -49,6 +49,7 @@ class EntryChainConfig:
     disable_probe: bool = False
     blacklist_symbols: tuple[str, ...] = ()
     watch_only_symbols: tuple[str, ...] = ()
+    dry_run_symbols: tuple[str, ...] = ()
     long_threshold_offset: float = 0.0
     short_threshold_offset: float = 0.0
     long_min_direction_direct_score: float | None = None
@@ -74,9 +75,11 @@ class EntryChainConfig:
             raise ValueError(f"unknown entry-chain config keys: {unknown}")
         values = {key: data[key] for key in data if key in allowed}
         if "blacklist_symbols" in values:
-            values["blacklist_symbols"] = tuple(str(item).strip().upper() for item in values["blacklist_symbols"])
+            values["blacklist_symbols"] = _normalize_symbols(values["blacklist_symbols"])
         if "watch_only_symbols" in values:
-            values["watch_only_symbols"] = tuple(str(item).strip().upper() for item in values["watch_only_symbols"])
+            values["watch_only_symbols"] = _normalize_symbols(values["watch_only_symbols"])
+        if "dry_run_symbols" in values:
+            values["dry_run_symbols"] = _normalize_symbols(values["dry_run_symbols"])
         return cls(**values)
 
 
@@ -85,3 +88,7 @@ def load_entry_chain_config(path: str | Path) -> EntryChainConfig:
     if not isinstance(payload, dict):
         raise ValueError("entry-chain config must be a JSON object")
     return EntryChainConfig.from_mapping(payload)
+
+
+def _normalize_symbols(values: Any) -> tuple[str, ...]:
+    return tuple(symbol for item in values if (symbol := str(item).strip().upper()))

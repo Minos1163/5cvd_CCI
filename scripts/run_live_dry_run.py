@@ -49,7 +49,7 @@ def main() -> None:
 
 def run(args: argparse.Namespace, output_dir: Path) -> None:
     config = load_entry_chain_config(args.config)
-    symbols = parse_symbols(args.symbols)
+    symbols = resolve_symbols(args.symbols, config.dry_run_symbols)
     orders_submitted = 0
     summary = DryRunSummary(target_tier=args.target_tier)
     data_health = "OK"
@@ -153,7 +153,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir")
     parser.add_argument("--log-root", default="reports/dry_run/local")
     parser.add_argument("--log-date")
-    parser.add_argument("--symbols", default="BNBUSDT,SOLUSDT")
+    parser.add_argument("--symbols")
     parser.add_argument("--interval-seconds", type=float, default=60.0)
     parser.add_argument("--align-to-kline-close", action="store_true")
     parser.add_argument("--kline-interval-seconds", type=int, default=900)
@@ -178,8 +178,9 @@ def resolve_output_dir(args: argparse.Namespace) -> Path:
     return Path(args.log_root) / month / day.isoformat()
 
 
-def parse_symbols(value: str) -> list[str]:
-    symbols = [item.strip().upper() for item in value.split(",") if item.strip()]
+def resolve_symbols(value: str | None, config_symbols: Sequence[str]) -> list[str]:
+    source = value if value is not None else ",".join(config_symbols)
+    symbols = [item.strip().upper() for item in source.split(",") if item.strip()]
     return symbols or ["BNBUSDT"]
 
 

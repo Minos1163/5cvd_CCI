@@ -38,6 +38,7 @@ class PaperPosition:
     entry_slippage: float
     last_price: float
     hold_bars: int
+    last_processed_kline_ts: int
     score: float
     reasons: list[str]
 
@@ -115,6 +116,7 @@ class PaperTradingLedger:
             entry_slippage=fee(notional, SLIPPAGE_BPS),
             last_price=price,
             hold_bars=0,
+            last_processed_kline_ts=timestamp,
             score=float(decision_payload.get("score") or 0.0),
             reasons=[str(item) for item in decision_payload.get("reasons", [])],
         )
@@ -144,11 +146,12 @@ class PaperTradingLedger:
         close = _positive_float(kline.get("close"))
         if high is None or low is None or close is None:
             return []
-        if timestamp <= position.entry_time:
+        if timestamp <= position.entry_time or timestamp <= position.last_processed_kline_ts:
             return []
 
         position.last_price = close
         position.hold_bars += 1
+        position.last_processed_kline_ts = timestamp
         events: list[str] = []
         if _stop_hit(position.side, high, low, position.stop_price):
             net = self._close_fraction(position, timestamp, position.stop_price, position.remaining_fraction, "STOP_HIT")
@@ -205,6 +208,7 @@ class PaperTradingLedger:
         return net
 
     def _write_snapshots(self, timestamp: int) -> None:
+        updated_at = int(time.time())
         unrealized = self._unrealized_pnl()
         equity = self.initial_equity + self.realized_pnl + unrealized
         self.equity_peak = max(self.equity_peak, equity)
@@ -214,7 +218,9 @@ class PaperTradingLedger:
         self._write_json(
             "paper_equity.json",
             {
+                "updated_at": updated_at,
                 "timestamp": timestamp,
+                "latest_kline_timestamp": timestamp,
                 "initial_equity": self.initial_equity,
                 "equity": equity,
                 "realized_pnl": self.realized_pnl,
@@ -224,16 +230,18 @@ class PaperTradingLedger:
                 "open_positions": len(self.positions),
             },
         )
-        self._write_json("paper_summary.json", self.summary(timestamp, equity))
+        self._write_json("paper_summary.json", self.summary(timestamp, equity, updated_at=updated_at))
 
-    def summary(self, timestamp: int, equity: float | None = None) -> dict[str, Any]:
+    def summary(self, timestamp: int, equity: float | None = None, *, updated_at: int | None = None) -> dict[str, Any]:
         equity_value = equity if equity is not None else self.initial_equity + self.realized_pnl + self._unrealized_pnl()
         wins = [item for item in self.closed_trade_pnls if item > 0]
         losses = [item for item in self.closed_trade_pnls if item < 0]
         gross_profit = sum(wins)
         gross_loss = abs(sum(losses))
         return {
+            "updated_at": updated_at if updated_at is not None else int(time.time()),
             "timestamp": timestamp,
+            "latest_kline_timestamp": timestamp,
             "initial_equity": self.initial_equity,
             "equity": equity_value,
             "return_pct": (equity_value - self.initial_equity) / self.initial_equity if self.initial_equity else 0.0,
@@ -261,7 +269,12 @@ class PaperTradingLedger:
         if not path.exists():
             return {}
         data = json.loads(path.read_text(encoding="utf-8"))
-        return {symbol: PaperPosition(**payload) for symbol, payload in data.items()}
+        positions: dict[str, PaperPosition] = {}
+        for symbol, payload in data.items():
+            values = dict(payload)
+            values.setdefault("last_processed_kline_ts", values.get("entry_time", 0))
+            positions[symbol] = PaperPosition(**values)
+        return positions
 
     def _load_equity(self) -> None:
         path = self.output_dir / "paper_equity.json"

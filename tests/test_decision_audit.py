@@ -22,6 +22,37 @@ def test_decision_audit_writer_outputs_jsonl_and_gate_csv(tmp_path):
 
     assert json_rows[0]["symbol"] == "SOLUSDT"
     assert csv_rows[0]["primary_reason"] == "PROBE_COMPONENT_MINIMUM_FAILED"
+    gate_rows = [json.loads(line) for line in (tmp_path / "gate_rejections.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert gate_rows[0]["primary_reason"] == "PROBE_COMPONENT_MINIMUM_FAILED"
+
+
+def test_decision_audit_gate_rejections_jsonl_is_visible_before_close(tmp_path):
+    writer = DecisionAuditWriter(tmp_path)
+    writer.write_decision(
+        {
+            "timestamp": 2,
+            "symbol": "BNBUSDT",
+            "action": "WATCH",
+            "score": 61,
+            "reasons": ["WAITING_DIRECT_THRESHOLD"],
+        }
+    )
+
+    rows = [json.loads(line) for line in (tmp_path / "gate_rejections.jsonl").read_text(encoding="utf-8").splitlines()]
+    csv_rows = list(csv.DictReader((tmp_path / "gate_rejections.csv").open(newline="", encoding="utf-8")))
+    writer.close()
+
+    assert rows == [
+        {
+            "timestamp": 2,
+            "symbol": "BNBUSDT",
+            "action": "WATCH",
+            "score": 61,
+            "primary_reason": "WAITING_DIRECT_THRESHOLD",
+            "reasons": "WAITING_DIRECT_THRESHOLD",
+        }
+    ]
+    assert csv_rows[0]["primary_reason"] == "WAITING_DIRECT_THRESHOLD"
 
 
 def test_decision_audit_writer_outputs_order_drafts(tmp_path):
