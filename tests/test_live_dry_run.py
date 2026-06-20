@@ -224,10 +224,10 @@ def test_synthetic_runtime_symbols_use_config_without_market_cap_lookup(monkeypa
     assert meta["source"] == "configured_synthetic"
 
 
-def test_public_market_context_accepts_84_closed_15m_bars_for_warmup():
+def test_public_market_context_accepts_240_closed_15m_bars_for_warmup():
     bars_15m = [
         BacktestBar(symbol="SOLUSDT", timestamp=1000 + index * 900, open=100, high=101, low=99, close=100 + index * 0.01, volume=1000)
-        for index in range(84)
+        for index in range(240)
     ]
     histories = {
         "15m": bars_15m,
@@ -236,28 +236,28 @@ def test_public_market_context_accepts_84_closed_15m_bars_for_warmup():
         "4h": bars_15m[-4:],
     }
 
-    context, debug = public_market_context("SOLUSDT", bars_15m[-1].timestamp, histories, EntryChainConfig(dry_run_warmup_15m_bars=84))
+    context, debug = public_market_context("SOLUSDT", bars_15m[-1].timestamp, histories, EntryChainConfig(dry_run_warmup_15m_bars=240))
 
     assert context.symbol == "SOLUSDT"
     assert debug["warmup"]["ready"] is True
-    assert debug["warmup"]["15m"] == 84
-    assert debug["warmup"]["required_15m"] == 84
-    assert debug["warmup"]["ema200_ready"] is False
-    assert warmup_summary({"SOLUSDT": histories}, ["SOLUSDT"])["SOLUSDT"]["ready_15m_84"] is True
+    assert debug["warmup"]["15m"] == 240
+    assert debug["warmup"]["required_15m"] == 240
+    assert debug["warmup"]["ema200_ready"] is True
+    assert warmup_summary({"SOLUSDT": histories}, ["SOLUSDT"], 240)["SOLUSDT"]["ready_15m"] is True
 
 
-def test_public_market_context_degrades_below_84_closed_15m_bars():
+def test_public_market_context_degrades_below_240_closed_15m_bars():
     bars_15m = [
         BacktestBar(symbol="SOLUSDT", timestamp=1000 + index * 900, open=100, high=101, low=99, close=100, volume=1000)
-        for index in range(83)
+        for index in range(239)
     ]
     histories = {"15m": bars_15m, "30m": bars_15m[-12:], "1h": bars_15m[-8:], "4h": bars_15m[-4:]}
 
-    context, debug = public_market_context("SOLUSDT", bars_15m[-1].timestamp, histories, EntryChainConfig(dry_run_warmup_15m_bars=84))
+    context, debug = public_market_context("SOLUSDT", bars_15m[-1].timestamp, histories, EntryChainConfig(dry_run_warmup_15m_bars=240))
 
     assert context.polluted_until_ts > 0
     assert debug["warmup"]["ready"] is False
-    assert debug["warmup"]["15m"] == 83
+    assert debug["warmup"]["15m"] == 239
 
 
 def test_warmup_symbols_fetches_ema_safe_limit(monkeypatch):
@@ -270,15 +270,15 @@ def test_warmup_symbols_fetches_ema_safe_limit(monkeypatch):
     monkeypatch.setattr("scripts.run_live_dry_run.fetch_public_market_histories", fake_fetch_public_market_histories)
 
     args = Namespace(public_kline_limit=84)
-    warmup_symbols(["BNBUSDT", "SOLUSDT"], args, EntryChainConfig(use_ema_architecture=True, dry_run_warmup_15m_bars=84))
+    warmup_symbols(["BNBUSDT", "SOLUSDT"], args, EntryChainConfig(use_ema_architecture=True, dry_run_warmup_15m_bars=240))
 
-    assert calls == [("BNBUSDT", 201), ("SOLUSDT", 201)]
+    assert calls == [("BNBUSDT", 241), ("SOLUSDT", 241)]
 
 
 def test_build_context_uses_warmup_cache_when_current_fetch_fails(monkeypatch):
     bars_15m = [
         BacktestBar(symbol="SOLUSDT", timestamp=1000 + index * 900, open=100, high=101, low=99, close=100 + index * 0.01, volume=1000)
-        for index in range(84)
+        for index in range(240)
     ]
     histories = {"15m": bars_15m, "30m": bars_15m[-12:], "1h": bars_15m[-8:], "4h": bars_15m[-4:]}
 
@@ -288,7 +288,7 @@ def test_build_context_uses_warmup_cache_when_current_fetch_fails(monkeypatch):
     monkeypatch.setattr("scripts.run_live_dry_run.fetch_public_market_histories", raise_fetch)
 
     args = Namespace(market_data_source="public-binance", public_kline_limit=84)
-    context, health, debug = build_context("SOLUSDT", bars_15m[-1].timestamp, args, EntryChainConfig(dry_run_warmup_15m_bars=84), histories)
+    context, health, debug = build_context("SOLUSDT", bars_15m[-1].timestamp, args, EntryChainConfig(dry_run_warmup_15m_bars=240), histories)
 
     assert context.symbol == "SOLUSDT"
     assert health == "DEGRADED"

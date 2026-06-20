@@ -75,6 +75,6 @@ def test_highest_win_dry_run_config_matches_v5_combined_entry_profile():
     assert highest_win.dry_run_symbol_source == "market_cap_rank"
     assert highest_win.dry_run_rank_start == 3
     assert highest_win.dry_run_rank_end == 25
-    assert highest_win.dry_run_warmup_15m_bars == 84
+    assert highest_win.dry_run_warmup_15m_bars == 240
     assert highest_win.enable_long_context_discounts is True
     assert highest_win.long_threshold_offset == 10.0

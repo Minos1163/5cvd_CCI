@@ -98,7 +98,7 @@ def run(args: argparse.Namespace, output_dir: Path) -> None:
             cycle += 1
             cycle_started = time.perf_counter()
             now = int(time.time())
-            runtime_lines = render_cycle_header(cycle, now, args, symbols, symbol_meta, warmup_state)
+            runtime_lines = render_cycle_header(cycle, now, args, symbols, symbol_meta, warmup_state, config.dry_run_warmup_15m_bars)
             runtime_lines.extend(alignment_lines)
             processed = 0
             for symbol in symbols:
@@ -175,7 +175,7 @@ def run(args: argparse.Namespace, output_dir: Path) -> None:
                     f"调度等待: utc_now={utc_text(int(time.time()))}, sleep={args.interval_seconds:.2f}s, next_review_utc={utc_text(next_ts)}"
                 )
             write_runtime_log(output_dir, runtime_lines)
-            write_health(output_dir, symbols, orders_submitted, data_health, symbol_meta, warmup_state)
+            write_health(output_dir, symbols, orders_submitted, data_health, symbol_meta, warmup_state, config.dry_run_warmup_15m_bars)
             write_summary(output_dir / "summary.json", summary, orders_submitted=orders_submitted, data_health=data_health)
             if args.once:
                 break
@@ -388,7 +388,7 @@ def warmup_symbols(symbols: Sequence[str], args: argparse.Namespace, config) -> 
 
 
 def synthetic_warmup_state(symbols: Sequence[str], config) -> dict[str, dict[str, list[BacktestBar]]]:
-    count = max(int(config.dry_run_warmup_15m_bars), 84)
+    count = max(int(config.dry_run_warmup_15m_bars), 240)
     now = int(time.time())
     state: dict[str, dict[str, list[BacktestBar]]] = {}
     for symbol in symbols:
@@ -411,7 +411,7 @@ def synthetic_warmup_state(symbols: Sequence[str], config) -> dict[str, dict[str
 
 
 def public_history_limit(args: argparse.Namespace, config) -> int:
-    required = max(int(config.dry_run_warmup_15m_bars), 200 if config.use_ema_architecture else 84)
+    required = max(int(config.dry_run_warmup_15m_bars), 200 if config.use_ema_architecture else 240)
     return max(int(args.public_kline_limit), required) + 1
 
 
@@ -447,7 +447,7 @@ def public_market_context(
     config,
 ) -> tuple[EntryChainContext, dict[str, Any]]:
     bars_15m = list(histories.get("15m", []))
-    required_15m = max(1, int(getattr(config, "dry_run_warmup_15m_bars", 84) or 84))
+    required_15m = max(1, int(getattr(config, "dry_run_warmup_15m_bars", 240) or 240))
     if len(bars_15m) < required_15m or len(histories.get("1h", [])) < 4:
         context = degraded_context(symbol, timestamp)
         return context, public_debug_snapshot(symbol, context, histories, {}, ready=False, required_15m=required_15m)
@@ -511,7 +511,7 @@ def synthetic_debug_snapshot(symbol: str, timestamp: int, context: EntryChainCon
             "30m": 240,
             "1h": 240,
             "4h": 240,
-            "required_15m": 84,
+            "required_15m": 240,
             "ema200_ready": True,
         },
         "kline": {
@@ -692,12 +692,13 @@ def write_health(
     data_health: str,
     symbol_meta: Mapping[str, Any],
     warmup_state: Mapping[str, Mapping[str, Sequence[BacktestBar]]],
+    required_15m: int,
 ) -> None:
     payload = {
         "mode": "dry_run",
         "symbols": symbols,
         "symbol_universe": dict(symbol_meta),
-        "warmup": warmup_summary(warmup_state, symbols),
+        "warmup": warmup_summary(warmup_state, symbols, required_15m),
         "orders_submitted": orders_submitted,
         "exchange_mutation_enabled": False,
         "data_health": data_health,
@@ -723,6 +724,7 @@ def render_cycle_header(
     symbols: Sequence[str],
     symbol_meta: Mapping[str, Any],
     warmup_state: Mapping[str, Mapping[str, Sequence[BacktestBar]]],
+    required_15m: int,
 ) -> list[str]:
     return [
         f"=== AI300_DRY_RUN cycle {cycle} @ {utc_text(timestamp)} === [mode={args.market_data_source}, kline_align=ON, tf=900s]",
@@ -731,7 +733,7 @@ def render_cycle_header(
         "交易对宇宙: "
         f"source={symbol_meta.get('source')} rank={symbol_meta.get('rank_start')}-{symbol_meta.get('rank_end')} "
         f"fallback={symbol_meta.get('fallback_used')} error={symbol_meta.get('error')}",
-        f"启动预热: {format_warmup_summary(warmup_state, symbols)}",
+        f"启动预热: {format_warmup_summary(warmup_state, symbols, required_15m)}",
     ]
 
 
@@ -790,6 +792,7 @@ def render_paper_log(symbol: str, events: Sequence[str]) -> list[str]:
 def warmup_summary(
     warmup_state: Mapping[str, Mapping[str, Sequence[BacktestBar]]],
     symbols: Sequence[str],
+    required_15m: int,
 ) -> dict[str, dict[str, Any]]:
     summary: dict[str, dict[str, Any]] = {}
     for symbol in symbols:
@@ -801,7 +804,8 @@ def warmup_summary(
             "1h": len(histories.get("1h", [])),
             "4h": len(histories.get("4h", [])),
             "latest_15m_timestamp": bars_15m[-1].timestamp if bars_15m else None,
-            "ready_15m_84": len(bars_15m) >= 84,
+            "required_15m": required_15m,
+            "ready_15m": len(bars_15m) >= required_15m,
         }
     return summary
 
@@ -809,11 +813,12 @@ def warmup_summary(
 def format_warmup_summary(
     warmup_state: Mapping[str, Mapping[str, Sequence[BacktestBar]]],
     symbols: Sequence[str],
+    required_15m: int,
 ) -> str:
     parts = []
-    for symbol, item in warmup_summary(warmup_state, symbols).items():
-        ready = "OK" if item["ready_15m_84"] else "MISS"
-        parts.append(f"{symbol}:15m={item['15m']}/84,{ready}")
+    for symbol, item in warmup_summary(warmup_state, symbols, required_15m).items():
+        ready = "OK" if item["ready_15m"] else "MISS"
+        parts.append(f"{symbol}:15m={item['15m']}/{required_15m},{ready}")
     return "; ".join(parts)
 
 

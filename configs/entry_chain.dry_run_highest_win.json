@@ -20,7 +20,7 @@
   "dry_run_symbol_source": "market_cap_rank",
   "dry_run_rank_start": 3,
   "dry_run_rank_end": 25,
-  "dry_run_warmup_15m_bars": 84,
+  "dry_run_warmup_15m_bars": 240,
   "dry_run_symbols": ["DOGEUSDT", "SOLUSDT", "ZECUSDT", "XLMUSDT", "BNBUSDT", "TRXUSDT"],
   "blacklist_symbols": ["XRPUSDT"],
   "watch_only_symbols": ["ADAUSDT", "XMRUSDT"],
