@@ -37,6 +37,42 @@ from src.signals.entry_chain_features import (
 )
 
 
+COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
+BINANCE_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+STABLE_SYMBOLS = {
+    "USDT",
+    "USDC",
+    "USDS",
+    "DAI",
+    "USD1",
+    "USDE",
+    "TUSD",
+    "FDUSD",
+    "PYUSD",
+    "BUSD",
+    "USDP",
+    "FRAX",
+}
+STABLE_IDS = {
+    "tether",
+    "usd-coin",
+    "usds",
+    "dai",
+    "usd1-wlfi",
+    "ethena-usde",
+    "true-usd",
+    "first-digital-usd",
+    "paypal-usd",
+    "binance-usd",
+    "paxos-standard",
+    "frax",
+}
+COINGECKO_BASE_OVERRIDES = {
+    "binancecoin": "BNB",
+    "the-open-network": "TON",
+}
+
+
 def main() -> None:
     args = parse_args()
     output_dir = resolve_output_dir(args)
@@ -49,7 +85,8 @@ def main() -> None:
 
 def run(args: argparse.Namespace, output_dir: Path) -> None:
     config = load_entry_chain_config(args.config)
-    symbols = resolve_symbols(args.symbols, config.dry_run_symbols)
+    symbols, symbol_meta = resolve_runtime_symbols(args, config)
+    warmup_state = warmup_symbols(symbols, args, config) if args.market_data_source == "public-binance" else synthetic_warmup_state(symbols, config)
     orders_submitted = 0
     summary = DryRunSummary(target_tier=args.target_tier)
     data_health = "OK"
@@ -61,12 +98,12 @@ def run(args: argparse.Namespace, output_dir: Path) -> None:
             cycle += 1
             cycle_started = time.perf_counter()
             now = int(time.time())
-            runtime_lines = render_cycle_header(cycle, now, args, symbols)
+            runtime_lines = render_cycle_header(cycle, now, args, symbols, symbol_meta, warmup_state)
             runtime_lines.extend(alignment_lines)
             processed = 0
             for symbol in symbols:
                 started = time.perf_counter()
-                context, context_health, debug = build_context(symbol, now, args, config)
+                context, context_health, debug = build_context(symbol, now, args, config, warmup_state.get(symbol))
                 if context_health != "OK":
                     data_health = context_health
                 decision = evaluate_entry_chain(context, config)
@@ -138,7 +175,7 @@ def run(args: argparse.Namespace, output_dir: Path) -> None:
                     f"调度等待: utc_now={utc_text(int(time.time()))}, sleep={args.interval_seconds:.2f}s, next_review_utc={utc_text(next_ts)}"
                 )
             write_runtime_log(output_dir, runtime_lines)
-            write_health(output_dir, symbols, orders_submitted, data_health)
+            write_health(output_dir, symbols, orders_submitted, data_health, symbol_meta, warmup_state)
             write_summary(output_dir / "summary.json", summary, orders_submitted=orders_submitted, data_health=data_health)
             if args.once:
                 break
@@ -178,10 +215,83 @@ def resolve_output_dir(args: argparse.Namespace) -> Path:
     return Path(args.log_root) / month / day.isoformat()
 
 
+def resolve_runtime_symbols(args: argparse.Namespace, config) -> tuple[list[str], dict[str, Any]]:
+    if args.symbols:
+        symbols = resolve_symbols(args.symbols, ())
+        return symbols, {"source": "cli", "rank_start": None, "rank_end": None, "fallback_used": False, "error": None}
+    if args.market_data_source == "synthetic":
+        symbols = resolve_symbols(None, config.dry_run_symbols)
+        return symbols, {"source": "configured_synthetic", "rank_start": None, "rank_end": None, "fallback_used": False, "error": None}
+    if config.dry_run_symbol_source == "market_cap_rank":
+        try:
+            symbols, assets = resolve_market_cap_rank_symbols(config.dry_run_rank_start, config.dry_run_rank_end)
+            if symbols:
+                return symbols, {
+                    "source": "market_cap_rank",
+                    "rank_start": config.dry_run_rank_start,
+                    "rank_end": config.dry_run_rank_end,
+                    "fallback_used": False,
+                    "error": None,
+                    "assets": assets,
+                }
+        except Exception as exc:
+            fallback_symbols = resolve_symbols(None, config.dry_run_symbols)
+            return fallback_symbols, {
+                "source": "configured_fallback",
+                "rank_start": config.dry_run_rank_start,
+                "rank_end": config.dry_run_rank_end,
+                "fallback_used": True,
+                "error": exc.__class__.__name__,
+            }
+    symbols = resolve_symbols(None, config.dry_run_symbols)
+    return symbols, {"source": "configured", "rank_start": None, "rank_end": None, "fallback_used": False, "error": None}
+
+
 def resolve_symbols(value: str | None, config_symbols: Sequence[str]) -> list[str]:
     source = value if value is not None else ",".join(config_symbols)
     symbols = [item.strip().upper() for item in source.split(",") if item.strip()]
     return symbols or ["BNBUSDT"]
+
+
+def resolve_market_cap_rank_symbols(rank_start: int, rank_end: int) -> tuple[list[str], list[dict[str, Any]]]:
+    markets = fetch_json(
+        COINGECKO_MARKETS_URL,
+        {
+            "vs_currency": "usd",
+            "order": "market_cap_desc",
+            "per_page": max(rank_end, 30),
+            "page": 1,
+            "sparkline": "false",
+        },
+    )
+    exchange_info = fetch_json(BINANCE_EXCHANGE_INFO_URL, {})
+    tradable = {
+        item["baseAsset"].upper(): item["symbol"]
+        for item in exchange_info.get("symbols", [])
+        if item.get("quoteAsset") == "USDT" and item.get("contractType") == "PERPETUAL" and item.get("status") == "TRADING"
+    }
+    assets: list[dict[str, Any]] = []
+    symbols: list[str] = []
+    for asset in markets:
+        rank = int(asset.get("market_cap_rank") or 0)
+        if rank < rank_start or rank > rank_end:
+            continue
+        coin_id = str(asset.get("id", ""))
+        base = COINGECKO_BASE_OVERRIDES.get(coin_id, str(asset.get("symbol", "")).upper())
+        if coin_id in STABLE_IDS or base in STABLE_SYMBOLS:
+            continue
+        symbol = tradable.get(base)
+        if symbol is None:
+            continue
+        symbols.append(symbol)
+        assets.append({"market_cap_rank": rank, "id": coin_id, "base_asset": base, "symbol": symbol})
+    return symbols, assets
+
+
+def fetch_json(url: str, params: Mapping[str, Any]) -> Any:
+    query = f"?{urlencode(params)}" if params else ""
+    with urlopen(f"{url}{query}", timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def wait_for_kline_alignment(args: argparse.Namespace) -> list[str]:
@@ -237,15 +347,21 @@ def build_context(
     timestamp: int,
     args: argparse.Namespace,
     config,
+    warmup_history: Mapping[str, Sequence[BacktestBar]] | None = None,
 ) -> tuple[EntryChainContext, str, dict[str, Any]]:
     if args.market_data_source == "synthetic":
         context = synthetic_context(symbol, timestamp)
         return context, "OK", synthetic_debug_snapshot(symbol, timestamp, context)
     try:
-        histories = fetch_public_market_histories(symbol, limit=args.public_kline_limit)
+        histories = fetch_public_market_histories(symbol, limit=public_history_limit(args, config))
         context, debug = public_market_context(symbol, timestamp, histories, config)
         return context, "OK", debug
     except Exception as exc:
+        if warmup_history:
+            context, debug = public_market_context(symbol, timestamp, warmup_history, config)
+            debug["warmup"]["cache_fallback"] = True
+            debug["warmup"]["error"] = exc.__class__.__name__
+            return context, "DEGRADED", debug
         context = degraded_context(symbol, timestamp)
         debug = synthetic_debug_snapshot(symbol, timestamp, context)
         debug["warmup"]["error"] = exc.__class__.__name__
@@ -258,6 +374,45 @@ def fetch_public_market_histories(symbol: str, *, limit: int) -> dict[str, list[
         timeframe: fetch_public_klines(symbol, timeframe, limit=limit)
         for timeframe in ("15m", "30m", "1h", "4h")
     }
+
+
+def warmup_symbols(symbols: Sequence[str], args: argparse.Namespace, config) -> dict[str, dict[str, list[BacktestBar]]]:
+    limit = public_history_limit(args, config)
+    warmed: dict[str, dict[str, list[BacktestBar]]] = {}
+    for symbol in symbols:
+        try:
+            warmed[symbol] = fetch_public_market_histories(symbol, limit=limit)
+        except Exception:
+            warmed[symbol] = {}
+    return warmed
+
+
+def synthetic_warmup_state(symbols: Sequence[str], config) -> dict[str, dict[str, list[BacktestBar]]]:
+    count = max(int(config.dry_run_warmup_15m_bars), 84)
+    now = int(time.time())
+    state: dict[str, dict[str, list[BacktestBar]]] = {}
+    for symbol in symbols:
+        price = synthetic_price(symbol)
+        state[symbol] = {
+            "15m": [
+                BacktestBar(
+                    symbol=symbol,
+                    timestamp=now - (count - index) * 900,
+                    open=price,
+                    high=price,
+                    low=price,
+                    close=price,
+                    volume=1.0,
+                )
+                for index in range(count)
+            ]
+        }
+    return state
+
+
+def public_history_limit(args: argparse.Namespace, config) -> int:
+    required = max(int(config.dry_run_warmup_15m_bars), 200 if config.use_ema_architecture else 84)
+    return max(int(args.public_kline_limit), required) + 1
 
 
 def fetch_public_klines(symbol: str, interval: str, *, limit: int) -> list[BacktestBar]:
@@ -292,9 +447,10 @@ def public_market_context(
     config,
 ) -> tuple[EntryChainContext, dict[str, Any]]:
     bars_15m = list(histories.get("15m", []))
-    if len(bars_15m) < 200 or len(histories.get("1h", [])) < 4:
+    required_15m = max(1, int(getattr(config, "dry_run_warmup_15m_bars", 84) or 84))
+    if len(bars_15m) < required_15m or len(histories.get("1h", [])) < 4:
         context = degraded_context(symbol, timestamp)
-        return context, public_debug_snapshot(symbol, context, histories, {}, ready=False)
+        return context, public_debug_snapshot(symbol, context, histories, {}, ready=False, required_15m=required_15m)
     side = direction_from_history(histories.get("1h", []))
     if side == "NONE":
         side = "LONG" if bars_15m[-1].close >= bars_15m[-4].close else "SHORT"
@@ -328,7 +484,7 @@ def public_market_context(
         current_volatility_scale=max(0.1, atr_pct_value / 0.01),
         normal_volatility_scale=1.0,
     )
-    return context, public_debug_snapshot(symbol, context, histories, scores, ready=True)
+    return context, public_debug_snapshot(symbol, context, histories, scores, ready=True, required_15m=required_15m)
 
 
 def degraded_context(symbol: str, timestamp: int) -> EntryChainContext:
@@ -355,7 +511,8 @@ def synthetic_debug_snapshot(symbol: str, timestamp: int, context: EntryChainCon
             "30m": 240,
             "1h": 240,
             "4h": 240,
-            "required_15m": 200,
+            "required_15m": 84,
+            "ema200_ready": True,
         },
         "kline": {
             "timeframe": "15m",
@@ -376,6 +533,7 @@ def public_debug_snapshot(
     scores: Mapping[str, float],
     *,
     ready: bool,
+    required_15m: int,
 ) -> dict[str, Any]:
     bars_15m = list(histories.get("15m", []))
     latest = bars_15m[-1] if bars_15m else None
@@ -388,7 +546,8 @@ def public_debug_snapshot(
             "30m": len(histories.get("30m", [])),
             "1h": len(histories.get("1h", [])),
             "4h": len(histories.get("4h", [])),
-            "required_15m": 200,
+            "required_15m": required_15m,
+            "ema200_ready": len(histories.get("15m", [])) >= 200,
         },
         "kline": {
             "timeframe": "15m",
@@ -526,10 +685,19 @@ def primary_reason(decision_payload: Mapping[str, Any]) -> str:
     return str(decision_payload.get("action", "NO_TRADE")).lower()
 
 
-def write_health(output_dir: Path, symbols: list[str], orders_submitted: int, data_health: str) -> None:
+def write_health(
+    output_dir: Path,
+    symbols: list[str],
+    orders_submitted: int,
+    data_health: str,
+    symbol_meta: Mapping[str, Any],
+    warmup_state: Mapping[str, Mapping[str, Sequence[BacktestBar]]],
+) -> None:
     payload = {
         "mode": "dry_run",
         "symbols": symbols,
+        "symbol_universe": dict(symbol_meta),
+        "warmup": warmup_summary(warmup_state, symbols),
         "orders_submitted": orders_submitted,
         "exchange_mutation_enabled": False,
         "data_health": data_health,
@@ -548,11 +716,22 @@ def write_runtime_log(output_dir: Path, lines: Sequence[str]) -> None:
         handle.write("\n")
 
 
-def render_cycle_header(cycle: int, timestamp: int, args: argparse.Namespace, symbols: Sequence[str]) -> list[str]:
+def render_cycle_header(
+    cycle: int,
+    timestamp: int,
+    args: argparse.Namespace,
+    symbols: Sequence[str],
+    symbol_meta: Mapping[str, Any],
+    warmup_state: Mapping[str, Mapping[str, Sequence[BacktestBar]]],
+) -> list[str]:
     return [
         f"=== AI300_DRY_RUN cycle {cycle} @ {utc_text(timestamp)} === [mode={args.market_data_source}, kline_align=ON, tf=900s]",
         "当前权益: equity=10000.00 USDT, available=8000.00 USDT, unrealized=+0.00 USDT",
         f"DRY-RUN安全: exchange_mutation_enabled=False, orders_submitted=0, symbols={len(symbols)}, config={args.config}",
+        "交易对宇宙: "
+        f"source={symbol_meta.get('source')} rank={symbol_meta.get('rank_start')}-{symbol_meta.get('rank_end')} "
+        f"fallback={symbol_meta.get('fallback_used')} error={symbol_meta.get('error')}",
+        f"启动预热: {format_warmup_summary(warmup_state, symbols)}",
     ]
 
 
@@ -606,6 +785,36 @@ def render_paper_log(symbol: str, events: Sequence[str]) -> list[str]:
     if not events:
         return [f"   PAPER账本: symbol={symbol}, event=NO_CHANGE"]
     return [f"   PAPER账本: symbol={symbol}, event={event}" for event in events]
+
+
+def warmup_summary(
+    warmup_state: Mapping[str, Mapping[str, Sequence[BacktestBar]]],
+    symbols: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {}
+    for symbol in symbols:
+        histories = warmup_state.get(symbol, {})
+        bars_15m = list(histories.get("15m", []))
+        summary[symbol] = {
+            "15m": len(bars_15m),
+            "30m": len(histories.get("30m", [])),
+            "1h": len(histories.get("1h", [])),
+            "4h": len(histories.get("4h", [])),
+            "latest_15m_timestamp": bars_15m[-1].timestamp if bars_15m else None,
+            "ready_15m_84": len(bars_15m) >= 84,
+        }
+    return summary
+
+
+def format_warmup_summary(
+    warmup_state: Mapping[str, Mapping[str, Sequence[BacktestBar]]],
+    symbols: Sequence[str],
+) -> str:
+    parts = []
+    for symbol, item in warmup_summary(warmup_state, symbols).items():
+        ready = "OK" if item["ready_15m_84"] else "MISS"
+        parts.append(f"{symbol}:15m={item['15m']}/84,{ready}")
+    return "; ".join(parts)
 
 
 def fmt(value: Any) -> str:

@@ -10,6 +10,9 @@ def test_load_entry_chain_config_from_json(tmp_path):
         '"disable_probe": true, "blacklist_symbols": ["XRPUSDT"], '
         '"watch_only_symbols": ["ADAUSDT"], '
         '"dry_run_symbols": ["bnbusdt", " solusdt "], '
+        '"dry_run_symbol_source": "market_cap_rank", '
+        '"dry_run_rank_start": 3, "dry_run_rank_end": 25, '
+        '"dry_run_warmup_15m_bars": 84, '
         '"long_threshold_offset": 10, "short_threshold_offset": 0, '
         '"long_min_cvd_direct_score": 0.7}',
         encoding="utf-8",
@@ -25,6 +28,10 @@ def test_load_entry_chain_config_from_json(tmp_path):
     assert config.blacklist_symbols == ("XRPUSDT",)
     assert config.watch_only_symbols == ("ADAUSDT",)
     assert config.dry_run_symbols == ("BNBUSDT", "SOLUSDT")
+    assert config.dry_run_symbol_source == "market_cap_rank"
+    assert config.dry_run_rank_start == 3
+    assert config.dry_run_rank_end == 25
+    assert config.dry_run_warmup_15m_bars == 84
     assert config.long_threshold_offset == 10
     assert config.short_threshold_offset == 0
     assert config.long_min_cvd_direct_score == 0.7

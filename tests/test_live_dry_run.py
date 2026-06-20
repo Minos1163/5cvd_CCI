@@ -3,7 +3,19 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.run_live_dry_run import next_kline_run_timestamp
+from argparse import Namespace
+
+from scripts.run_live_dry_run import (
+    build_context,
+    next_kline_run_timestamp,
+    public_market_context,
+    resolve_market_cap_rank_symbols,
+    resolve_runtime_symbols,
+    warmup_summary,
+    warmup_symbols,
+)
+from src.backtest.engine import BacktestBar
+from src.signals.entry_chain_config import EntryChainConfig
 
 
 def test_live_dry_run_once_writes_audit_files(tmp_path):
@@ -145,6 +157,143 @@ def test_live_dry_run_uses_configured_symbols_when_cli_symbols_are_omitted(tmp_p
     rows = [json.loads(line) for line in (tmp_path / "decisions.jsonl").read_text(encoding="utf-8").splitlines()]
     assert health["symbols"] == ["DOGEUSDT", "SOLUSDT", "BNBUSDT"]
     assert [row["symbol"] for row in rows] == ["DOGEUSDT", "SOLUSDT", "BNBUSDT"]
+
+
+def test_market_cap_rank_symbols_exclude_stables_and_require_binance_perpetual(monkeypatch):
+    def fake_fetch_json(url, params):
+        if "coingecko" in url:
+            return [
+                {"market_cap_rank": 2, "id": "ethereum", "symbol": "eth"},
+                {"market_cap_rank": 3, "id": "tether", "symbol": "usdt"},
+                {"market_cap_rank": 4, "id": "binancecoin", "symbol": "bnb"},
+                {"market_cap_rank": 5, "id": "solana", "symbol": "sol"},
+                {"market_cap_rank": 26, "id": "chainlink", "symbol": "link"},
+            ]
+        return {
+            "symbols": [
+                {"baseAsset": "BNB", "symbol": "BNBUSDT", "quoteAsset": "USDT", "contractType": "PERPETUAL", "status": "TRADING"},
+                {"baseAsset": "SOL", "symbol": "SOLUSDT", "quoteAsset": "USDT", "contractType": "PERPETUAL", "status": "TRADING"},
+                {"baseAsset": "LINK", "symbol": "LINKUSDT", "quoteAsset": "USDT", "contractType": "PERPETUAL", "status": "TRADING"},
+            ]
+        }
+
+    monkeypatch.setattr("scripts.run_live_dry_run.fetch_json", fake_fetch_json)
+
+    symbols, assets = resolve_market_cap_rank_symbols(3, 25)
+
+    assert symbols == ["BNBUSDT", "SOLUSDT"]
+    assert [item["market_cap_rank"] for item in assets] == [4, 5]
+
+
+def test_runtime_symbols_fall_back_to_config_when_market_cap_lookup_fails(monkeypatch):
+    def raise_fetch_json(_url, _params):
+        raise TimeoutError("offline")
+
+    monkeypatch.setattr("scripts.run_live_dry_run.fetch_json", raise_fetch_json)
+
+    args = Namespace(symbols=None, market_data_source="public-binance")
+    symbols, meta = resolve_runtime_symbols(
+        args,
+        EntryChainConfig(
+            dry_run_symbol_source="market_cap_rank",
+            dry_run_rank_start=3,
+            dry_run_rank_end=25,
+            dry_run_symbols=("BNBUSDT", "SOLUSDT"),
+        ),
+    )
+
+    assert symbols == ["BNBUSDT", "SOLUSDT"]
+    assert meta["fallback_used"] is True
+    assert meta["source"] == "configured_fallback"
+    assert meta["error"] == "TimeoutError"
+
+
+def test_synthetic_runtime_symbols_use_config_without_market_cap_lookup(monkeypatch):
+    def fail_if_called(_url, _params):
+        raise AssertionError("market-cap lookup should not run for synthetic source")
+
+    monkeypatch.setattr("scripts.run_live_dry_run.fetch_json", fail_if_called)
+
+    args = Namespace(symbols=None, market_data_source="synthetic")
+    symbols, meta = resolve_runtime_symbols(
+        args,
+        EntryChainConfig(dry_run_symbol_source="market_cap_rank", dry_run_symbols=("DOGEUSDT", "SOLUSDT")),
+    )
+
+    assert symbols == ["DOGEUSDT", "SOLUSDT"]
+    assert meta["source"] == "configured_synthetic"
+
+
+def test_public_market_context_accepts_84_closed_15m_bars_for_warmup():
+    bars_15m = [
+        BacktestBar(symbol="SOLUSDT", timestamp=1000 + index * 900, open=100, high=101, low=99, close=100 + index * 0.01, volume=1000)
+        for index in range(84)
+    ]
+    histories = {
+        "15m": bars_15m,
+        "30m": bars_15m[-12:],
+        "1h": bars_15m[-8:],
+        "4h": bars_15m[-4:],
+    }
+
+    context, debug = public_market_context("SOLUSDT", bars_15m[-1].timestamp, histories, EntryChainConfig(dry_run_warmup_15m_bars=84))
+
+    assert context.symbol == "SOLUSDT"
+    assert debug["warmup"]["ready"] is True
+    assert debug["warmup"]["15m"] == 84
+    assert debug["warmup"]["required_15m"] == 84
+    assert debug["warmup"]["ema200_ready"] is False
+    assert warmup_summary({"SOLUSDT": histories}, ["SOLUSDT"])["SOLUSDT"]["ready_15m_84"] is True
+
+
+def test_public_market_context_degrades_below_84_closed_15m_bars():
+    bars_15m = [
+        BacktestBar(symbol="SOLUSDT", timestamp=1000 + index * 900, open=100, high=101, low=99, close=100, volume=1000)
+        for index in range(83)
+    ]
+    histories = {"15m": bars_15m, "30m": bars_15m[-12:], "1h": bars_15m[-8:], "4h": bars_15m[-4:]}
+
+    context, debug = public_market_context("SOLUSDT", bars_15m[-1].timestamp, histories, EntryChainConfig(dry_run_warmup_15m_bars=84))
+
+    assert context.polluted_until_ts > 0
+    assert debug["warmup"]["ready"] is False
+    assert debug["warmup"]["15m"] == 83
+
+
+def test_warmup_symbols_fetches_ema_safe_limit(monkeypatch):
+    calls = []
+
+    def fake_fetch_public_market_histories(symbol, *, limit):
+        calls.append((symbol, limit))
+        return {"15m": []}
+
+    monkeypatch.setattr("scripts.run_live_dry_run.fetch_public_market_histories", fake_fetch_public_market_histories)
+
+    args = Namespace(public_kline_limit=84)
+    warmup_symbols(["BNBUSDT", "SOLUSDT"], args, EntryChainConfig(use_ema_architecture=True, dry_run_warmup_15m_bars=84))
+
+    assert calls == [("BNBUSDT", 201), ("SOLUSDT", 201)]
+
+
+def test_build_context_uses_warmup_cache_when_current_fetch_fails(monkeypatch):
+    bars_15m = [
+        BacktestBar(symbol="SOLUSDT", timestamp=1000 + index * 900, open=100, high=101, low=99, close=100 + index * 0.01, volume=1000)
+        for index in range(84)
+    ]
+    histories = {"15m": bars_15m, "30m": bars_15m[-12:], "1h": bars_15m[-8:], "4h": bars_15m[-4:]}
+
+    def raise_fetch(_symbol, *, limit):
+        raise TimeoutError("offline")
+
+    monkeypatch.setattr("scripts.run_live_dry_run.fetch_public_market_histories", raise_fetch)
+
+    args = Namespace(market_data_source="public-binance", public_kline_limit=84)
+    context, health, debug = build_context("SOLUSDT", bars_15m[-1].timestamp, args, EntryChainConfig(dry_run_warmup_15m_bars=84), histories)
+
+    assert context.symbol == "SOLUSDT"
+    assert health == "DEGRADED"
+    assert debug["warmup"]["cache_fallback"] is True
+    assert debug["warmup"]["error"] == "TimeoutError"
 
 
 def test_live_dry_run_attribution_json_contains_decision_and_execution_events(tmp_path):

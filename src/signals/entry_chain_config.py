@@ -50,6 +50,10 @@ class EntryChainConfig:
     blacklist_symbols: tuple[str, ...] = ()
     watch_only_symbols: tuple[str, ...] = ()
     dry_run_symbols: tuple[str, ...] = ()
+    dry_run_symbol_source: str = "configured"
+    dry_run_rank_start: int = 3
+    dry_run_rank_end: int = 25
+    dry_run_warmup_15m_bars: int = 84
     long_threshold_offset: float = 0.0
     short_threshold_offset: float = 0.0
     long_min_direction_direct_score: float | None = None
