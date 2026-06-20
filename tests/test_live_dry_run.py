@@ -208,6 +208,36 @@ def test_runtime_symbols_fall_back_to_config_when_market_cap_lookup_fails(monkey
     assert meta["error"] == "TimeoutError"
 
 
+def test_highest_win_market_cap_fallback_symbols_match_rank_universe(monkeypatch):
+    def raise_fetch_json(_url, _params):
+        raise TimeoutError("offline")
+
+    monkeypatch.setattr("scripts.run_live_dry_run.fetch_json", raise_fetch_json)
+
+    args = Namespace(symbols=None, market_data_source="public-binance")
+    config = EntryChainConfig.from_mapping(
+        json.loads(Path("configs/entry_chain.dry_run_highest_win.json").read_text(encoding="utf-8"))
+    )
+    symbols, meta = resolve_runtime_symbols(args, config)
+
+    assert meta["source"] == "configured_fallback"
+    assert symbols == [
+        "BNBUSDT",
+        "XRPUSDT",
+        "SOLUSDT",
+        "TRXUSDT",
+        "HYPEUSDT",
+        "DOGEUSDT",
+        "ZECUSDT",
+        "XLMUSDT",
+        "ADAUSDT",
+        "XMRUSDT",
+        "LINKUSDT",
+        "CCUSDT",
+        "TONUSDT",
+    ]
+
+
 def test_synthetic_runtime_symbols_use_config_without_market_cap_lookup(monkeypatch):
     def fail_if_called(_url, _params):
         raise AssertionError("market-cap lookup should not run for synthetic source")

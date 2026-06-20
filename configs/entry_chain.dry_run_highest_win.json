@@ -21,7 +21,7 @@
   "dry_run_rank_start": 3,
   "dry_run_rank_end": 25,
   "dry_run_warmup_15m_bars": 240,
-  "dry_run_symbols": ["DOGEUSDT", "SOLUSDT", "ZECUSDT", "XLMUSDT", "BNBUSDT", "TRXUSDT"],
+  "dry_run_symbols": ["BNBUSDT", "XRPUSDT", "SOLUSDT", "TRXUSDT", "HYPEUSDT", "DOGEUSDT", "ZECUSDT", "XLMUSDT", "ADAUSDT", "XMRUSDT", "LINKUSDT", "CCUSDT", "TONUSDT"],
   "blacklist_symbols": ["XRPUSDT"],
   "watch_only_symbols": ["ADAUSDT", "XMRUSDT"],
   "long_threshold_offset": 10.0,

@@ -71,7 +71,21 @@ def test_highest_win_dry_run_config_matches_v5_combined_entry_profile():
     assert highest_win.disable_probe is True
     assert highest_win.blacklist_symbols == ("XRPUSDT",)
     assert highest_win.watch_only_symbols == ("ADAUSDT", "XMRUSDT")
-    assert highest_win.dry_run_symbols == ("DOGEUSDT", "SOLUSDT", "ZECUSDT", "XLMUSDT", "BNBUSDT", "TRXUSDT")
+    assert highest_win.dry_run_symbols == (
+        "BNBUSDT",
+        "XRPUSDT",
+        "SOLUSDT",
+        "TRXUSDT",
+        "HYPEUSDT",
+        "DOGEUSDT",
+        "ZECUSDT",
+        "XLMUSDT",
+        "ADAUSDT",
+        "XMRUSDT",
+        "LINKUSDT",
+        "CCUSDT",
+        "TONUSDT",
+    )
     assert highest_win.dry_run_symbol_source == "market_cap_rank"
     assert highest_win.dry_run_rank_start == 3
     assert highest_win.dry_run_rank_end == 25
