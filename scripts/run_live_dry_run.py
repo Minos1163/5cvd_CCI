@@ -77,13 +77,13 @@ def main() -> None:
     args = parse_args()
     output_dir = resolve_output_dir(args)
     try:
-        run(args, output_dir)
+        run(args)
     except Exception:
         write_error(output_dir, traceback.format_exc())
         raise
 
 
-def run(args: argparse.Namespace, output_dir: Path) -> None:
+def run(args: argparse.Namespace) -> None:
     config = load_entry_chain_config(args.config)
     symbols, symbol_meta = resolve_runtime_symbols(args, config)
     warmup_state = warmup_symbols(symbols, args, config) if args.market_data_source == "public-binance" else synthetic_warmup_state(symbols, config)
@@ -91,13 +91,25 @@ def run(args: argparse.Namespace, output_dir: Path) -> None:
     summary = DryRunSummary(target_tier=args.target_tier)
     data_health = "OK"
     cycle = 0
-    with DecisionAuditWriter(output_dir) as audit:
-        paper = PaperTradingLedger(output_dir)
+    output_dir: Path | None = None
+    audit: DecisionAuditWriter | None = None
+    paper: PaperTradingLedger | None = None
+    try:
         while True:
             alignment_lines = wait_for_kline_alignment(args)
             cycle += 1
             cycle_started = time.perf_counter()
             now = int(time.time())
+            current_output_dir = resolve_output_dir(args, timestamp=now)
+            if current_output_dir != output_dir:
+                if audit is not None:
+                    audit.close()
+                output_dir = current_output_dir
+                audit = DecisionAuditWriter(output_dir)
+                paper = PaperTradingLedger(output_dir)
+            assert output_dir is not None
+            assert audit is not None
+            assert paper is not None
             runtime_lines = render_cycle_header(cycle, now, args, symbols, symbol_meta, warmup_state, config.dry_run_warmup_15m_bars)
             runtime_lines.extend(alignment_lines)
             processed = 0
@@ -181,6 +193,9 @@ def run(args: argparse.Namespace, output_dir: Path) -> None:
                 break
             if not args.align_to_kline_close:
                 time.sleep(args.interval_seconds)
+    finally:
+        if audit is not None:
+            audit.close()
     print(json.dumps({"status": "dry_run_completed", "orders_submitted": orders_submitted}, ensure_ascii=False))
 
 
@@ -204,11 +219,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_output_dir(args: argparse.Namespace) -> Path:
+def resolve_output_dir(args: argparse.Namespace, *, timestamp: int | None = None) -> Path:
     if args.output_dir:
         return Path(args.output_dir)
     if args.log_date:
         day = datetime.strptime(args.log_date, "%Y-%m-%d").date()
+    elif timestamp is not None:
+        day = datetime.fromtimestamp(timestamp, tz=UTC).date()
     else:
         day = datetime.now(UTC).date()
     month = day.strftime("%Y-%m")

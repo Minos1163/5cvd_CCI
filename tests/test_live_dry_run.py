@@ -10,6 +10,7 @@ from scripts.run_live_dry_run import (
     next_kline_run_timestamp,
     public_market_context,
     resolve_market_cap_rank_symbols,
+    resolve_output_dir,
     resolve_runtime_symbols,
     warmup_summary,
     warmup_symbols,
@@ -387,6 +388,26 @@ def test_live_dry_run_log_root_uses_month_and_day_directories(tmp_path):
     assert (output_dir / "attribution.jsonl").exists()
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["orders_submitted"] == 0
+
+
+def test_log_root_output_dir_rolls_by_cycle_timestamp(tmp_path):
+    args = Namespace(output_dir=None, log_root=str(tmp_path), log_date=None)
+
+    first = resolve_output_dir(args, timestamp=1781999999)
+    second = resolve_output_dir(args, timestamp=1782000000)
+
+    assert first == tmp_path / "2026-06" / "2026-06-20"
+    assert second == tmp_path / "2026-06" / "2026-06-21"
+
+
+def test_log_root_output_dir_rolls_across_utc_day_boundary(tmp_path):
+    args = Namespace(output_dir=None, log_root=str(tmp_path), log_date=None)
+
+    before_midnight = resolve_output_dir(args, timestamp=1781999999)
+    after_midnight = resolve_output_dir(args, timestamp=1782000000)
+
+    assert before_midnight == tmp_path / "2026-06" / "2026-06-20"
+    assert after_midnight == tmp_path / "2026-06" / "2026-06-21"
 
 
 def test_next_kline_run_timestamp_aligns_after_quarter_hour_close():
