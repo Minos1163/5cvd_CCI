@@ -106,11 +106,20 @@ def run(args: argparse.Namespace) -> None:
                     audit.close()
                 output_dir = current_output_dir
                 audit = DecisionAuditWriter(output_dir)
-                paper = PaperTradingLedger(output_dir)
+                paper = PaperTradingLedger(output_dir, state_dir=resolve_paper_state_dir(args))
             assert output_dir is not None
             assert audit is not None
             assert paper is not None
-            runtime_lines = render_cycle_header(cycle, now, args, symbols, symbol_meta, warmup_state, config.dry_run_warmup_15m_bars)
+            runtime_lines = render_cycle_header(
+                cycle,
+                now,
+                args,
+                symbols,
+                symbol_meta,
+                warmup_state,
+                config.dry_run_warmup_15m_bars,
+                paper,
+            )
             runtime_lines.extend(alignment_lines)
             processed = 0
             for symbol in symbols:
@@ -172,20 +181,9 @@ def run(args: argparse.Namespace) -> None:
                 runtime_lines.extend(render_paper_log(symbol, paper_events))
                 processed += 1
             elapsed = time.perf_counter() - cycle_started
+            cycle_finished_ts = time.time()
             runtime_lines.append(f"本轮扫描完成: processed={processed}/{len(symbols)}, elapsed={elapsed:.2f}s, orders_submitted={orders_submitted}")
-            if args.once:
-                runtime_lines.append("调度等待: once=true, exit_after_current_cycle")
-            elif args.align_to_kline_close:
-                next_ts = next_kline_run_timestamp(time.time(), args.kline_interval_seconds, args.post_close_delay_seconds)
-                runtime_lines.append(
-                    f"调度等待: kline_align=ON, next_review_utc={utc_text(next_ts)}, "
-                    f"post_close_delay={args.post_close_delay_seconds:.2f}s"
-                )
-            else:
-                next_ts = int(time.time() + args.interval_seconds)
-                runtime_lines.append(
-                    f"调度等待: utc_now={utc_text(int(time.time()))}, sleep={args.interval_seconds:.2f}s, next_review_utc={utc_text(next_ts)}"
-                )
+            runtime_lines.append(render_schedule_wait_log(args, now, cycle_finished_ts, elapsed))
             write_runtime_log(output_dir, runtime_lines)
             write_health(output_dir, symbols, orders_submitted, data_health, symbol_meta, warmup_state, config.dry_run_warmup_15m_bars)
             write_summary(output_dir / "summary.json", summary, orders_submitted=orders_submitted, data_health=data_health)
@@ -205,6 +203,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir")
     parser.add_argument("--log-root", default="reports/dry_run/local")
     parser.add_argument("--log-date")
+    parser.add_argument("--paper-state-dir")
     parser.add_argument("--symbols")
     parser.add_argument("--interval-seconds", type=float, default=60.0)
     parser.add_argument("--align-to-kline-close", action="store_true")
@@ -230,6 +229,14 @@ def resolve_output_dir(args: argparse.Namespace, *, timestamp: int | None = None
         day = datetime.now(UTC).date()
     month = day.strftime("%Y-%m")
     return Path(args.log_root) / month / day.isoformat()
+
+
+def resolve_paper_state_dir(args: argparse.Namespace) -> Path:
+    if args.paper_state_dir:
+        return Path(args.paper_state_dir)
+    if args.output_dir:
+        return Path(args.output_dir)
+    return Path(args.log_root).parent / "state" / "paper"
 
 
 def resolve_runtime_symbols(args: argparse.Namespace, config) -> tuple[list[str], dict[str, Any]]:
@@ -334,6 +341,31 @@ def next_kline_run_timestamp(now: float, interval_seconds: int, post_close_delay
     if now < candidate:
         return int(candidate)
     return int(current_boundary + interval + delay)
+
+
+def render_schedule_wait_log(args: argparse.Namespace, cycle_started_ts: int, cycle_finished_ts: float, elapsed: float) -> str:
+    if args.once:
+        return (
+            "调度等待: once=true, exit_after_current_cycle, "
+            f"cycle_started_utc={utc_text(cycle_started_ts)}, "
+            f"cycle_finished_utc={utc_text(int(cycle_finished_ts))}, elapsed={elapsed:.2f}s"
+        )
+    if args.align_to_kline_close:
+        next_ts = next_kline_run_timestamp(cycle_finished_ts, args.kline_interval_seconds, args.post_close_delay_seconds)
+        sleep_seconds = max(0.0, next_ts - cycle_finished_ts)
+        return (
+            f"调度等待: kline_align=ON, next_review_utc={utc_text(next_ts)}, "
+            f"post_close_delay={args.post_close_delay_seconds:.2f}s, "
+            f"cycle_started_utc={utc_text(cycle_started_ts)}, cycle_finished_utc={utc_text(int(cycle_finished_ts))}, "
+            f"elapsed={elapsed:.2f}s, sleep_until_next={sleep_seconds:.2f}s"
+        )
+    sleep_seconds = float(args.interval_seconds)
+    next_ts = int(cycle_finished_ts + sleep_seconds)
+    return (
+        f"调度等待: utc_now={utc_text(int(cycle_finished_ts))}, sleep={sleep_seconds:.2f}s, "
+        f"next_review_utc={utc_text(next_ts)}, cycle_started_utc={utc_text(cycle_started_ts)}, "
+        f"cycle_finished_utc={utc_text(int(cycle_finished_ts))}, elapsed={elapsed:.2f}s"
+    )
 
 
 def synthetic_context(symbol: str, timestamp: int) -> EntryChainContext:
@@ -742,16 +774,45 @@ def render_cycle_header(
     symbol_meta: Mapping[str, Any],
     warmup_state: Mapping[str, Mapping[str, Sequence[BacktestBar]]],
     required_15m: int,
+    paper: PaperTradingLedger,
 ) -> list[str]:
     return [
         f"=== AI300_DRY_RUN cycle {cycle} @ {utc_text(timestamp)} === [mode={args.market_data_source}, kline_align=ON, tf=900s]",
-        "当前权益: equity=10000.00 USDT, available=8000.00 USDT, unrealized=+0.00 USDT",
+        render_paper_account_header(paper, timestamp),
         f"DRY-RUN安全: exchange_mutation_enabled=False, orders_submitted=0, symbols={len(symbols)}, config={args.config}",
         "交易对宇宙: "
         f"source={symbol_meta.get('source')} rank={symbol_meta.get('rank_start')}-{symbol_meta.get('rank_end')} "
         f"fallback={symbol_meta.get('fallback_used')} error={symbol_meta.get('error')}",
         f"启动预热: {format_warmup_summary(warmup_state, symbols, required_15m)}",
     ]
+
+
+def render_paper_account_header(paper: PaperTradingLedger, timestamp: int) -> str:
+    summary = paper.summary(timestamp)
+    equity = float(summary.get("equity") or 0.0)
+    initial_equity = float(summary.get("initial_equity") or 0.0)
+    open_positions = int(summary.get("open_positions") or 0)
+    margin_equity = float(summary.get("margin_equity") or equity)
+    realized = float(summary.get("realized_pnl") or 0.0)
+    unrealized = float(summary.get("unrealized_pnl") or 0.0)
+    return_pct = float(summary.get("return_pct") or 0.0)
+    max_drawdown = float(summary.get("max_drawdown") or 0.0)
+    win_rate = float(summary.get("win_rate") or 0.0)
+    profit_factor = float(summary.get("profit_factor") or 0.0)
+    trade_count = int(summary.get("trade_count") or 0)
+    available = max(0.0, initial_equity * 0.8 - _paper_margin_used(paper))
+    return (
+        "当前权益: "
+        f"equity={equity:.2f} USDT, available={available:.2f} USDT, "
+        f"unrealized={unrealized:+.2f} USDT, realized={realized:+.2f} USDT, "
+        f"return={return_pct * 100:+.2f}%, max_dd={max_drawdown * 100:.2f}%, "
+        f"win_rate={win_rate * 100:.2f}%, pf={profit_factor:.4f}, trades={trade_count}, "
+        f"open_positions={open_positions}, margin_equity={margin_equity:.2f} USDT"
+    )
+
+
+def _paper_margin_used(paper: PaperTradingLedger) -> float:
+    return sum(position.notional * position.remaining_fraction / max(1, int(position.leverage)) for position in paper.positions.values())
 
 
 def render_symbol_log(

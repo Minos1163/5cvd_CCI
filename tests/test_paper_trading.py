@@ -38,6 +38,7 @@ def test_paper_trading_ledger_opens_position_and_writes_snapshots(tmp_path):
     assert events == ["PAPER_OPEN:SOLUSDT:LONG@100.00000000"]
     positions = json.loads((tmp_path / "paper_positions.json").read_text(encoding="utf-8"))
     assert positions["SOLUSDT"]["entry_price"] == 100
+    assert positions["SOLUSDT"]["tp_consumed"] == []
     assert (tmp_path / "paper_trades.jsonl").exists()
     assert (tmp_path / "paper_equity.json").exists()
     assert (tmp_path / "paper_summary.json").exists()
@@ -47,6 +48,9 @@ def test_paper_trading_ledger_opens_position_and_writes_snapshots(tmp_path):
     assert summary["latest_kline_timestamp"] == 1000
     assert "updated_at" in equity
     assert "updated_at" in summary
+    assert summary["pnl_accounting_mode"] == "notional_primary_margin_reporting"
+    assert "realized_notional_pnl" in summary
+    assert "realized_margin_pnl" in summary
 
 
 def test_paper_trading_ledger_closes_on_conservative_stop_before_tp(tmp_path):
@@ -92,8 +96,22 @@ def test_paper_trading_ledger_tracks_tp_ladder_profit_factor(tmp_path):
         symbol="SOLUSDT",
         decision_payload={"action": "NO_TRADE"},
         draft_payload={"approved": False},
-        kline={"close": 105, "high": 105, "low": 100.5},
+        kline={"close": 101.5, "high": 101.5, "low": 100.5},
         timestamp=1900,
+    )
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 103, "high": 103, "low": 101.5},
+        timestamp=2800,
+    )
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 105, "high": 105, "low": 103},
+        timestamp=3700,
     )
 
     summary = json.loads((tmp_path / "paper_summary.json").read_text(encoding="utf-8"))
@@ -101,6 +119,93 @@ def test_paper_trading_ledger_tracks_tp_ladder_profit_factor(tmp_path):
     assert summary["win_rate"] == 1.0
     assert summary["realized_pnl"] > 0
     assert summary["profit_factor"] > 0
+    trade_rows = [json.loads(line) for line in (tmp_path / "paper_trades.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row.get("reason") for row in trade_rows if row["event"] in {"PAPER_REDUCE", "PAPER_CLOSE"}] == [
+        "TP1_HIT",
+        "TP2_HIT",
+        "TP3_HIT",
+    ]
+
+
+def test_paper_trading_ledger_does_not_repeat_consumed_tp_level(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision, draft = approved_decision()
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1000,
+    )
+
+    first = ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 101.5, "high": 101.5, "low": 100.5},
+        timestamp=1900,
+    )
+    second = ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 101.5, "high": 101.5, "low": 100.5},
+        timestamp=2800,
+    )
+
+    assert first[0].startswith("PAPER_REDUCE:SOLUSDT:TP1_HIT")
+    assert second == []
+    positions = json.loads((tmp_path / "paper_positions.json").read_text(encoding="utf-8"))
+    assert positions["SOLUSDT"]["remaining_fraction"] == 0.6
+    assert positions["SOLUSDT"]["tp_consumed"] == [0]
+
+
+def test_paper_trading_ledger_loads_positions_from_persistent_state_dir(tmp_path):
+    state_dir = tmp_path / "state" / "paper"
+    day_one = tmp_path / "logs" / "2026-06" / "2026-06-20"
+    day_two = tmp_path / "logs" / "2026-06" / "2026-06-21"
+    decision, draft = approved_decision()
+
+    first = PaperTradingLedger(day_one, state_dir=state_dir)
+    first.on_decision(
+        symbol="SOLUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1000,
+    )
+
+    second = PaperTradingLedger(day_two, state_dir=state_dir)
+    assert "SOLUSDT" in second.positions
+    second.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 100.1, "high": 100.1, "low": 100},
+        timestamp=1900,
+    )
+
+    state_positions = json.loads((state_dir / "paper_positions.json").read_text(encoding="utf-8"))
+    day_two_positions = json.loads((day_two / "paper_positions.json").read_text(encoding="utf-8"))
+    assert state_positions["SOLUSDT"]["hold_bars"] == 1
+    assert day_two_positions["SOLUSDT"]["hold_bars"] == 1
+
+
+def test_paper_trading_ledger_records_margin_pnl_labels(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision, draft = approved_decision()
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1000,
+    )
+
+    trade_rows = [json.loads(line) for line in (tmp_path / "paper_trades.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert trade_rows[0]["pnl_accounting_mode"] == "notional_primary_margin_reporting"
+    assert trade_rows[0]["margin_used"] == trade_rows[0]["notional"] / trade_rows[0]["leverage"]
+    assert trade_rows[0]["margin_pnl"] == trade_rows[0]["notional_pnl"] * trade_rows[0]["leverage"]
 
 
 def test_paper_trading_ledger_deduplicates_hold_bars_by_kline_timestamp(tmp_path):

@@ -69,7 +69,7 @@ def test_highest_win_dry_run_config_matches_v5_combined_entry_profile():
     highest_win = load_entry_chain_config("configs/entry_chain.dry_run_highest_win.json")
 
     assert highest_win.disable_probe is True
-    assert highest_win.blacklist_symbols == ("XRPUSDT",)
+    assert highest_win.blacklist_symbols == ("XRPUSDT", "ZECUSDT")
     assert highest_win.watch_only_symbols == ("ADAUSDT", "XMRUSDT")
     assert highest_win.dry_run_symbols == (
         "BNBUSDT",

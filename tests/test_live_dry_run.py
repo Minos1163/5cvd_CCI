@@ -9,6 +9,9 @@ from scripts.run_live_dry_run import (
     build_context,
     next_kline_run_timestamp,
     public_market_context,
+    render_paper_account_header,
+    render_schedule_wait_log,
+    resolve_paper_state_dir,
     resolve_market_cap_rank_symbols,
     resolve_output_dir,
     resolve_runtime_symbols,
@@ -16,6 +19,7 @@ from scripts.run_live_dry_run import (
     warmup_symbols,
 )
 from src.backtest.engine import BacktestBar
+from src.observability.paper_trading import PaperTradingLedger
 from src.signals.entry_chain_config import EntryChainConfig
 
 
@@ -51,10 +55,16 @@ def test_live_dry_run_once_writes_audit_files(tmp_path):
     assert runtime_log.exists()
     runtime_text = runtime_log.read_text(encoding="utf-8")
     assert "AI300_DRY_RUN cycle" in runtime_text
+    assert "当前权益: equity=" in runtime_text
+    assert "realized=" in runtime_text
+    assert "win_rate=" in runtime_text
+    assert "open_positions=" in runtime_text
     assert "K线预热" in runtime_text
     assert "评分明细" in runtime_text
     assert "决策原因" in runtime_text
     assert "PAPER账本" in runtime_text
+    assert "cycle_started_utc=" in runtime_text
+    assert "cycle_finished_utc=" in runtime_text
     health = json.loads((tmp_path / "health.json").read_text(encoding="utf-8"))
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
     assert health["mode"] == "dry_run"
@@ -64,12 +74,16 @@ def test_live_dry_run_once_writes_audit_files(tmp_path):
     paper_summary = json.loads((tmp_path / "paper_summary.json").read_text(encoding="utf-8"))
     assert paper_summary["open_positions"] >= 0
     assert "realized_pnl" in paper_summary
+    assert "realized_notional_pnl" in paper_summary
+    assert "realized_margin_pnl" in paper_summary
+    assert paper_summary["pnl_accounting_mode"] == "notional_primary_margin_reporting"
     assert "profit_factor" in paper_summary
     assert "updated_at" in paper_summary
     assert "latest_kline_timestamp" in paper_summary
     paper_equity = json.loads((tmp_path / "paper_equity.json").read_text(encoding="utf-8"))
     assert "updated_at" in paper_equity
     assert "latest_kline_timestamp" in paper_equity
+    assert "margin_equity" in paper_equity
 
 
 def test_live_dry_run_decision_json_contains_warmup_and_context_snapshot(tmp_path):
@@ -410,6 +424,69 @@ def test_log_root_output_dir_rolls_across_utc_day_boundary(tmp_path):
     assert after_midnight == tmp_path / "2026-06" / "2026-06-21"
 
 
+def test_paper_state_dir_defaults_next_to_log_root(tmp_path):
+    args = Namespace(output_dir=None, log_root=str(tmp_path / "logs"), log_date=None, paper_state_dir=None)
+
+    assert resolve_paper_state_dir(args) == tmp_path / "state" / "paper"
+
+
+def test_paper_state_dir_uses_output_dir_for_explicit_one_shot_output(tmp_path):
+    args = Namespace(output_dir=str(tmp_path / "out"), log_root=str(tmp_path / "logs"), log_date=None, paper_state_dir=None)
+
+    assert resolve_paper_state_dir(args) == tmp_path / "out"
+
+
+def test_paper_state_dir_can_be_overridden(tmp_path):
+    args = Namespace(output_dir=None, log_root=str(tmp_path / "logs"), log_date=None, paper_state_dir=str(tmp_path / "custom-paper"))
+
+    assert resolve_paper_state_dir(args) == tmp_path / "custom-paper"
+
+
+def test_render_paper_account_header_uses_ledger_state(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision = {
+        "action": "DIRECT",
+        "side": "LONG",
+        "score": 88,
+        "leverage": 4,
+        "entry_context": {"atr_pct": 0.01},
+        "reasons": ["TEST_DIRECT"],
+    }
+    draft = {
+        "approved": True,
+        "request": {
+            "position_side": "LONG",
+            "quantity": 10,
+            "price": 100,
+        },
+    }
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1000,
+    )
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 101, "high": 101, "low": 100.5},
+        timestamp=1900,
+    )
+
+    header = render_paper_account_header(ledger, 1900)
+
+    assert header.startswith("当前权益: equity=")
+    assert "available=7750.00 USDT" in header
+    assert "realized=" in header
+    assert "unrealized=" in header
+    assert "max_dd=" in header
+    assert "pf=" in header
+    assert "trades=0" in header
+    assert "open_positions=1" in header
+
+
 def test_next_kline_run_timestamp_aligns_after_quarter_hour_close():
     assert next_kline_run_timestamp(0, 900, 5) == 5
     assert next_kline_run_timestamp(4.5, 900, 5) == 5
@@ -417,6 +494,26 @@ def test_next_kline_run_timestamp_aligns_after_quarter_hour_close():
     assert next_kline_run_timestamp(899, 900, 5) == 905
     assert next_kline_run_timestamp(900, 900, 5) == 905
     assert next_kline_run_timestamp(905.1, 900, 5) == 1805
+
+
+def test_schedule_wait_log_includes_alignment_sleep_seconds():
+    args = Namespace(
+        once=False,
+        align_to_kline_close=True,
+        kline_interval_seconds=900,
+        post_close_delay_seconds=5.0,
+        interval_seconds=60.0,
+    )
+
+    line = render_schedule_wait_log(args, 900, 906.25, 4.5)
+
+    assert line.startswith("调度等待: kline_align=ON")
+    assert "next_review_utc=1970-01-01 00:30:05 UTC" in line
+    assert "post_close_delay=5.00s" in line
+    assert "cycle_started_utc=1970-01-01 00:15:00 UTC" in line
+    assert "cycle_finished_utc=1970-01-01 00:15:06 UTC" in line
+    assert "elapsed=4.50s" in line
+    assert "sleep_until_next=898.75s" in line
 
 
 def test_highest_win_dry_run_once_accepts_synthetic_market_source(tmp_path):

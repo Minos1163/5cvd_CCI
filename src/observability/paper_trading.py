@@ -32,8 +32,10 @@ class PaperPosition:
     stop_price: float
     tp_prices: list[float]
     tp_fractions: list[float]
+    tp_consumed: list[int]
     remaining_fraction: float
     realized_pnl: float
+    realized_margin_pnl: float
     entry_fee: float
     entry_slippage: float
     last_price: float
@@ -44,14 +46,26 @@ class PaperPosition:
 
 
 class PaperTradingLedger:
-    def __init__(self, output_dir: str | Path, *, initial_equity: float = INITIAL_EQUITY) -> None:
+    def __init__(
+        self,
+        output_dir: str | Path,
+        *,
+        state_dir: str | Path | None = None,
+        initial_equity: float = INITIAL_EQUITY,
+    ) -> None:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.state_dir = Path(state_dir) if state_dir is not None else self.output_dir
+        self.state_dir.mkdir(parents=True, exist_ok=True)
         (self.output_dir / "paper_trades.jsonl").touch(exist_ok=True)
+        if self.state_dir != self.output_dir:
+            (self.state_dir / "paper_trades.jsonl").touch(exist_ok=True)
         self.initial_equity = initial_equity
         self.positions: dict[str, PaperPosition] = self._load_positions()
         self.realized_pnl = 0.0
+        self.realized_margin_pnl = 0.0
         self.closed_trade_pnls: list[float] = []
+        self.closed_trade_margin_pnls: list[float] = []
         self.equity_peak = initial_equity
         self.max_drawdown = 0.0
         self._load_equity()
@@ -110,8 +124,10 @@ class PaperTradingLedger:
             stop_price=stop_price,
             tp_prices=tp_prices,
             tp_fractions=list(TP_FRACTIONS),
+            tp_consumed=[],
             remaining_fraction=1.0,
             realized_pnl=-(fee(notional, FEE_BPS) + fee(notional, SLIPPAGE_BPS)),
+            realized_margin_pnl=-(fee(notional, FEE_BPS) + fee(notional, SLIPPAGE_BPS)) * int(decision_payload.get("leverage") or 1),
             entry_fee=fee(notional, FEE_BPS),
             entry_slippage=fee(notional, SLIPPAGE_BPS),
             last_price=price,
@@ -122,6 +138,7 @@ class PaperTradingLedger:
         )
         self.positions[symbol] = position
         self.realized_pnl += position.realized_pnl
+        self.realized_margin_pnl += position.realized_margin_pnl
         self._append_trade_event(
             {
                 "timestamp": timestamp,
@@ -131,8 +148,13 @@ class PaperTradingLedger:
                 "price": price,
                 "quantity": quantity,
                 "notional": notional,
+                "leverage": position.leverage,
+                "margin_used": _margin_used(notional, position.leverage),
                 "fee": position.entry_fee,
                 "slippage": position.entry_slippage,
+                "notional_pnl": position.realized_pnl,
+                "margin_pnl": position.realized_margin_pnl,
+                "pnl_accounting_mode": "notional_primary_margin_reporting",
                 "score": position.score,
                 "reasons": position.reasons,
             }
@@ -158,15 +180,20 @@ class PaperTradingLedger:
             events.append(f"PAPER_CLOSE:{symbol}:STOP_HIT:{net:.4f}")
             self.positions.pop(symbol, None)
         else:
+            consumed = set(position.tp_consumed)
             for index, tp_price in enumerate(list(position.tp_prices)):
                 if position.remaining_fraction <= 0:
                     break
+                if index in consumed:
+                    continue
                 if _tp_hit(position.side, high, low, tp_price):
                     fraction = min(position.remaining_fraction, position.tp_fractions[index])
+                    position.tp_consumed.append(index)
                     net = self._close_fraction(position, timestamp, tp_price, fraction, f"TP{index + 1}_HIT")
                     events.append(f"PAPER_REDUCE:{symbol}:TP{index + 1}_HIT:{net:.4f}")
                     if index == 0:
                         position.stop_price = position.entry_price * (1.001 if position.side == "LONG" else 0.999)
+                    break
             if position.remaining_fraction <= 0:
                 self.positions.pop(symbol, None)
             elif position.hold_bars >= MAX_HOLD_BARS:
@@ -182,11 +209,15 @@ class PaperTradingLedger:
         exit_fee = fee(exit_notional, FEE_BPS)
         exit_slippage = fee(exit_notional, SLIPPAGE_BPS)
         net = gross - exit_fee - exit_slippage
+        margin_net = net * max(1, int(position.leverage))
         position.realized_pnl += net
+        position.realized_margin_pnl += margin_net
         position.remaining_fraction = round(max(0.0, position.remaining_fraction - fraction), 10)
         self.realized_pnl += net
+        self.realized_margin_pnl += margin_net
         if position.remaining_fraction <= 0:
             self.closed_trade_pnls.append(position.realized_pnl)
+            self.closed_trade_margin_pnls.append(position.realized_margin_pnl)
         self._append_trade_event(
             {
                 "timestamp": timestamp,
@@ -197,11 +228,17 @@ class PaperTradingLedger:
                 "price": price,
                 "fraction": fraction,
                 "quantity": quantity,
+                "leverage": position.leverage,
+                "margin_used": _margin_used(position.notional * fraction, position.leverage),
                 "gross_pnl": gross,
                 "fee": exit_fee,
                 "slippage": exit_slippage,
                 "net_pnl": net,
+                "notional_pnl": net,
+                "margin_pnl": margin_net,
                 "position_realized_pnl": position.realized_pnl,
+                "position_margin_realized_pnl": position.realized_margin_pnl,
+                "pnl_accounting_mode": "notional_primary_margin_reporting",
                 "remaining_fraction": position.remaining_fraction,
             }
         )
@@ -210,7 +247,9 @@ class PaperTradingLedger:
     def _write_snapshots(self, timestamp: int) -> None:
         updated_at = int(time.time())
         unrealized = self._unrealized_pnl()
+        unrealized_margin = self._unrealized_margin_pnl()
         equity = self.initial_equity + self.realized_pnl + unrealized
+        margin_equity = self.initial_equity + self.realized_margin_pnl + unrealized_margin
         self.equity_peak = max(self.equity_peak, equity)
         drawdown = 0.0 if self.equity_peak <= 0 else (self.equity_peak - equity) / self.equity_peak
         self.max_drawdown = max(self.max_drawdown, drawdown)
@@ -223,11 +262,17 @@ class PaperTradingLedger:
                 "latest_kline_timestamp": timestamp,
                 "initial_equity": self.initial_equity,
                 "equity": equity,
+                "margin_equity": margin_equity,
                 "realized_pnl": self.realized_pnl,
+                "realized_notional_pnl": self.realized_pnl,
+                "realized_margin_pnl": self.realized_margin_pnl,
                 "unrealized_pnl": unrealized,
+                "unrealized_notional_pnl": unrealized,
+                "unrealized_margin_pnl": unrealized_margin,
                 "equity_peak": self.equity_peak,
                 "max_drawdown": self.max_drawdown,
                 "open_positions": len(self.positions),
+                "pnl_accounting_mode": "notional_primary_margin_reporting",
             },
         )
         self._write_json("paper_summary.json", self.summary(timestamp, equity, updated_at=updated_at))
@@ -238,20 +283,35 @@ class PaperTradingLedger:
         losses = [item for item in self.closed_trade_pnls if item < 0]
         gross_profit = sum(wins)
         gross_loss = abs(sum(losses))
+        margin_wins = [item for item in self.closed_trade_margin_pnls if item > 0]
+        margin_losses = [item for item in self.closed_trade_margin_pnls if item < 0]
+        unrealized = self._unrealized_pnl()
+        unrealized_margin = self._unrealized_margin_pnl()
         return {
             "updated_at": updated_at if updated_at is not None else int(time.time()),
             "timestamp": timestamp,
             "latest_kline_timestamp": timestamp,
             "initial_equity": self.initial_equity,
             "equity": equity_value,
+            "margin_equity": self.initial_equity + self.realized_margin_pnl + unrealized_margin,
             "return_pct": (equity_value - self.initial_equity) / self.initial_equity if self.initial_equity else 0.0,
             "realized_pnl": self.realized_pnl,
-            "unrealized_pnl": self._unrealized_pnl(),
+            "realized_notional_pnl": self.realized_pnl,
+            "realized_margin_pnl": self.realized_margin_pnl,
+            "unrealized_pnl": unrealized,
+            "unrealized_notional_pnl": unrealized,
+            "unrealized_margin_pnl": unrealized_margin,
             "max_drawdown": self.max_drawdown,
             "trade_count": len(self.closed_trade_pnls),
             "open_positions": len(self.positions),
             "win_rate": len(wins) / len(self.closed_trade_pnls) if self.closed_trade_pnls else 0.0,
             "profit_factor": gross_profit / gross_loss if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0),
+            "margin_profit_factor": (
+                sum(margin_wins) / abs(sum(margin_losses))
+                if sum(margin_losses) < 0
+                else (sum(margin_wins) if margin_wins else 0.0)
+            ),
+            "pnl_accounting_mode": "notional_primary_margin_reporting",
         }
 
     def _unrealized_pnl(self) -> float:
@@ -264,40 +324,66 @@ class PaperTradingLedger:
             total += gross - fee(exit_notional, FEE_BPS) - fee(exit_notional, SLIPPAGE_BPS)
         return total
 
+    def _unrealized_margin_pnl(self) -> float:
+        total = 0.0
+        for position in self.positions.values():
+            fraction = max(0.0, position.remaining_fraction)
+            quantity = position.quantity * fraction
+            gross = _gross_pnl(position.side, position.entry_price, position.last_price, quantity)
+            exit_notional = abs(quantity * position.last_price)
+            notional_net = gross - fee(exit_notional, FEE_BPS) - fee(exit_notional, SLIPPAGE_BPS)
+            total += notional_net * max(1, int(position.leverage))
+        return total
+
     def _load_positions(self) -> dict[str, PaperPosition]:
-        path = self.output_dir / "paper_positions.json"
+        path = self.state_dir / "paper_positions.json"
         if not path.exists():
             return {}
         data = json.loads(path.read_text(encoding="utf-8"))
         positions: dict[str, PaperPosition] = {}
         for symbol, payload in data.items():
             values = dict(payload)
+            values.setdefault("tp_consumed", [])
             values.setdefault("last_processed_kline_ts", values.get("entry_time", 0))
+            values.setdefault("realized_margin_pnl", float(values.get("realized_pnl") or 0.0) * max(1, int(values.get("leverage") or 1)))
             positions[symbol] = PaperPosition(**values)
         return positions
 
     def _load_equity(self) -> None:
-        path = self.output_dir / "paper_equity.json"
+        path = self.state_dir / "paper_equity.json"
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
             self.realized_pnl = float(data.get("realized_pnl") or 0.0)
+            self.realized_margin_pnl = float(data.get("realized_margin_pnl") or data.get("realized_pnl") or 0.0)
             self.equity_peak = float(data.get("equity_peak") or self.initial_equity)
             self.max_drawdown = float(data.get("max_drawdown") or 0.0)
-        trades_path = self.output_dir / "paper_trades.jsonl"
+        trades_path = self.state_dir / "paper_trades.jsonl"
         if trades_path.exists():
             for line in trades_path.read_text(encoding="utf-8").splitlines():
                 row = json.loads(line)
                 if row.get("event") == "PAPER_CLOSE":
                     self.closed_trade_pnls.append(float(row.get("position_realized_pnl") or row.get("net_pnl") or 0.0))
+                    self.closed_trade_margin_pnls.append(
+                        float(row.get("position_margin_realized_pnl") or row.get("position_realized_pnl") or row.get("net_pnl") or 0.0)
+                    )
 
     def _append_trade_event(self, row: Mapping[str, Any]) -> None:
         payload = dict(row)
         payload.setdefault("recorded_at", int(time.time()))
-        with (self.output_dir / "paper_trades.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        line = json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+        for directory in self._write_dirs():
+            with (directory / "paper_trades.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(line)
 
     def _write_json(self, name: str, payload: Mapping[str, Any]) -> None:
-        (self.output_dir / name).write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        text = json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True)
+        for directory in self._write_dirs():
+            (directory / name).write_text(text, encoding="utf-8")
+
+    def _write_dirs(self) -> list[Path]:
+        if self.state_dir == self.output_dir:
+            return [self.output_dir]
+        return [self.state_dir, self.output_dir]
 
 
 def _positive_float(value: Any) -> float | None:
@@ -312,6 +398,10 @@ def _gross_pnl(side: str, entry_price: float, exit_price: float, quantity: float
     if side == "SHORT":
         return (entry_price - exit_price) * quantity
     return (exit_price - entry_price) * quantity
+
+
+def _margin_used(notional: float, leverage: int) -> float:
+    return notional / max(1, int(leverage))
 
 
 def _stop_hit(side: str, high: float, low: float, stop_price: float) -> bool:
