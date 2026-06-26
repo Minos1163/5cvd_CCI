@@ -176,8 +176,9 @@ class PaperTradingLedger:
         position.last_processed_kline_ts = timestamp
         events: list[str] = []
         if _stop_hit(position.side, high, low, position.stop_price):
-            net = self._close_fraction(position, timestamp, position.stop_price, position.remaining_fraction, "STOP_HIT")
-            events.append(f"PAPER_CLOSE:{symbol}:STOP_HIT:{net:.4f}")
+            reason = _stop_exit_reason(position)
+            net = self._close_fraction(position, timestamp, position.stop_price, position.remaining_fraction, reason)
+            events.append(f"PAPER_CLOSE:{symbol}:{reason}:{net:.4f}")
             self.positions.pop(symbol, None)
         else:
             consumed = set(position.tp_consumed)
@@ -314,6 +315,34 @@ class PaperTradingLedger:
             "pnl_accounting_mode": "notional_primary_margin_reporting",
         }
 
+    def recent_closed_trades(
+        self,
+        symbol: str,
+        *,
+        reason: str | None = None,
+        since_ts: int | None = None,
+        until_ts: int | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized = symbol.strip().upper()
+        rows: list[dict[str, Any]] = []
+        for row in self._read_trade_events():
+            if row.get("event") != "PAPER_CLOSE":
+                continue
+            if str(row.get("symbol", "")).strip().upper() != normalized:
+                continue
+            if reason is not None and row.get("reason") != reason:
+                continue
+            ts = int(row.get("timestamp") or 0)
+            if since_ts is not None and ts < since_ts:
+                continue
+            if until_ts is not None and ts > until_ts:
+                continue
+            rows.append(row)
+        return rows
+
+    def has_positive_closed_trade(self, symbol: str, *, until_ts: int | None = None) -> bool:
+        return any(float(row.get("position_realized_pnl") or row.get("net_pnl") or 0.0) > 0.0 for row in self.recent_closed_trades(symbol, until_ts=until_ts))
+
     def _unrealized_pnl(self) -> float:
         total = 0.0
         for position in self.positions.values():
@@ -367,6 +396,20 @@ class PaperTradingLedger:
                         float(row.get("position_margin_realized_pnl") or row.get("position_realized_pnl") or row.get("net_pnl") or 0.0)
                     )
 
+    def _read_trade_events(self) -> list[dict[str, Any]]:
+        path = self.state_dir / "paper_trades.jsonl"
+        if not path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                rows.append(payload)
+        return rows
+
     def _append_trade_event(self, row: Mapping[str, Any]) -> None:
         payload = dict(row)
         payload.setdefault("recorded_at", int(time.time()))
@@ -414,3 +457,7 @@ def _tp_hit(side: str, high: float, low: float, tp_price: float) -> bool:
     if side == "SHORT":
         return low <= tp_price
     return high >= tp_price
+
+
+def _stop_exit_reason(position: PaperPosition) -> str:
+    return "BREAKEVEN_STOP_HIT" if position.tp_consumed else "INITIAL_STOP_HIT"

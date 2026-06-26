@@ -308,6 +308,7 @@ def build_entry_chain_strategy(
             atr_pct_value,
             use_ema_architecture=cfg.use_ema_architecture,
             ema200_gate_mode=cfg.ema200_gate_mode,
+            use_fib_pa_architecture=cfg.use_fib_pa_architecture,
         )
         bars_15m = completed["15m"]
         entry_context = EntryChainContext(

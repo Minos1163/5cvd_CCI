@@ -49,11 +49,33 @@ class EntryChainConfig:
     disable_probe: bool = False
     blacklist_symbols: tuple[str, ...] = ()
     watch_only_symbols: tuple[str, ...] = ()
+    observation_only_symbols: tuple[str, ...] = ()
     dry_run_symbols: tuple[str, ...] = ()
     dry_run_symbol_source: str = "configured"
     dry_run_rank_start: int = 3
     dry_run_rank_end: int = 25
     dry_run_warmup_15m_bars: int = 240
+    use_fib_pa_architecture: bool = False
+    fib_swing_fractal_k: int = 2
+    fib_swing_min_atr_mult: float = 1.2
+    fib_swing_min_spacing_bars: int = 6
+    fib_swing_lookback_15m: int = 50
+    fib_swing_lookback_1h: int = 30
+    fib_extension_exhaustion_mult: float = 1.618
+    fib_level_tolerance_atr_mult: float = 0.5
+    pa_min_direct_score: float = 6.0
+    fib_min_direct_score: float = 6.0
+    rr_min_direct_score: float = 2.0
+    leverage_5x_fib_min: float = 13.0
+    leverage_5x_pa_min: float = 9.0
+    leverage_5x_cci_min: float = 7.0
+    leverage_5x_rr_min: float = 4.0
+    weak_edge_direct_min_score: float = 82.0
+    weak_edge_direct_max_score: float = 85.0
+    rolling_symbol_cooldown_enabled: bool = False
+    rolling_symbol_cooldown_stop_threshold: int = 2
+    rolling_symbol_cooldown_window_hours: int = 48
+    rolling_symbol_cooldown_hours: int = 24
     long_threshold_offset: float = 0.0
     short_threshold_offset: float = 0.0
     long_min_direction_direct_score: float | None = None
@@ -82,6 +104,8 @@ class EntryChainConfig:
             values["blacklist_symbols"] = _normalize_symbols(values["blacklist_symbols"])
         if "watch_only_symbols" in values:
             values["watch_only_symbols"] = _normalize_symbols(values["watch_only_symbols"])
+        if "observation_only_symbols" in values:
+            values["observation_only_symbols"] = _normalize_symbols(values["observation_only_symbols"])
         if "dry_run_symbols" in values:
             values["dry_run_symbols"] = _normalize_symbols(values["dry_run_symbols"])
         return cls(**values)

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import traceback
+from dataclasses import replace
 from pathlib import Path
 from datetime import UTC, datetime
 from typing import Any, Mapping, Sequence
@@ -22,8 +24,8 @@ from src.observability.decision_audit import DecisionAuditWriter
 from src.observability.dry_run_summary import DryRunSummary, write_summary
 from src.observability.paper_trading import PaperTradingLedger
 from src.risk.stress_simulator import stress_decision
-from src.signals.entry_chain import EntryChainContext, evaluate_entry_chain
-from src.signals.entry_chain_config import load_entry_chain_config
+from src.signals.entry_chain import EntryChainContext, EntryChainDecision, evaluate_entry_chain
+from src.signals.entry_chain_config import EntryChainConfig, load_entry_chain_config
 from src.signals.entry_chain_features import (
     atr_pct,
     component_scores,
@@ -94,6 +96,13 @@ def run(args: argparse.Namespace) -> None:
     output_dir: Path | None = None
     audit: DecisionAuditWriter | None = None
     paper: PaperTradingLedger | None = None
+    startup_ts = int(time.time())
+    startup_output_dir = resolve_output_dir(args, timestamp=startup_ts)
+    write_runtime_log(
+        startup_output_dir,
+        render_startup_log(args, startup_ts, symbols, symbol_meta, warmup_state, config.dry_run_warmup_15m_bars),
+        timestamp=startup_ts,
+    )
     try:
         while True:
             alignment_lines = wait_for_kline_alignment(args)
@@ -127,7 +136,12 @@ def run(args: argparse.Namespace) -> None:
                 context, context_health, debug = build_context(symbol, now, args, config, warmup_state.get(symbol))
                 if context_health != "OK":
                     data_health = context_health
-                decision = evaluate_entry_chain(context, config)
+                decision = apply_dry_run_decision_controls(
+                    evaluate_entry_chain(context, config),
+                    config=config,
+                    paper=paper,
+                    timestamp=now,
+                )
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 market_snapshot = synthetic_market_snapshot()
                 decision_payload = decision.to_dict()
@@ -216,6 +230,77 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--market-data-source", default="synthetic", choices=["synthetic", "public-binance"])
     parser.add_argument("--public-kline-limit", type=int, default=240)
     return parser.parse_args()
+
+
+def apply_dry_run_decision_controls(
+    decision: EntryChainDecision,
+    *,
+    config: EntryChainConfig,
+    paper: PaperTradingLedger,
+    timestamp: int,
+) -> EntryChainDecision:
+    symbol = str(decision.metadata.get("symbol") or "").strip().upper()
+    if decision.action not in {"PROBE", "DIRECT"}:
+        return decision
+    reasons: list[str] = []
+    if symbol in config.observation_only_symbols:
+        reasons.append("SYMBOL_OBSERVATION_ONLY")
+    if _rolling_initial_stop_cooldown_active(symbol, config, paper, timestamp):
+        reasons.append("SYMBOL_ROLLING_INITIAL_STOP_COOLDOWN")
+    if _weak_edge_direct_without_positive_history(decision, config, paper, timestamp):
+        reasons.append("DIRECT_WEAK_EDGE_DEMOTED")
+    if not reasons:
+        return decision
+    return _cap_decision_to_watch(decision, reasons)
+
+
+def _cap_decision_to_watch(decision: EntryChainDecision, reasons: Sequence[str]) -> EntryChainDecision:
+    merged_reasons = tuple(dict.fromkeys([*decision.reasons, *reasons]))
+    return replace(
+        decision,
+        action="WATCH",
+        side="NONE",
+        reasons=merged_reasons,
+        risk_allowed=False,
+        leverage=0,
+        notional_hint=0.0,
+    )
+
+
+def _rolling_initial_stop_cooldown_active(
+    symbol: str,
+    config: EntryChainConfig,
+    paper: PaperTradingLedger,
+    timestamp: int,
+) -> bool:
+    if not config.rolling_symbol_cooldown_enabled:
+        return False
+    window_seconds = max(1, int(config.rolling_symbol_cooldown_window_hours)) * 3600
+    cooldown_seconds = max(1, int(config.rolling_symbol_cooldown_hours)) * 3600
+    stops = paper.recent_closed_trades(
+        symbol,
+        reason="INITIAL_STOP_HIT",
+        since_ts=timestamp - window_seconds,
+        until_ts=timestamp,
+    )
+    if len(stops) < max(1, int(config.rolling_symbol_cooldown_stop_threshold)):
+        return False
+    latest_stop_ts = max(int(row.get("timestamp") or 0) for row in stops)
+    return timestamp < latest_stop_ts + cooldown_seconds
+
+
+def _weak_edge_direct_without_positive_history(
+    decision: EntryChainDecision,
+    config: EntryChainConfig,
+    paper: PaperTradingLedger,
+    timestamp: int,
+) -> bool:
+    if decision.action != "DIRECT":
+        return False
+    if decision.score < config.weak_edge_direct_min_score or decision.score > config.weak_edge_direct_max_score:
+        return False
+    symbol = str(decision.metadata.get("symbol") or "").strip().upper()
+    return not paper.has_positive_closed_trade(symbol, until_ts=timestamp)
 
 
 def resolve_output_dir(args: argparse.Namespace, *, timestamp: int | None = None) -> Path:
@@ -368,12 +453,25 @@ def render_schedule_wait_log(args: argparse.Namespace, cycle_started_ts: int, cy
     )
 
 
-def synthetic_context(symbol: str, timestamp: int) -> EntryChainContext:
+def synthetic_context(symbol: str, timestamp: int, config: EntryChainConfig | None = None) -> EntryChainContext:
+    cfg = config or EntryChainConfig()
+    scores = synthetic_component_scores(symbol, timestamp, cfg)
     return EntryChainContext(
         symbol=symbol,
         timestamp=timestamp,
         side="LONG",
-        component_scores={
+        component_scores=scores,
+        quote_volume_24h=200_000_000.0,
+        atr_pct=0.018,
+        expected_order_size=1_000.0,
+        account_equity=10_000.0,
+        available_margin=8_000.0,
+    )
+
+
+def synthetic_component_scores(symbol: str, timestamp: int, config: EntryChainConfig) -> dict[str, float]:
+    if not config.use_fib_pa_architecture:
+        return {
             "background_4h": 0.8,
             "direction_1h": 0.8,
             "quality_30m": 0.75,
@@ -382,12 +480,28 @@ def synthetic_context(symbol: str, timestamp: int) -> EntryChainContext:
             "volatility_stop": 0.9,
             "liquidity_execution": 1.0,
             "market_regime": 0.8,
-        },
-        quote_volume_24h=200_000_000.0,
-        atr_pct=0.018,
-        expected_order_size=1_000.0,
-        account_equity=10_000.0,
-        available_margin=8_000.0,
+        }
+    price = synthetic_price(symbol)
+    bars = [
+        BacktestBar(
+            symbol=symbol.upper(),
+            timestamp=timestamp - (240 - index) * 900,
+            open=price + index * 0.01,
+            high=price + index * 0.01 + 0.2,
+            low=price + index * 0.01 - 0.2,
+            close=price + index * 0.01,
+            volume=1000.0,
+        )
+        for index in range(240)
+    ]
+    histories = {"15m": bars, "30m": bars[-80:], "1h": bars[-80:], "4h": bars[-80:]}
+    return component_scores(
+        "LONG",
+        histories,
+        0.01,
+        use_ema_architecture=config.use_ema_architecture,
+        ema200_gate_mode=config.ema200_gate_mode,
+        use_fib_pa_architecture=config.use_fib_pa_architecture,
     )
 
 
@@ -399,7 +513,7 @@ def build_context(
     warmup_history: Mapping[str, Sequence[BacktestBar]] | None = None,
 ) -> tuple[EntryChainContext, str, dict[str, Any]]:
     if args.market_data_source == "synthetic":
-        context = synthetic_context(symbol, timestamp)
+        context = synthetic_context(symbol, timestamp, config)
         return context, "OK", synthetic_debug_snapshot(symbol, timestamp, context)
     try:
         histories = fetch_public_market_histories(symbol, limit=public_history_limit(args, config))
@@ -510,6 +624,7 @@ def public_market_context(
         atr_pct_value,
         use_ema_architecture=config.use_ema_architecture,
         ema200_gate_mode=config.ema200_gate_mode,
+        use_fib_pa_architecture=config.use_fib_pa_architecture,
     )
     previous_bar = bars_15m[-2]
     current_bar = bars_15m[-1]
@@ -757,13 +872,19 @@ def write_health(
     (output_dir / "health.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def write_runtime_log(output_dir: Path, lines: Sequence[str]) -> None:
+def write_runtime_log(output_dir: Path, lines: Sequence[str], *, timestamp: int | None = None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    with (output_dir / "runtime.out.log").open("a", encoding="utf-8") as handle:
+    with (output_dir / runtime_log_name(int(time.time()) if timestamp is None else timestamp)).open("a", encoding="utf-8") as handle:
         for line in lines:
             handle.write(line)
             handle.write("\n")
         handle.write("\n")
+
+
+def runtime_log_name(timestamp: int) -> str:
+    hour = datetime.fromtimestamp(timestamp, tz=UTC).hour
+    bucket = (hour // 6) * 6
+    return f"runtime.out.{bucket:02d}.log"
 
 
 def render_cycle_header(
@@ -785,6 +906,34 @@ def render_cycle_header(
         f"fallback={symbol_meta.get('fallback_used')} error={symbol_meta.get('error')}",
         f"启动预热: {format_warmup_summary(warmup_state, symbols, required_15m)}",
     ]
+
+
+def render_startup_log(
+    args: argparse.Namespace,
+    startup_ts: int,
+    symbols: Sequence[str],
+    symbol_meta: Mapping[str, Any],
+    warmup_state: Mapping[str, Mapping[str, Sequence[BacktestBar]]],
+    required_15m: int,
+) -> list[str]:
+    lines = [
+        f"=== AI300_DRY_RUN process_start @ {utc_text(startup_ts)} === [mode={args.market_data_source}, kline_align={'ON' if args.align_to_kline_close else 'OFF'}, tf={args.kline_interval_seconds}s]",
+        f"进程启动: pid={os.getpid()}, config={args.config}, target_tier={args.target_tier}, log_root={args.log_root}",
+        "交易对宇宙: "
+        f"source={symbol_meta.get('source')} rank={symbol_meta.get('rank_start')}-{symbol_meta.get('rank_end')} "
+        f"fallback={symbol_meta.get('fallback_used')} error={symbol_meta.get('error')} symbols={len(symbols)}",
+        f"启动预热完成: {format_warmup_summary(warmup_state, symbols, required_15m)}",
+    ]
+    if args.align_to_kline_close:
+        next_ts = next_kline_run_timestamp(float(startup_ts), args.kline_interval_seconds, args.post_close_delay_seconds)
+        lines.append(
+            "first_scan_wait: "
+            f"next_review_utc={utc_text(next_ts)}, post_close_delay={args.post_close_delay_seconds:.2f}s, "
+            f"sleep_until_first_scan={max(0.0, next_ts - startup_ts):.2f}s"
+        )
+    else:
+        lines.append(f"first_scan_wait: align_to_kline_close=OFF, first_cycle_starts_immediately=True, interval_seconds={args.interval_seconds:.2f}s")
+    return lines
 
 
 def render_paper_account_header(paper: PaperTradingLedger, timestamp: int) -> str:
@@ -832,6 +981,7 @@ def render_symbol_log(
     score_detail = decision_payload.get("score_detail", {})
     points = score_detail.get("points", {})
     scores = score_detail.get("scores", {})
+    weights = score_detail.get("weights", {})
     reasons = decision_payload.get("reasons", [])
     reason_text = ",".join(str(item) for item in reasons) if reasons else "-"
     hold_reason = "approved_order_draft" if draft_payload.get("approved") else str(draft_payload.get("reason", "waiting_rule_confirmation"))
@@ -846,19 +996,42 @@ def render_symbol_log(
         f"side={context.side}, atr_pct={context.atr_pct:.4f}, stop_pct={fmt_pct(context.stop_pct)}, "
         f"long_flags=overext:{int(context.long_overextension_active)}/wick:{int(context.long_upper_wick_risk_active)}/"
         f"chase:{int(context.long_chase_risk_active)}/lowliq:{int(context.long_low_liquidity_session_active)}/cvdweak:{int(context.long_cvd_weak_active)}",
-        "   评分明细: "
-        f"score={decision_payload.get('score')} | "
-        f"direction={fmt(scores.get('direction_1h'))}->{fmt(points.get('direction_1h'))}, "
-        f"quality={fmt(scores.get('quality_30m'))}->{fmt(points.get('quality_30m'))}, "
-        f"trigger={fmt(scores.get('trigger_15m'))}->{fmt(points.get('trigger_15m'))}, "
-        f"cvd={fmt(scores.get('cvd_flow'))}->{fmt(points.get('cvd_flow'))}, "
-        f"ema50={fmt(scores.get('ema_50_quality'))}->{fmt(points.get('ema_50_quality'))}",
+        render_score_detail_line(decision_payload.get("score"), scores, points, weights),
         "   风险检查: "
         f"liquidity_ratio={decision_payload.get('liquidity_ratio')} | stress={stress.get('action')} "
         f"est_loss={fmt_pct(stress.get('estimated_loss_pct'))} | approved={draft_payload.get('approved')}",
         f"   决策原因: {reason_text}",
         f"   HOLD归因: {hold_reason}, lock=-",
     ]
+
+
+def render_score_detail_line(
+    score: Any,
+    scores: Mapping[str, Any],
+    points: Mapping[str, Any],
+    weights: Mapping[str, Any],
+) -> str:
+    if "trend_ema_context" in weights:
+        return (
+            "   评分明细: "
+            f"score={score} | "
+            f"ema={fmt(scores.get('trend_ema_context'))}->{fmt(points.get('trend_ema_context'))}, "
+            f"cvd={fmt(scores.get('flow_cvd_confirmation'))}->{fmt(points.get('flow_cvd_confirmation'))}, "
+            f"cci={fmt(scores.get('cci_momentum_quality'))}->{fmt(points.get('cci_momentum_quality'))}, "
+            f"pa={fmt(scores.get('price_action_structure'))}->{fmt(points.get('price_action_structure'))}, "
+            f"fib={fmt(scores.get('fibonacci_location'))}->{fmt(points.get('fibonacci_location'))}, "
+            f"rr={fmt(scores.get('risk_reward_geometry'))}->{fmt(points.get('risk_reward_geometry'))}, "
+            f"fib_cap={fmt(scores.get('fib_action_cap'))}"
+        )
+    return (
+        "   评分明细: "
+        f"score={score} | "
+        f"direction={fmt(scores.get('direction_1h'))}->{fmt(points.get('direction_1h'))}, "
+        f"quality={fmt(scores.get('quality_30m'))}->{fmt(points.get('quality_30m'))}, "
+        f"trigger={fmt(scores.get('trigger_15m'))}->{fmt(points.get('trigger_15m'))}, "
+        f"cvd={fmt(scores.get('cvd_flow'))}->{fmt(points.get('cvd_flow'))}, "
+        f"ema50={fmt(scores.get('ema_50_quality'))}->{fmt(points.get('ema_50_quality'))}"
+    )
 
 
 def render_paper_log(symbol: str, events: Sequence[str]) -> list[str]:

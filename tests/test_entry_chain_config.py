@@ -9,10 +9,14 @@ def test_load_entry_chain_config_from_json(tmp_path):
         '{"direct_threshold": 86, "daily_max_trades_base": 2, '
         '"disable_probe": true, "blacklist_symbols": ["XRPUSDT"], '
         '"watch_only_symbols": ["ADAUSDT"], '
+        '"observation_only_symbols": ["xlmusdt"], '
         '"dry_run_symbols": ["bnbusdt", " solusdt "], '
         '"dry_run_symbol_source": "market_cap_rank", '
         '"dry_run_rank_start": 3, "dry_run_rank_end": 25, '
         '"dry_run_warmup_15m_bars": 240, '
+        '"weak_edge_direct_min_score": 82, "weak_edge_direct_max_score": 85, '
+        '"rolling_symbol_cooldown_enabled": true, "rolling_symbol_cooldown_stop_threshold": 2, '
+        '"rolling_symbol_cooldown_window_hours": 48, "rolling_symbol_cooldown_hours": 24, '
         '"long_threshold_offset": 10, "short_threshold_offset": 0, '
         '"long_min_cvd_direct_score": 0.7}',
         encoding="utf-8",
@@ -27,11 +31,18 @@ def test_load_entry_chain_config_from_json(tmp_path):
     assert config.disable_probe is True
     assert config.blacklist_symbols == ("XRPUSDT",)
     assert config.watch_only_symbols == ("ADAUSDT",)
+    assert config.observation_only_symbols == ("XLMUSDT",)
     assert config.dry_run_symbols == ("BNBUSDT", "SOLUSDT")
     assert config.dry_run_symbol_source == "market_cap_rank"
     assert config.dry_run_rank_start == 3
     assert config.dry_run_rank_end == 25
     assert config.dry_run_warmup_15m_bars == 240
+    assert config.weak_edge_direct_min_score == 82
+    assert config.weak_edge_direct_max_score == 85
+    assert config.rolling_symbol_cooldown_enabled is True
+    assert config.rolling_symbol_cooldown_stop_threshold == 2
+    assert config.rolling_symbol_cooldown_window_hours == 48
+    assert config.rolling_symbol_cooldown_hours == 24
     assert config.long_threshold_offset == 10
     assert config.short_threshold_offset == 0
     assert config.long_min_cvd_direct_score == 0.7
@@ -55,6 +66,38 @@ def test_load_v5_long_context_discount_fields(tmp_path):
     assert config.long_upper_wick_trigger_mult == 0.6
     assert config.long_chase_trigger_mult == 0.75
     assert config.long_cvd_weak_mult == 0.8
+
+
+def test_load_fib_pa_fields_from_json(tmp_path):
+    path = tmp_path / "entry_chain_fib_pa.json"
+    path.write_text(
+        '{"use_fib_pa_architecture": true, '
+        '"fib_swing_fractal_k": 2, '
+        '"fib_swing_min_atr_mult": 1.2, '
+        '"fib_extension_exhaustion_mult": 1.618, '
+        '"pa_min_direct_score": 6.0, '
+        '"fib_min_direct_score": 6.0, '
+        '"rr_min_direct_score": 2.0, '
+        '"leverage_5x_fib_min": 13.0, '
+        '"leverage_5x_pa_min": 9.0, '
+        '"leverage_5x_cci_min": 7.0, '
+        '"leverage_5x_rr_min": 4.0}',
+        encoding="utf-8",
+    )
+
+    config = load_entry_chain_config(path)
+
+    assert config.use_fib_pa_architecture is True
+    assert config.fib_swing_fractal_k == 2
+    assert config.fib_swing_min_atr_mult == 1.2
+    assert config.fib_extension_exhaustion_mult == 1.618
+    assert config.pa_min_direct_score == 6.0
+    assert config.fib_min_direct_score == 6.0
+    assert config.rr_min_direct_score == 2.0
+    assert config.leverage_5x_fib_min == 13.0
+    assert config.leverage_5x_pa_min == 9.0
+    assert config.leverage_5x_cci_min == 7.0
+    assert config.leverage_5x_rr_min == 4.0
 
 
 def test_unknown_config_key_is_rejected(tmp_path):

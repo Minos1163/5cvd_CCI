@@ -70,7 +70,7 @@ Expected files:
 - `order_drafts.jsonl`
 - `attribution.jsonl`
 - `gate_rejections.csv`
-- `runtime.out.log`
+- `runtime.out.00.log` / `runtime.out.06.log` / `runtime.out.12.log` / `runtime.out.18.log`
 - `health.json`
 - `summary.json`
 - `paper_positions.json`
@@ -93,11 +93,31 @@ sudo systemctl status aibot.service --no-pager
 ## View Logs
 
 ```bash
-journalctl -u aibot.service -f
 TODAY_UTC=$(date -u +%F)
 MONTH_UTC=$(date -u +%Y-%m)
 LOG_DIR=/root/AIBOT/logs/$MONTH_UTC/$TODAY_UTC
-tail -f "$LOG_DIR/runtime.out.log"
+RUNTIME_BUCKET=$(printf "%02d" $((10#$(date -u +%H) / 6 * 6)))
+RUNTIME_LOG="$LOG_DIR/runtime.out.$RUNTIME_BUCKET.log"
+ls -la "$LOG_DIR"
+tail -f "$RUNTIME_LOG"
+```
+
+After `sudo systemctl restart aibot.service`, the runtime log should immediately contain a `process_start` block with `pid`, warmup status, and `sleep_until_first_scan`. If the service is sleeping until the next 15m kline close, this startup block is the expected restart confirmation.
+
+```bash
+sudo systemctl restart aibot.service
+sudo systemctl status aibot.service --no-pager -l
+journalctl -u aibot.service --since "2 minutes ago" --no-pager -o short-iso
+
+TODAY_UTC=$(date -u +%F)
+MONTH_UTC=$(date -u +%Y-%m)
+LOG_DIR=/root/AIBOT/logs/$MONTH_UTC/$TODAY_UTC
+RUNTIME_BUCKET=$(printf "%02d" $((10#$(date -u +%H) / 6 * 6)))
+RUNTIME_LOG="$LOG_DIR/runtime.out.$RUNTIME_BUCKET.log"
+tail -n 80 "$RUNTIME_LOG"
+```
+
+```bash
 tail -f "$LOG_DIR/decisions.jsonl"
 tail -f "$LOG_DIR/attribution.jsonl"
 tail -f "$LOG_DIR/paper_trades.jsonl"

@@ -95,6 +95,19 @@ def evaluate_entry_chain(context: EntryChainContext, config: EntryChainConfig | 
     score = round(sum(points.values()), 4)
     ratio = calculate_liquidity_ratio(context)
 
+    if cfg.use_fib_pa_architecture and float(scores.get("fib_action_cap", 1.0)) <= 0.0:
+        return _decision(
+            context,
+            cfg,
+            "NO_TRADE",
+            score,
+            weights,
+            points,
+            reasons + ["FIB_EXTENSION_EXHAUSTION_BLOCK"],
+            max_symbol_exposure_pct,
+            ratio,
+        )
+
     hard_block = hard_block_reason(context, cfg)
     if hard_block is not None:
         return _decision(context, cfg, "NO_TRADE", score, weights, points, reasons + [hard_block], max_symbol_exposure_pct, ratio)
@@ -139,7 +152,7 @@ def evaluate_entry_chain(context: EntryChainContext, config: EntryChainConfig | 
     if context.symbol_exposure_pct >= max_symbol_exposure_pct:
         return _decision(context, cfg, "NO_TRADE", score, weights, points, reasons + ["SYMBOL_EXPOSURE_CAP"], max_symbol_exposure_pct, ratio)
 
-    leverage = _select_leverage(action, score, context, reasons)
+    leverage = _select_leverage(action, score, context, cfg, reasons)
     notional_hint = _notional_hint(action, score, context, cfg, max_symbol_exposure_pct)
 
     return _decision(
@@ -282,6 +295,10 @@ def _apply_probe_disable(action: str, cfg: EntryChainConfig, reasons: list[str])
 
 def _apply_component_minimums(action: str, context: EntryChainContext, cfg: EntryChainConfig, reasons: list[str]) -> str:
     scores = context.component_scores
+    if cfg.use_fib_pa_architecture:
+        if action == "DIRECT":
+            return _apply_fib_pa_direct_minimums(action, scores, cfg, reasons)
+        return action
     if cfg.use_ema_architecture and cfg.ema200_gate_mode == "hard" and float(scores.get("ema_200_gate", 1.0)) <= 0.0:
         reasons.append("EMA200_HARD_GATE_FAILED")
         return "NO_TRADE"
@@ -342,6 +359,24 @@ def _direct_component_minimums(side: str, cfg: EntryChainConfig, reasons: list[s
     return checks
 
 
+def _apply_fib_pa_direct_minimums(
+    action: str,
+    scores: Mapping[str, float],
+    cfg: EntryChainConfig,
+    reasons: list[str],
+) -> str:
+    minimums = {
+        "price_action_structure": (cfg.pa_min_direct_score / 22.0, "PRICE_ACTION_STRUCTURE_BELOW_DIRECT_MINIMUM"),
+        "fibonacci_location": (cfg.fib_min_direct_score / 18.0, "FIBONACCI_LOCATION_BELOW_DIRECT_MINIMUM"),
+        "risk_reward_geometry": (cfg.rr_min_direct_score / 8.0, "RISK_REWARD_GEOMETRY_BELOW_DIRECT_MINIMUM"),
+    }
+    for component, (minimum, reason) in minimums.items():
+        if float(scores.get(component, 0.0)) < minimum:
+            reasons.append(reason)
+            return "PROBE"
+    return action
+
+
 def _liquidity_ratio(context: EntryChainContext) -> float:
     volatility_multiplier = max(1.0, context.atr_pct * 100.0)
     base = volatility_multiplier * context.expected_order_size
@@ -360,7 +395,13 @@ def _symbol_exposure_cap(symbol: str, cfg: EntryChainConfig) -> float:
     return cfg.max_mainstream_exposure_pct
 
 
-def _select_leverage(action: str, score: float, context: EntryChainContext, reasons: list[str]) -> int:
+def _select_leverage(
+    action: str,
+    score: float,
+    context: EntryChainContext,
+    cfg: EntryChainConfig,
+    reasons: list[str],
+) -> int:
     if action not in {"PROBE", "DIRECT"}:
         return 0
     if context.rolling_sharpe_20 is not None and context.rolling_sharpe_20 < 0:
@@ -371,8 +412,21 @@ def _select_leverage(action: str, score: float, context: EntryChainContext, reas
     if context.atr_pct > 0.015:
         return 4 if action == "DIRECT" else 3
     if score >= 90 and action == "DIRECT":
+        if cfg.use_fib_pa_architecture and not _fib_pa_5x_requirements_met(context.component_scores, cfg):
+            reasons.append("FIB_PA_5X_REQUIREMENTS_FAILED")
+            return 4
         return 5
     return 4 if action == "DIRECT" else 3
+
+
+def _fib_pa_5x_requirements_met(scores: Mapping[str, float], cfg: EntryChainConfig) -> bool:
+    requirements = {
+        "fibonacci_location": cfg.leverage_5x_fib_min / 18.0,
+        "price_action_structure": cfg.leverage_5x_pa_min / 22.0,
+        "cci_momentum_quality": cfg.leverage_5x_cci_min / 14.0,
+        "risk_reward_geometry": cfg.leverage_5x_rr_min / 8.0,
+    }
+    return all(float(scores.get(component, 0.0)) >= minimum for component, minimum in requirements.items())
 
 
 def _notional_hint(
@@ -419,7 +473,7 @@ def _decision(
     notional_hint: float | None = None,
 ) -> EntryChainDecision:
     unique_reasons = tuple(dict.fromkeys(reasons))
-    resolved_leverage = leverage if leverage is not None else _select_leverage(action, score, context, reasons)
+    resolved_leverage = leverage if leverage is not None else _select_leverage(action, score, context, cfg, reasons)
     resolved_notional = (
         notional_hint
         if notional_hint is not None

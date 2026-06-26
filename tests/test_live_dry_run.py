@@ -6,21 +6,43 @@ from pathlib import Path
 from argparse import Namespace
 
 from scripts.run_live_dry_run import (
+    apply_dry_run_decision_controls,
     build_context,
     next_kline_run_timestamp,
     public_market_context,
+    render_symbol_log,
     render_paper_account_header,
     render_schedule_wait_log,
+    render_startup_log,
     resolve_paper_state_dir,
     resolve_market_cap_rank_symbols,
     resolve_output_dir,
     resolve_runtime_symbols,
+    runtime_log_name,
     warmup_summary,
     warmup_symbols,
 )
 from src.backtest.engine import BacktestBar
 from src.observability.paper_trading import PaperTradingLedger
+from src.signals.entry_chain import EntryChainContext, EntryChainDecision
 from src.signals.entry_chain_config import EntryChainConfig
+
+
+def direct_decision(symbol: str = "SOLUSDT", score: float = 88.0) -> EntryChainDecision:
+    return EntryChainDecision(
+        action="DIRECT",
+        side="SHORT",
+        score=score,
+        weights={},
+        component_points={},
+        reasons=(),
+        risk_allowed=True,
+        leverage=4,
+        max_symbol_exposure_pct=0.2,
+        notional_hint=2000.0,
+        liquidity_ratio=100.0,
+        metadata={"symbol": symbol},
+    )
 
 
 def test_live_dry_run_once_writes_audit_files(tmp_path):
@@ -51,10 +73,15 @@ def test_live_dry_run_once_writes_audit_files(tmp_path):
     assert (tmp_path / "paper_trades.jsonl").exists()
     assert (tmp_path / "paper_equity.json").exists()
     assert (tmp_path / "paper_summary.json").exists()
-    runtime_log = tmp_path / "runtime.out.log"
+    runtime_logs = sorted(tmp_path.glob("runtime.out.*.log"))
+    assert len(runtime_logs) == 1
+    runtime_log = runtime_logs[0]
     assert runtime_log.exists()
     runtime_text = runtime_log.read_text(encoding="utf-8")
     assert "AI300_DRY_RUN cycle" in runtime_text
+    assert "AI300_DRY_RUN process_start" in runtime_text
+    assert "进程启动:" in runtime_text
+    assert "first_scan_wait:" in runtime_text
     assert "当前权益: equity=" in runtime_text
     assert "realized=" in runtime_text
     assert "win_rate=" in runtime_text
@@ -115,6 +142,109 @@ def test_live_dry_run_decision_json_contains_warmup_and_context_snapshot(tmp_pat
     assert "points" in row["score_detail"]
 
 
+def test_fib_pa_dry_run_once_emits_new_score_components_without_orders(tmp_path):
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_live_dry_run.py",
+            "--config",
+            "configs/entry_chain.dry_run_fib_pa_v1.json",
+            "--target-tier",
+            "aggressive",
+            "--market-data-source",
+            "synthetic",
+            "--once",
+            "--output-dir",
+            str(tmp_path),
+            "--symbols",
+            "SOLUSDT",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    row = json.loads((tmp_path / "decisions.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    scores = row["score_detail"]["scores"]
+
+    assert summary["orders_submitted"] == 0
+    assert "trend_ema_context" in scores
+    assert "flow_cvd_confirmation" in scores
+    assert "cci_momentum_quality" in scores
+    assert "price_action_structure" in scores
+    assert "fibonacci_location" in scores
+    assert "risk_reward_geometry" in scores
+
+
+def test_render_symbol_log_uses_fib_pa_score_detail_when_enabled():
+    context = EntryChainContext(
+        symbol="SOLUSDT",
+        timestamp=1000,
+        side="LONG",
+        component_scores={},
+        quote_volume_24h=100_000_000.0,
+        atr_pct=0.01,
+        expected_order_size=1000.0,
+        account_equity=10_000.0,
+        available_margin=8_000.0,
+        stop_pct=0.015,
+    )
+    decision_payload = {
+        "action": "WATCH",
+        "score": 77.49,
+        "leverage": 0,
+        "max_symbol_exposure_pct": 0.2,
+        "liquidity_ratio": 1000.0,
+        "reasons": ["FIB_PA_ARCHITECTURE_WEIGHTS"],
+        "score_detail": {
+            "scores": {
+                "trend_ema_context": 0.80,
+                "flow_cvd_confirmation": 1.00,
+                "cci_momentum_quality": 0.20,
+                "price_action_structure": 0.95,
+                "fibonacci_location": 1.00,
+                "risk_reward_geometry": 0.1875,
+                "fib_action_cap": 1.0,
+            },
+            "points": {
+                "trend_ema_context": 16.0,
+                "flow_cvd_confirmation": 18.0,
+                "cci_momentum_quality": 2.8,
+                "price_action_structure": 21.0,
+                "fibonacci_location": 18.0,
+                "risk_reward_geometry": 1.5,
+            },
+            "weights": {
+                "trend_ema_context": 20.0,
+                "flow_cvd_confirmation": 18.0,
+                "cci_momentum_quality": 14.0,
+                "price_action_structure": 22.0,
+                "fibonacci_location": 18.0,
+                "risk_reward_geometry": 8.0,
+            },
+        },
+    }
+
+    lines = render_symbol_log(
+        "SOLUSDT",
+        context,
+        decision_payload,
+        {"approved": False, "reason": "waiting"},
+        {"action": "ALLOW", "estimated_loss_pct": 0.0},
+        {"kline": {}, "warmup": {}},
+    )
+
+    score_line = next(line for line in lines if "评分明细" in line)
+    assert "ema=0.8000->16.0000" in score_line
+    assert "cvd=1.0000->18.0000" in score_line
+    assert "cci=0.2000->2.8000" in score_line
+    assert "pa=0.9500->21.0000" in score_line
+    assert "fib=1.0000->18.0000" in score_line
+    assert "rr=0.1875->1.5000" in score_line
+    assert "fib_cap=1.0000" in score_line
+
+
 def test_live_dry_run_paper_ledger_records_open_position_when_draft_is_approved(tmp_path):
     subprocess.run(
         [
@@ -137,6 +267,93 @@ def test_live_dry_run_paper_ledger_records_open_position_when_draft_is_approved(
     trade_rows = [json.loads(line) for line in (tmp_path / "paper_trades.jsonl").read_text(encoding="utf-8").splitlines()]
     assert positions["BNBUSDT"]["entry_price"] > 0
     assert trade_rows[0]["event"] == "PAPER_OPEN"
+
+
+def test_dry_run_decision_controls_cap_observation_only_symbol_to_watch(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision = direct_decision("XLMUSDT", score=94.0)
+    config = EntryChainConfig(observation_only_symbols=("XLMUSDT",))
+
+    controlled = apply_dry_run_decision_controls(decision, config=config, paper=ledger, timestamp=5000)
+
+    assert controlled.action == "WATCH"
+    assert controlled.side == "NONE"
+    assert controlled.risk_allowed is False
+    assert controlled.leverage == 0
+    assert controlled.notional_hint == 0.0
+    assert "SYMBOL_OBSERVATION_ONLY" in controlled.reasons
+
+
+def test_dry_run_decision_controls_demote_weak_edge_without_positive_history(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision = direct_decision("LINKUSDT", score=83.58)
+    config = EntryChainConfig(weak_edge_direct_min_score=82.0, weak_edge_direct_max_score=85.0)
+
+    controlled = apply_dry_run_decision_controls(decision, config=config, paper=ledger, timestamp=5000)
+
+    assert controlled.action == "WATCH"
+    assert "DIRECT_WEAK_EDGE_DEMOTED" in controlled.reasons
+
+
+def test_dry_run_decision_controls_keep_weak_edge_with_positive_history(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision_payload = {
+        "action": "DIRECT",
+        "side": "LONG",
+        "score": 88,
+        "leverage": 4,
+        "entry_context": {"atr_pct": 0.01},
+        "reasons": ["TEST_DIRECT"],
+    }
+    draft_payload = {
+        "approved": True,
+        "request": {"position_side": "LONG", "quantity": 10, "price": 100},
+    }
+    ledger.on_decision(symbol="LINKUSDT", decision_payload=decision_payload, draft_payload=draft_payload, kline={"close": 100, "high": 100, "low": 100}, timestamp=1000)
+    ledger.on_decision(symbol="LINKUSDT", decision_payload={"action": "NO_TRADE"}, draft_payload={"approved": False}, kline={"close": 103, "high": 103, "low": 101}, timestamp=1900)
+    ledger.on_decision(symbol="LINKUSDT", decision_payload={"action": "NO_TRADE"}, draft_payload={"approved": False}, kline={"close": 105, "high": 105, "low": 103}, timestamp=2800)
+    ledger.on_decision(symbol="LINKUSDT", decision_payload={"action": "NO_TRADE"}, draft_payload={"approved": False}, kline={"close": 106, "high": 106, "low": 104}, timestamp=3700)
+
+    controlled = apply_dry_run_decision_controls(
+        direct_decision("LINKUSDT", score=83.58),
+        config=EntryChainConfig(weak_edge_direct_min_score=82.0, weak_edge_direct_max_score=85.0),
+        paper=ledger,
+        timestamp=5000,
+    )
+
+    assert controlled.action == "DIRECT"
+    assert "DIRECT_WEAK_EDGE_DEMOTED" not in controlled.reasons
+
+
+def test_dry_run_decision_controls_apply_rolling_initial_stop_cooldown(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision_payload = {
+        "action": "DIRECT",
+        "side": "LONG",
+        "score": 88,
+        "leverage": 4,
+        "entry_context": {"atr_pct": 0.01},
+        "reasons": ["TEST_DIRECT"],
+    }
+    draft_payload = {
+        "approved": True,
+        "request": {"position_side": "LONG", "quantity": 10, "price": 100},
+    }
+    ledger.on_decision(symbol="XLMUSDT", decision_payload=decision_payload, draft_payload=draft_payload, kline={"close": 100, "high": 100, "low": 100}, timestamp=1000)
+    ledger.on_decision(symbol="XLMUSDT", decision_payload={"action": "NO_TRADE"}, draft_payload={"approved": False}, kline={"close": 100, "high": 103, "low": 98}, timestamp=1900)
+    ledger.on_decision(symbol="XLMUSDT", decision_payload=decision_payload, draft_payload=draft_payload, kline={"close": 100, "high": 100, "low": 100}, timestamp=3000)
+    ledger.on_decision(symbol="XLMUSDT", decision_payload={"action": "NO_TRADE"}, draft_payload={"approved": False}, kline={"close": 100, "high": 103, "low": 98}, timestamp=3900)
+    config = EntryChainConfig(
+        rolling_symbol_cooldown_enabled=True,
+        rolling_symbol_cooldown_stop_threshold=2,
+        rolling_symbol_cooldown_window_hours=48,
+        rolling_symbol_cooldown_hours=24,
+    )
+
+    controlled = apply_dry_run_decision_controls(direct_decision("XLMUSDT", score=94.0), config=config, paper=ledger, timestamp=4000)
+
+    assert controlled.action == "WATCH"
+    assert "SYMBOL_ROLLING_INITIAL_STOP_COOLDOWN" in controlled.reasons
 
 
 def test_live_dry_run_uses_configured_symbols_when_cli_symbols_are_omitted(tmp_path):
@@ -398,7 +615,7 @@ def test_live_dry_run_log_root_uses_month_and_day_directories(tmp_path):
     )
 
     output_dir = tmp_path / "2026-06" / "2026-06-20"
-    assert (output_dir / "runtime.out.log").exists()
+    assert len(list(output_dir.glob("runtime.out.*.log"))) == 1
     assert (output_dir / "attribution.jsonl").exists()
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["orders_submitted"] == 0
@@ -494,6 +711,38 @@ def test_next_kline_run_timestamp_aligns_after_quarter_hour_close():
     assert next_kline_run_timestamp(899, 900, 5) == 905
     assert next_kline_run_timestamp(900, 900, 5) == 905
     assert next_kline_run_timestamp(905.1, 900, 5) == 1805
+
+
+def test_runtime_log_name_uses_utc_six_hour_buckets():
+    assert runtime_log_name(0) == "runtime.out.00.log"
+    assert runtime_log_name(5 * 3600 + 3599) == "runtime.out.00.log"
+    assert runtime_log_name(6 * 3600) == "runtime.out.06.log"
+    assert runtime_log_name(11 * 3600 + 3599) == "runtime.out.06.log"
+    assert runtime_log_name(12 * 3600) == "runtime.out.12.log"
+    assert runtime_log_name(18 * 3600) == "runtime.out.18.log"
+    assert runtime_log_name(23 * 3600 + 3599) == "runtime.out.18.log"
+
+
+def test_startup_log_reports_first_aligned_scan_wait():
+    args = Namespace(
+        market_data_source="public-binance",
+        align_to_kline_close=True,
+        kline_interval_seconds=900,
+        post_close_delay_seconds=5.0,
+        interval_seconds=60.0,
+        config="configs/entry_chain.dry_run_highest_win.json",
+        target_tier="aggressive",
+        log_root="/root/AIBOT/logs",
+    )
+    symbol_meta = {"source": "market_cap_rank", "rank_start": 3, "rank_end": 25, "fallback_used": False, "error": None}
+
+    lines = render_startup_log(args, 906, ["SOLUSDT"], symbol_meta, {"SOLUSDT": {"15m": []}}, 240)
+
+    assert lines[0].startswith("=== AI300_DRY_RUN process_start @ 1970-01-01 00:15:06 UTC")
+    assert "进程启动: pid=" in lines[1]
+    assert "symbols=1" in lines[2]
+    assert "启动预热完成:" in lines[3]
+    assert lines[4] == "first_scan_wait: next_review_utc=1970-01-01 00:30:05 UTC, post_close_delay=5.00s, sleep_until_first_scan=899.00s"
 
 
 def test_schedule_wait_log_includes_alignment_sleep_seconds():

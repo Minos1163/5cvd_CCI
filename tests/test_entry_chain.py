@@ -278,3 +278,60 @@ def test_long_low_liquidity_session_caps_direct_to_watch():
     assert decision.action == "WATCH"
     assert decision.risk_allowed is False
     assert "LONG_LOW_LIQUIDITY_SESSION_WATCH" in decision.reasons
+
+
+def fib_pa_scores(**overrides):
+    scores = {
+        "trend_ema_context": 1.0,
+        "flow_cvd_confirmation": 1.0,
+        "cci_momentum_quality": 1.0,
+        "price_action_structure": 1.0,
+        "fibonacci_location": 1.0,
+        "risk_reward_geometry": 1.0,
+        "fib_action_cap": 1.0,
+    }
+    scores.update(overrides)
+    return scores
+
+
+def test_fib_pa_direct_demotes_when_pa_below_minimum():
+    cfg = EntryChainConfig(use_fib_pa_architecture=True, direct_threshold=82.0, disable_probe=True)
+    decision = evaluate_entry_chain(
+        candidate(side="SHORT", component_scores=fib_pa_scores(price_action_structure=5.0 / 22.0)),
+        cfg,
+    )
+
+    assert decision.action == "NO_TRADE"
+    assert "PRICE_ACTION_STRUCTURE_BELOW_DIRECT_MINIMUM" in decision.reasons
+    assert "PROBE_DISABLED" in decision.reasons
+
+
+def test_fib_pa_extension_block_rejects_even_high_score():
+    cfg = EntryChainConfig(use_fib_pa_architecture=True, direct_threshold=82.0)
+    decision = evaluate_entry_chain(
+        candidate(side="SHORT", component_scores=fib_pa_scores(fib_action_cap=0.0)),
+        cfg,
+    )
+
+    assert decision.action == "NO_TRADE"
+    assert decision.score == 100.0
+    assert "FIB_EXTENSION_EXHAUSTION_BLOCK" in decision.reasons
+
+
+def test_fib_pa_5x_requires_fib_pa_cci_rr_minimums():
+    cfg = EntryChainConfig(use_fib_pa_architecture=True, direct_threshold=82.0)
+    decision = evaluate_entry_chain(
+        candidate(
+            side="SHORT",
+            atr_pct=0.01,
+            component_scores=fib_pa_scores(
+                cci_momentum_quality=6.0 / 14.0,
+            ),
+        ),
+        cfg,
+    )
+
+    assert decision.action == "DIRECT"
+    assert decision.score >= 90.0
+    assert decision.leverage == 4
+    assert "FIB_PA_5X_REQUIREMENTS_FAILED" in decision.reasons

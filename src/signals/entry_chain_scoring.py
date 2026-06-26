@@ -40,10 +40,22 @@ EMA_WEIGHTS = {
     "market_regime": 2.0,
 }
 
+FIB_PA_WEIGHTS = {
+    "trend_ema_context": 20.0,
+    "flow_cvd_confirmation": 18.0,
+    "cci_momentum_quality": 14.0,
+    "price_action_structure": 22.0,
+    "fibonacci_location": 18.0,
+    "risk_reward_geometry": 8.0,
+}
+
 
 def dynamic_weights(atr_pct: float, config: EntryChainConfig | None = None) -> tuple[dict[str, float], list[str]]:
     cfg = config or EntryChainConfig()
     reasons: list[str] = []
+    if cfg.use_fib_pa_architecture:
+        reasons.append("FIB_PA_ARCHITECTURE_WEIGHTS")
+        return dict(FIB_PA_WEIGHTS), reasons
     if cfg.use_ema_architecture:
         reasons.append("EMA_ARCHITECTURE_WEIGHTS")
         return dict(EMA_WEIGHTS), reasons

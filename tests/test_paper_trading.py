@@ -72,14 +72,48 @@ def test_paper_trading_ledger_closes_on_conservative_stop_before_tp(tmp_path):
         timestamp=1900,
     )
 
-    assert events[0].startswith("PAPER_CLOSE:SOLUSDT:STOP_HIT")
+    assert events[0].startswith("PAPER_CLOSE:SOLUSDT:INITIAL_STOP_HIT")
     positions = json.loads((tmp_path / "paper_positions.json").read_text(encoding="utf-8"))
     summary = json.loads((tmp_path / "paper_summary.json").read_text(encoding="utf-8"))
     trade_rows = [json.loads(line) for line in (tmp_path / "paper_trades.jsonl").read_text(encoding="utf-8").splitlines()]
     assert positions == {}
     assert summary["trade_count"] == 1
     assert trade_rows[-1]["event"] == "PAPER_CLOSE"
-    assert trade_rows[-1]["reason"] == "STOP_HIT"
+    assert trade_rows[-1]["reason"] == "INITIAL_STOP_HIT"
+
+
+def test_paper_trading_ledger_classifies_stop_after_tp1_as_breakeven(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision, draft = approved_decision()
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1000,
+    )
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 101.5, "high": 101.5, "low": 100.5},
+        timestamp=1900,
+    )
+
+    events = ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 100.1, "high": 100.2, "low": 99.9},
+        timestamp=2800,
+    )
+
+    assert events[0].startswith("PAPER_CLOSE:SOLUSDT:BREAKEVEN_STOP_HIT")
+    trade_rows = [json.loads(line) for line in (tmp_path / "paper_trades.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row.get("reason") for row in trade_rows if row["event"] in {"PAPER_REDUCE", "PAPER_CLOSE"}] == [
+        "TP1_HIT",
+        "BREAKEVEN_STOP_HIT",
+    ]
 
 
 def test_paper_trading_ledger_tracks_tp_ladder_profit_factor(tmp_path):
@@ -206,6 +240,65 @@ def test_paper_trading_ledger_records_margin_pnl_labels(tmp_path):
     assert trade_rows[0]["pnl_accounting_mode"] == "notional_primary_margin_reporting"
     assert trade_rows[0]["margin_used"] == trade_rows[0]["notional"] / trade_rows[0]["leverage"]
     assert trade_rows[0]["margin_pnl"] == trade_rows[0]["notional_pnl"] * trade_rows[0]["leverage"]
+
+
+def test_paper_trading_ledger_exposes_recent_initial_stops_and_positive_history(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision, draft = approved_decision()
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1000,
+    )
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 100, "high": 103, "low": 98},
+        timestamp=1900,
+    )
+    ledger.on_decision(
+        symbol="TONUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=2000,
+    )
+    ledger.on_decision(
+        symbol="TONUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 103, "high": 103, "low": 101.5},
+        timestamp=2900,
+    )
+    ledger.on_decision(
+        symbol="TONUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 105, "high": 105, "low": 103},
+        timestamp=3800,
+    )
+    ledger.on_decision(
+        symbol="TONUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 106, "high": 106, "low": 104},
+        timestamp=4700,
+    )
+
+    recent_stops = ledger.recent_closed_trades(
+        "SOLUSDT",
+        reason="INITIAL_STOP_HIT",
+        since_ts=1000,
+        until_ts=2000,
+    )
+
+    assert len(recent_stops) == 1
+    assert recent_stops[0]["reason"] == "INITIAL_STOP_HIT"
+    assert ledger.has_positive_closed_trade("TONUSDT", until_ts=5000) is True
+    assert ledger.has_positive_closed_trade("SOLUSDT", until_ts=5000) is False
 
 
 def test_paper_trading_ledger_deduplicates_hold_bars_by_kline_timestamp(tmp_path):

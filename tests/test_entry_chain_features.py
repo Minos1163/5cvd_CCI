@@ -39,3 +39,27 @@ def test_component_scores_include_ema_when_enabled():
     assert scores["ema_200_gate"] == 1.0
     assert scores["ema_50_quality"] > 0
     assert scores["ema_momentum"] > 0
+
+
+def test_fib_pa_component_scores_are_present_when_enabled():
+    bars_15m = [
+        BacktestBar("SOLUSDT", 1000 + index * 900, 100 - index * 0.2, 101 - index * 0.2, 99 - index * 0.2, 100 - index * 0.2, 1000)
+        for index in range(240)
+    ]
+    completed = {"15m": bars_15m, "1h": bars_15m[-80:], "30m": bars_15m[-80:], "4h": bars_15m[-80:]}
+
+    scores = component_scores(
+        "SHORT",
+        completed,
+        atr_pct_value=0.01,
+        use_ema_architecture=True,
+        ema200_gate_mode="soft",
+        use_fib_pa_architecture=True,
+    )
+
+    assert "trend_ema_context" in scores
+    assert "flow_cvd_confirmation" in scores
+    assert "cci_momentum_quality" in scores
+    assert "price_action_structure" in scores
+    assert "fibonacci_location" in scores
+    assert "risk_reward_geometry" in scores

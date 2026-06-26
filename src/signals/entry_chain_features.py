@@ -6,7 +6,10 @@ from typing import Mapping, Sequence
 
 from src.backtest.engine import BacktestBar
 from src.indicators.ema import bars_since_cross, ema, normalized_ema_slope
+from src.signals.cci_quality import cci_series, score_cci_momentum_quality
 from src.signals.ema_scorer import EmaContext, ema_direction_gate, score_ema50_quality, score_ema_momentum
+from src.signals.fib_location import compute_fib_levels, detect_fractal_swings, score_fibonacci_location
+from src.signals.pa_structure import score_price_action_structure
 
 
 def completed_bars(bars: Sequence[BacktestBar], timestamp: int) -> list[BacktestBar]:
@@ -33,6 +36,7 @@ def component_scores(
     *,
     use_ema_architecture: bool = False,
     ema200_gate_mode: str = "hard",
+    use_fib_pa_architecture: bool = False,
 ) -> dict[str, float]:
     scores = {
         "background_4h": agreement_score(side, completed.get("4h", []), 3),
@@ -59,7 +63,128 @@ def component_scores(
             else:
                 scores["ema_50_quality"] = 0.0
                 scores["ema_momentum"] = 0.0
+    if use_fib_pa_architecture:
+        scores.update(fib_pa_component_scores(side, completed, atr_pct_value, ema200_gate_mode=ema200_gate_mode))
     return scores
+
+
+def fib_pa_component_scores(
+    side: str,
+    completed: Mapping[str, Sequence[BacktestBar]],
+    atr_pct_value: float,
+    *,
+    ema200_gate_mode: str = "soft",
+) -> dict[str, float]:
+    bars_15m = list(completed.get("15m", []))
+    bars_1h = list(completed.get("1h", []))
+    latest_close = bars_15m[-1].close if bars_15m else 0.0
+    atr_value = latest_close * max(0.0, atr_pct_value)
+
+    ema_score = trend_ema_context_score(side, bars_15m, ema200_gate_mode)
+    cvd_score = volume_flow_score(side, bars_15m)
+    cci_result = score_cci_momentum_quality(cci_series(bars_15m), side)
+
+    swings_15m = detect_fractal_swings(bars_15m, atr=atr_value)
+    pa_result = score_price_action_structure(bars_15m, side, swings_15m, atr=atr_value)
+
+    fib_1h = latest_fib_from_bars(bars_1h, side, atr_value)
+    fib_15m = latest_fib_from_bars(bars_15m, side, atr_value)
+    fib_result = score_fibonacci_location(
+        close=latest_close,
+        side=side,
+        fib_1h=fib_1h,
+        fib_15m=fib_15m,
+        atr=atr_value,
+    )
+
+    rr_score = risk_reward_geometry_score(latest_close, side, atr_value, atr_pct_value, swings_15m)
+
+    return {
+        "trend_ema_context": ema_score,
+        "flow_cvd_confirmation": cvd_score,
+        "cci_momentum_quality": max(0.0, min(1.0, cci_result.score / 14.0)),
+        "price_action_structure": max(0.0, min(1.0, pa_result.score / 22.0)),
+        "fibonacci_location": max(0.0, min(1.0, fib_result.score / 18.0)),
+        "risk_reward_geometry": max(0.0, min(1.0, rr_score / 8.0)),
+        "fib_action_cap": 0.0 if fib_result.action_cap == "NO_TRADE" else 1.0,
+    }
+
+
+def trend_ema_context_score(side: str, bars: Sequence[BacktestBar], ema200_gate_mode: str) -> float:
+    context = ema_context_from_bars(bars)
+    if context is None:
+        return 0.0
+    gate = ema_direction_gate(side, context, mode=ema200_gate_mode)
+    gate_score = 8.0 if gate.allowed else 0.0
+    ema50_score = max(0.0, score_ema50_quality(side, context) + gate.penalty) * 7.0 if gate.allowed else 0.0
+    momentum_score = score_ema_momentum(side, context) * 5.0 if gate.allowed else 0.0
+    return max(0.0, min(1.0, (gate_score + ema50_score + momentum_score) / 20.0))
+
+
+def latest_fib_from_bars(
+    bars: Sequence[BacktestBar],
+    side: str,
+    atr_value: float,
+) -> dict[str, float] | None:
+    swings = detect_fractal_swings(bars, atr=atr_value)
+    highs = [item.price for item in swings if item.kind == "HIGH"]
+    lows = [item.price for item in swings if item.kind == "LOW"]
+    if not highs or not lows:
+        return None
+    trend = "DOWN" if side.strip().upper() == "SHORT" else "UP"
+    swing_high = max(highs[-3:])
+    swing_low = min(lows[-3:])
+    levels = compute_fib_levels(swing_high, swing_low, trend)
+    return levels or None
+
+
+def risk_reward_geometry_score(
+    close: float,
+    side: str,
+    atr_value: float,
+    atr_pct_value: float,
+    swings: Sequence[object],
+) -> float:
+    if close <= 0 or atr_value <= 0:
+        return 0.0
+    stop_dist = max(close * 0.005, min(close * 0.030, atr_value * 1.5))
+    net_tp1_r = (stop_dist - close * 0.001) / stop_dist if stop_dist > 0 else 0.0
+    if net_tp1_r >= 1.3:
+        score = 5.0
+    elif net_tp1_r >= 1.1:
+        score = 3.5
+    elif net_tp1_r >= 0.9:
+        score = 2.0
+    else:
+        score = 0.0
+
+    opposition = nearest_opposition_price(close, side, swings)
+    if opposition is not None:
+        if side.strip().upper() == "SHORT":
+            distance = close - opposition
+        else:
+            distance = opposition - close
+        if 0 < distance < stop_dist * 0.7:
+            score -= 3.0
+        elif 0 < distance < stop_dist:
+            score -= 1.5
+
+    if 0.008 <= atr_pct_value <= 0.025:
+        score += 3.0
+    elif 0.005 <= atr_pct_value < 0.008:
+        score += 1.5
+    elif atr_pct_value > 0.030:
+        score += 1.0
+    return max(0.0, min(8.0, score))
+
+
+def nearest_opposition_price(close: float, side: str, swings: Sequence[object]) -> float | None:
+    normalized = side.strip().upper()
+    if normalized == "SHORT":
+        supports = [float(item.price) for item in swings if getattr(item, "kind", "") == "LOW" and item.price < close]
+        return max(supports) if supports else None
+    resistances = [float(item.price) for item in swings if getattr(item, "kind", "") == "HIGH" and item.price > close]
+    return min(resistances) if resistances else None
 
 
 def ema_context_from_bars(bars: Sequence[BacktestBar]) -> EmaContext | None:
