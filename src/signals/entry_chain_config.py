@@ -47,6 +47,7 @@ class EntryChainConfig:
     ema50_min_for_direct: float = 0.60
     ema50_min_for_probe: float = 0.40
     disable_probe: bool = False
+    probe_conditions: Mapping[str, Any] | None = None
     blacklist_symbols: tuple[str, ...] = ()
     watch_only_symbols: tuple[str, ...] = ()
     observation_only_symbols: tuple[str, ...] = ()

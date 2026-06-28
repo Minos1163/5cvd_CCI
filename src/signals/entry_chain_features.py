@@ -12,6 +12,9 @@ from src.signals.fib_location import compute_fib_levels, detect_fractal_swings, 
 from src.signals.pa_structure import score_price_action_structure
 
 
+TP1_R_MULTIPLIER = 1.2
+
+
 def completed_bars(bars: Sequence[BacktestBar], timestamp: int) -> list[BacktestBar]:
     return [bar for bar in bars if bar.timestamp <= timestamp]
 
@@ -97,7 +100,7 @@ def fib_pa_component_scores(
         atr=atr_value,
     )
 
-    rr_score = risk_reward_geometry_score(latest_close, side, atr_value, atr_pct_value, swings_15m)
+    rr_detail = risk_reward_geometry_detail(latest_close, side, atr_value, atr_pct_value, swings_15m)
 
     return {
         "trend_ema_context": ema_score,
@@ -105,7 +108,7 @@ def fib_pa_component_scores(
         "cci_momentum_quality": max(0.0, min(1.0, cci_result.score / 14.0)),
         "price_action_structure": max(0.0, min(1.0, pa_result.score / 22.0)),
         "fibonacci_location": max(0.0, min(1.0, fib_result.score / 18.0)),
-        "risk_reward_geometry": max(0.0, min(1.0, rr_score / 8.0)),
+        "risk_reward_geometry": max(0.0, min(1.0, float(rr_detail["score"]) / 8.0)),
         "fib_action_cap": 0.0 if fib_result.action_cap == "NO_TRADE" else 1.0,
     }
 
@@ -145,10 +148,28 @@ def risk_reward_geometry_score(
     atr_pct_value: float,
     swings: Sequence[object],
 ) -> float:
+    return float(risk_reward_geometry_detail(close, side, atr_value, atr_pct_value, swings)["score"])
+
+
+def risk_reward_geometry_detail(
+    close: float,
+    side: str,
+    atr_value: float,
+    atr_pct_value: float,
+    swings: Sequence[object],
+) -> dict[str, float | str | None]:
     if close <= 0 or atr_value <= 0:
-        return 0.0
+        return {
+            "score": 0.0,
+            "net_tp1_r": 0.0,
+            "stop_pct": 0.0,
+            "tp1_pct": 0.0,
+            "opposition_dist_r": None,
+            "rr_zero_reason": "INVALID_INPUT",
+        }
     stop_dist = max(close * 0.005, min(close * 0.030, atr_value * 1.5))
-    net_tp1_r = (stop_dist - close * 0.001) / stop_dist if stop_dist > 0 else 0.0
+    tp1_dist = stop_dist * TP1_R_MULTIPLIER
+    net_tp1_r = (tp1_dist - close * 0.001) / stop_dist if stop_dist > 0 else 0.0
     if net_tp1_r >= 1.3:
         score = 5.0
     elif net_tp1_r >= 1.1:
@@ -159,23 +180,50 @@ def risk_reward_geometry_score(
         score = 0.0
 
     opposition = nearest_opposition_price(close, side, swings)
+    opposition_too_close = False
+    opposition_dist_r = None
     if opposition is not None:
         if side.strip().upper() == "SHORT":
             distance = close - opposition
         else:
             distance = opposition - close
+        opposition_dist_r = distance / stop_dist if stop_dist > 0 else None
         if 0 < distance < stop_dist * 0.7:
             score -= 3.0
+            opposition_too_close = True
         elif 0 < distance < stop_dist:
             score -= 1.5
 
+    atr_out_of_range = False
     if 0.008 <= atr_pct_value <= 0.025:
         score += 3.0
     elif 0.005 <= atr_pct_value < 0.008:
         score += 1.5
     elif atr_pct_value > 0.030:
         score += 1.0
-    return max(0.0, min(8.0, score))
+    else:
+        atr_out_of_range = True
+
+    final_score = max(0.0, min(8.0, score))
+    rr_zero_reason = ""
+    if final_score <= 0.0:
+        if net_tp1_r < 0.9:
+            rr_zero_reason = "NET_TP1_R_TOO_LOW"
+        elif opposition_too_close:
+            rr_zero_reason = "OPPOSITION_STRUCTURE_TOO_CLOSE"
+        elif atr_out_of_range:
+            rr_zero_reason = "ATR_OUT_OF_RANGE"
+        else:
+            rr_zero_reason = "UNKNOWN"
+
+    return {
+        "score": round(final_score, 4),
+        "net_tp1_r": round(net_tp1_r, 3),
+        "stop_pct": round(stop_dist / close, 4),
+        "tp1_pct": round(tp1_dist / close, 4),
+        "opposition_dist_r": round(opposition_dist_r, 3) if opposition_dist_r is not None else None,
+        "rr_zero_reason": rr_zero_reason,
+    }
 
 
 def nearest_opposition_price(close: float, side: str, swings: Sequence[object]) -> float | None:

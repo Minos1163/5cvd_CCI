@@ -6,6 +6,7 @@ from pathlib import Path
 from argparse import Namespace
 
 from scripts.run_live_dry_run import (
+    apply_paper_state_to_context,
     apply_dry_run_decision_controls,
     build_context,
     next_kline_run_timestamp,
@@ -24,7 +25,7 @@ from scripts.run_live_dry_run import (
 )
 from src.backtest.engine import BacktestBar
 from src.observability.paper_trading import PaperTradingLedger
-from src.signals.entry_chain import EntryChainContext, EntryChainDecision
+from src.signals.entry_chain import EntryChainContext, EntryChainDecision, evaluate_entry_chain
 from src.signals.entry_chain_config import EntryChainConfig
 
 
@@ -223,6 +224,12 @@ def test_render_symbol_log_uses_fib_pa_score_detail_when_enabled():
                 "fibonacci_location": 18.0,
                 "risk_reward_geometry": 8.0,
             },
+            "diagnostics": {
+                "risk_reward_geometry": {
+                    "net_tp1_r": 0.87,
+                    "rr_zero_reason": "NET_TP1_R_TOO_LOW",
+                }
+            },
         },
     }
 
@@ -243,6 +250,8 @@ def test_render_symbol_log_uses_fib_pa_score_detail_when_enabled():
     assert "fib=1.0000->18.0000" in score_line
     assert "rr=0.1875->1.5000" in score_line
     assert "fib_cap=1.0000" in score_line
+    assert "rr_net=0.8700" in score_line
+    assert "rr_zero=NET_TP1_R_TOO_LOW" in score_line
 
 
 def test_live_dry_run_paper_ledger_records_open_position_when_draft_is_approved(tmp_path):
@@ -267,6 +276,60 @@ def test_live_dry_run_paper_ledger_records_open_position_when_draft_is_approved(
     trade_rows = [json.loads(line) for line in (tmp_path / "paper_trades.jsonl").read_text(encoding="utf-8").splitlines()]
     assert positions["BNBUSDT"]["entry_price"] > 0
     assert trade_rows[0]["event"] == "PAPER_OPEN"
+
+
+def test_live_dry_run_injects_paper_state_before_duplicate_symbol_approval(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision_payload = {
+        "action": "DIRECT",
+        "side": "SHORT",
+        "score": 88,
+        "leverage": 3,
+        "entry_context": {"atr_pct": 0.01},
+        "reasons": ["TEST_DIRECT"],
+    }
+    draft_payload = {
+        "approved": True,
+        "request": {"position_side": "SHORT", "quantity": 10, "price": 100},
+    }
+    ledger.on_decision(
+        symbol="LABUSDT",
+        decision_payload=decision_payload,
+        draft_payload=draft_payload,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1000,
+    )
+    next_day = 1000 + 86400
+    context = EntryChainContext(
+        symbol="LABUSDT",
+        timestamp=next_day,
+        side="SHORT",
+        component_scores={
+            "background_4h": 1.0,
+            "direction_1h": 1.0,
+            "quality_30m": 1.0,
+            "trigger_15m": 1.0,
+            "cvd_flow": 1.0,
+            "volatility_stop": 1.0,
+            "liquidity_execution": 1.0,
+            "market_regime": 1.0,
+        },
+        quote_volume_24h=200_000_000.0,
+        atr_pct=0.018,
+        expected_order_size=1_000.0,
+        account_equity=10_000.0,
+        available_margin=8_000.0,
+    )
+
+    hydrated = apply_paper_state_to_context(context, ledger, next_day)
+    decision = evaluate_entry_chain(hydrated, EntryChainConfig(max_symbol_trades_per_day=1))
+
+    assert hydrated.active_symbols == 1
+    assert hydrated.active_symbol_names == frozenset({"LABUSDT"})
+    assert hydrated.symbol_trades_today == 0
+    assert hydrated.symbol_exposure_pct > 0
+    assert decision.action == "NO_TRADE"
+    assert "SYMBOL_POSITION_ALREADY_OPEN" in decision.reasons
 
 
 def test_dry_run_decision_controls_cap_observation_only_symbol_to_watch(tmp_path):

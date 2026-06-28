@@ -103,7 +103,19 @@ def test_fib_pa_dry_run_config_loads_and_is_dry_run_safe():
     config = load_entry_chain_config("configs/entry_chain.dry_run_fib_pa_v1.json")
 
     assert config.use_fib_pa_architecture is True
-    assert config.disable_probe is True
+    assert config.disable_probe is False
+    assert config.probe_conditions == {
+        "enabled": True,
+        "min_score": 72.0,
+        "min_fib_score": 12.0,
+        "min_pa_score": 6.0,
+        "min_rr_net_r": 0.9,
+        "min_rr_score": 2.0,
+        "long_threshold_offset": 7.0,
+        "short_threshold_offset": 0.0,
+        "max_active_probes": 2,
+    }
+    assert config.long_threshold_offset == 10.0
     assert config.blacklist_symbols == ("XRPUSDT", "ZECUSDT")
     assert "XLMUSDT" in config.observation_only_symbols
     assert "TONUSDT" in config.observation_only_symbols

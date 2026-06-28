@@ -37,6 +37,7 @@ class EntryChainContext:
     polluted_until_ts: int | None = None
     websocket_reconnect_recent: bool = False
     active_symbols: int = 0
+    active_symbol_names: frozenset[str] = frozenset()
     portfolio_trades_today: int = 0
     symbol_trades_today: int = 0
     current_volatility_scale: float = 1.0
@@ -113,7 +114,11 @@ def evaluate_entry_chain(context: EntryChainContext, config: EntryChainConfig | 
         return _decision(context, cfg, "NO_TRADE", score, weights, points, reasons + [hard_block], max_symbol_exposure_pct, ratio)
 
     action = _score_to_action(score, cfg, side, reasons)
-    action = _apply_probe_disable(_apply_component_minimums(action, context.with_updates(component_scores=scores), cfg, reasons), cfg, reasons)
+    action = _apply_probe_disable(
+        _apply_component_minimums(action, score, context.with_updates(component_scores=scores), cfg, reasons),
+        cfg,
+        reasons,
+    )
 
     if cfg.enable_long_context_discounts and side == "LONG" and context.long_low_liquidity_session_active:
         action = _min_action(action, "WATCH")
@@ -201,6 +206,8 @@ def _hard_block_reason(context: EntryChainContext, cfg: EntryChainConfig) -> str
         return "DATA_WICK_ANOMALY"
     if context.polluted_until_ts is not None and context.timestamp <= context.polluted_until_ts:
         return "DATA_POLLUTION_COOLDOWN"
+    if context.symbol.strip().upper() in context.active_symbol_names:
+        return "SYMBOL_POSITION_ALREADY_OPEN"
     if context.active_symbols >= cfg.max_active_symbols:
         return "MAX_ACTIVE_SYMBOLS"
     if context.portfolio_trades_today >= _daily_max_trades(context, cfg):
@@ -234,8 +241,9 @@ def _score_to_action(score: float, cfg: EntryChainConfig, side: str = "", reason
     offset = _side_threshold_offset(side, cfg)
     if offset and reasons is not None:
         reasons.append(f"SIDE_THRESHOLD_OFFSET_{side}_{offset:.2f}")
+    probe_offset = _probe_threshold_offset(side, cfg, offset)
     direct_threshold = cfg.direct_threshold + offset
-    probe_threshold = cfg.probe_threshold + offset
+    probe_threshold = cfg.probe_threshold + probe_offset
     watch_threshold = cfg.watch_threshold + offset
     if score >= direct_threshold:
         return "DIRECT"
@@ -253,6 +261,18 @@ def _side_threshold_offset(side: str, cfg: EntryChainConfig) -> float:
     if normalized == "SHORT":
         return float(cfg.short_threshold_offset)
     return 0.0
+
+
+def _probe_threshold_offset(side: str, cfg: EntryChainConfig, default_offset: float) -> float:
+    conditions = dict(cfg.probe_conditions or {})
+    if not conditions.get("enabled", False):
+        return default_offset
+    normalized = side.strip().upper()
+    if normalized == "LONG" and "long_threshold_offset" in conditions:
+        return float(conditions["long_threshold_offset"])
+    if normalized == "SHORT" and "short_threshold_offset" in conditions:
+        return float(conditions["short_threshold_offset"])
+    return default_offset
 
 
 def _apply_long_context_discounts(
@@ -293,11 +313,19 @@ def _apply_probe_disable(action: str, cfg: EntryChainConfig, reasons: list[str])
     return action
 
 
-def _apply_component_minimums(action: str, context: EntryChainContext, cfg: EntryChainConfig, reasons: list[str]) -> str:
+def _apply_component_minimums(
+    action: str,
+    score: float,
+    context: EntryChainContext,
+    cfg: EntryChainConfig,
+    reasons: list[str],
+) -> str:
     scores = context.component_scores
     if cfg.use_fib_pa_architecture:
         if action == "DIRECT":
-            return _apply_fib_pa_direct_minimums(action, scores, cfg, reasons)
+            action = _apply_fib_pa_direct_minimums(action, scores, cfg, reasons)
+        if action == "PROBE":
+            return _apply_fib_pa_probe_minimums(action, score, scores, cfg, reasons)
         return action
     if cfg.use_ema_architecture and cfg.ema200_gate_mode == "hard" and float(scores.get("ema_200_gate", 1.0)) <= 0.0:
         reasons.append("EMA200_HARD_GATE_FAILED")
@@ -365,16 +393,115 @@ def _apply_fib_pa_direct_minimums(
     cfg: EntryChainConfig,
     reasons: list[str],
 ) -> str:
-    minimums = {
-        "price_action_structure": (cfg.pa_min_direct_score / 22.0, "PRICE_ACTION_STRUCTURE_BELOW_DIRECT_MINIMUM"),
-        "fibonacci_location": (cfg.fib_min_direct_score / 18.0, "FIBONACCI_LOCATION_BELOW_DIRECT_MINIMUM"),
-        "risk_reward_geometry": (cfg.rr_min_direct_score / 8.0, "RISK_REWARD_GEOMETRY_BELOW_DIRECT_MINIMUM"),
+    weights = {
+        "price_action_structure": 22.0,
+        "fibonacci_location": 18.0,
+        "risk_reward_geometry": 8.0,
     }
-    for component, (minimum, reason) in minimums.items():
-        if float(scores.get(component, 0.0)) < minimum:
-            reasons.append(reason)
-            return "PROBE"
+    minimums = {
+        "price_action_structure": cfg.pa_min_direct_score,
+        "fibonacci_location": cfg.fib_min_direct_score,
+        "risk_reward_geometry": cfg.rr_min_direct_score,
+    }
+    points = _normalized_scores_to_points(scores, weights)
+    ok, reason = check_component_minimums(points, "DIRECT", minimums)
+    if not ok:
+        reasons.append(reason)
+        return "PROBE"
     return action
+
+
+def _apply_fib_pa_probe_minimums(
+    action: str,
+    score: float,
+    scores: Mapping[str, float],
+    cfg: EntryChainConfig,
+    reasons: list[str],
+) -> str:
+    conditions = dict(cfg.probe_conditions or {})
+    if not conditions.get("enabled", False):
+        return action
+    weights = {
+        "fibonacci_location": 18.0,
+        "price_action_structure": 22.0,
+        "risk_reward_geometry": 8.0,
+    }
+    points = _normalized_scores_to_points(scores, weights)
+    ok, reason = check_probe_conditions(
+        score=score,
+        side="",
+        component_points=points,
+        rr_detail=None,
+        config=conditions,
+    )
+    if not ok:
+        reasons.append(reason)
+        return "WATCH"
+    return action
+
+
+def _normalized_scores_to_points(scores: Mapping[str, float], weights: Mapping[str, float]) -> dict[str, float]:
+    return {
+        component: round(max(0.0, min(1.0, float(scores.get(component, 0.0)))) * weight, 4)
+        for component, weight in weights.items()
+    }
+
+
+def _component_minimum_reason(action: str, component: str, min_score: float, actual_score: float) -> str:
+    gap = max(0.0, min_score - actual_score)
+    return f"{action}_BELOW_{component.upper()}_MINIMUM_GAP_{gap:.1f}"
+
+
+def check_component_minimums(
+    component_points: Mapping[str, float],
+    action: str,
+    minimums: Mapping[str, float],
+) -> tuple[bool, str]:
+    for component, min_score in minimums.items():
+        actual_score = float(component_points.get(component, 0.0))
+        if actual_score < float(min_score):
+            return False, _component_minimum_reason(action, component, float(min_score), actual_score)
+    return True, ""
+
+
+def check_probe_conditions(
+    score: float,
+    side: str,
+    component_points: Mapping[str, float],
+    rr_detail: Mapping[str, float] | None,
+    config: Mapping[str, Any],
+) -> tuple[bool, str]:
+    if not bool(config.get("enabled", False)):
+        return False, "PROBE_DISABLED"
+
+    min_score = float(config.get("min_score", 72.0))
+    if float(score) < min_score:
+        gap = min_score - float(score)
+        return False, f"PROBE_BELOW_SCORE_MINIMUM_GAP_{gap:.1f}"
+
+    minimums = {
+        "fibonacci_location": float(config.get("min_fib_score", 12.0)),
+        "price_action_structure": float(config.get("min_pa_score", 6.0)),
+    }
+    ok, reason = check_component_minimums(component_points, "PROBE", minimums)
+    if not ok:
+        return False, reason
+
+    details = rr_detail or {}
+    net_tp1_r = details.get("net_tp1_r")
+    if net_tp1_r is not None:
+        min_rr_net_r = float(config.get("min_rr_net_r", 0.9))
+        if float(net_tp1_r) < min_rr_net_r:
+            gap = min_rr_net_r - float(net_tp1_r)
+            return False, f"PROBE_BELOW_RR_NET_R_MINIMUM_GAP_{gap:.1f}"
+    else:
+        rr_min_score = config.get("min_rr_score")
+        if rr_min_score is not None:
+            minimums = {"risk_reward_geometry": float(rr_min_score)}
+            ok, reason = check_component_minimums(component_points, "PROBE", minimums)
+            if not ok:
+                return False, reason
+    return True, ""
 
 
 def _liquidity_ratio(context: EntryChainContext) -> float:

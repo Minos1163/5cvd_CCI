@@ -53,6 +53,45 @@ def test_paper_trading_ledger_opens_position_and_writes_snapshots(tmp_path):
     assert "realized_margin_pnl" in summary
 
 
+def test_paper_trading_ledger_exposes_portfolio_state_snapshot(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision, draft = approved_decision()
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1000,
+    )
+
+    snapshot = ledger.get_portfolio_state_snapshot(timestamp=1000)
+
+    assert snapshot.active_symbols == {"SOLUSDT"}
+    assert snapshot.open_position_count == 1
+    assert snapshot.total_exposure_pct > 0
+    assert snapshot.same_direction_long_pct > 0
+    assert snapshot.same_direction_short_pct == 0
+    assert snapshot.symbol_exposure_pct["SOLUSDT"] > 0
+    assert snapshot.daily_trades_by_symbol["SOLUSDT"] == 1
+    assert snapshot.portfolio_trades_today == 1
+
+
+def test_paper_trading_ledger_sets_tp1_at_one_point_two_r(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision, draft = approved_decision()
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1000,
+    )
+
+    position = ledger.positions["SOLUSDT"]
+
+    assert round(position.tp_prices[0], 4) == 101.8
+
+
 def test_paper_trading_ledger_closes_on_conservative_stop_before_tp(tmp_path):
     ledger = PaperTradingLedger(tmp_path)
     decision, draft = approved_decision()
@@ -96,7 +135,7 @@ def test_paper_trading_ledger_classifies_stop_after_tp1_as_breakeven(tmp_path):
         symbol="SOLUSDT",
         decision_payload={"action": "NO_TRADE"},
         draft_payload={"approved": False},
-        kline={"close": 101.5, "high": 101.5, "low": 100.5},
+        kline={"close": 101.8, "high": 101.8, "low": 100.5},
         timestamp=1900,
     )
 
@@ -130,7 +169,7 @@ def test_paper_trading_ledger_tracks_tp_ladder_profit_factor(tmp_path):
         symbol="SOLUSDT",
         decision_payload={"action": "NO_TRADE"},
         draft_payload={"approved": False},
-        kline={"close": 101.5, "high": 101.5, "low": 100.5},
+        kline={"close": 101.8, "high": 101.8, "low": 100.5},
         timestamp=1900,
     )
     ledger.on_decision(
@@ -176,14 +215,14 @@ def test_paper_trading_ledger_does_not_repeat_consumed_tp_level(tmp_path):
         symbol="SOLUSDT",
         decision_payload={"action": "NO_TRADE"},
         draft_payload={"approved": False},
-        kline={"close": 101.5, "high": 101.5, "low": 100.5},
+        kline={"close": 101.8, "high": 101.8, "low": 100.5},
         timestamp=1900,
     )
     second = ledger.on_decision(
         symbol="SOLUSDT",
         decision_payload={"action": "NO_TRADE"},
         draft_payload={"approved": False},
-        kline={"close": 101.5, "high": 101.5, "low": 100.5},
+        kline={"close": 101.8, "high": 101.8, "low": 100.5},
         timestamp=2800,
     )
 

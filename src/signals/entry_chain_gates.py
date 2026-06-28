@@ -19,6 +19,7 @@ class EntryGateContext(Protocol):
     wick_anomaly_active: bool
     polluted_until_ts: int | None
     active_symbols: int
+    active_symbol_names: frozenset[str]
     portfolio_trades_today: int
     symbol_trades_today: int
     cooldown_until_ts: int | None
@@ -46,6 +47,8 @@ def hard_block_reason(context: EntryGateContext, cfg: EntryChainConfig) -> str |
         return "DATA_WICK_ANOMALY"
     if context.polluted_until_ts is not None and context.timestamp <= context.polluted_until_ts:
         return "DATA_POLLUTION_COOLDOWN"
+    if symbol in context.active_symbol_names:
+        return "SYMBOL_POSITION_ALREADY_OPEN"
     if context.active_symbols >= cfg.max_active_symbols:
         return "MAX_ACTIVE_SYMBOLS"
     if context.portfolio_trades_today >= daily_max_trades(context, cfg):

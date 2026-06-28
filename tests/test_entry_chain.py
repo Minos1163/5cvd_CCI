@@ -302,7 +302,7 @@ def test_fib_pa_direct_demotes_when_pa_below_minimum():
     )
 
     assert decision.action == "NO_TRADE"
-    assert "PRICE_ACTION_STRUCTURE_BELOW_DIRECT_MINIMUM" in decision.reasons
+    assert "DIRECT_BELOW_PRICE_ACTION_STRUCTURE_MINIMUM_GAP_1.0" in decision.reasons
     assert "PROBE_DISABLED" in decision.reasons
 
 
@@ -335,3 +335,51 @@ def test_fib_pa_5x_requires_fib_pa_cci_rr_minimums():
     assert decision.score >= 90.0
     assert decision.leverage == 4
     assert "FIB_PA_5X_REQUIREMENTS_FAILED" in decision.reasons
+
+
+def test_fib_pa_conditional_probe_requires_fib_pa_quality():
+    cfg = EntryChainConfig(
+        use_fib_pa_architecture=True,
+        direct_threshold=95.0,
+        probe_threshold=70.0,
+        probe_conditions={
+            "enabled": True,
+            "min_score": 72.0,
+            "min_fib_score": 12.0,
+            "min_pa_score": 6.0,
+            "min_rr_score": 2.0,
+        },
+    )
+
+    allowed = evaluate_entry_chain(
+        candidate(
+            side="SHORT",
+            component_scores=fib_pa_scores(
+                trend_ema_context=0.85,
+                flow_cvd_confirmation=1.0,
+                cci_momentum_quality=10.0 / 14.0,
+                price_action_structure=15.0 / 22.0,
+                fibonacci_location=18.0 / 18.0,
+                risk_reward_geometry=3.5 / 8.0,
+            ),
+        ),
+        cfg,
+    )
+    blocked = evaluate_entry_chain(
+        candidate(
+            side="SHORT",
+            component_scores=fib_pa_scores(
+                trend_ema_context=0.85,
+                flow_cvd_confirmation=1.0,
+                cci_momentum_quality=10.0 / 14.0,
+                price_action_structure=21.0 / 22.0,
+                fibonacci_location=9.0 / 18.0,
+                risk_reward_geometry=3.0 / 8.0,
+            ),
+        ),
+        cfg,
+    )
+
+    assert allowed.action == "PROBE"
+    assert blocked.action == "WATCH"
+    assert "PROBE_BELOW_FIBONACCI_LOCATION_MINIMUM_GAP_3.0" in blocked.reasons

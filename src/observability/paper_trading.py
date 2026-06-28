@@ -16,7 +16,7 @@ ATR_STOP_MULT = 1.5
 MIN_STOP_PCT = 0.005
 MAX_STOP_PCT = 0.03
 MAX_HOLD_BARS = 32
-TP_LEVELS = (1.0, 2.0, 3.0)
+TP_LEVELS = (1.2, 2.0, 3.0)
 TP_FRACTIONS = (0.40, 0.35, 0.25)
 
 
@@ -43,6 +43,19 @@ class PaperPosition:
     last_processed_kline_ts: int
     score: float
     reasons: list[str]
+
+
+@dataclass(frozen=True)
+class PortfolioStateSnapshot:
+    active_symbols: set[str]
+    open_position_count: int
+    total_exposure_pct: float
+    same_direction_long_pct: float
+    same_direction_short_pct: float
+    daily_trades_by_symbol: dict[str, int]
+    portfolio_trades_today: int
+    daily_profit_pct: float
+    symbol_exposure_pct: dict[str, float]
 
 
 class PaperTradingLedger:
@@ -342,6 +355,46 @@ class PaperTradingLedger:
 
     def has_positive_closed_trade(self, symbol: str, *, until_ts: int | None = None) -> bool:
         return any(float(row.get("position_realized_pnl") or row.get("net_pnl") or 0.0) > 0.0 for row in self.recent_closed_trades(symbol, until_ts=until_ts))
+
+    def get_portfolio_state_snapshot(self, timestamp: int | None = None) -> PortfolioStateSnapshot:
+        active_symbols = set(self.positions)
+        symbol_exposure_pct: dict[str, float] = {}
+        long_exposure = 0.0
+        short_exposure = 0.0
+        equity_base = self.initial_equity if self.initial_equity > 0 else 1.0
+        for symbol, position in self.positions.items():
+            exposure = position.notional * max(0.0, position.remaining_fraction) / equity_base
+            symbol_exposure_pct[symbol] = exposure
+            if position.side == "LONG":
+                long_exposure += exposure
+            elif position.side == "SHORT":
+                short_exposure += exposure
+
+        daily_trades_by_symbol: dict[str, int] = {}
+        if timestamp is not None:
+            day_start = int(timestamp) - (int(timestamp) % 86400)
+            day_end = day_start + 86400
+            for row in self._read_trade_events():
+                if row.get("event") != "PAPER_OPEN":
+                    continue
+                ts = int(row.get("timestamp") or 0)
+                if ts < day_start or ts >= day_end:
+                    continue
+                symbol = str(row.get("symbol", "")).strip().upper()
+                if symbol:
+                    daily_trades_by_symbol[symbol] = daily_trades_by_symbol.get(symbol, 0) + 1
+
+        return PortfolioStateSnapshot(
+            active_symbols=active_symbols,
+            open_position_count=len(active_symbols),
+            total_exposure_pct=sum(symbol_exposure_pct.values()),
+            same_direction_long_pct=long_exposure,
+            same_direction_short_pct=short_exposure,
+            daily_trades_by_symbol=daily_trades_by_symbol,
+            portfolio_trades_today=sum(daily_trades_by_symbol.values()),
+            daily_profit_pct=self.realized_pnl / equity_base,
+            symbol_exposure_pct=symbol_exposure_pct,
+        )
 
     def _unrealized_pnl(self) -> float:
         total = 0.0

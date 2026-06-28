@@ -22,7 +22,7 @@ from src.execution.live_entry_chain_adapter import build_live_entry_order_draft
 from src.backtest.engine import BacktestBar
 from src.observability.decision_audit import DecisionAuditWriter
 from src.observability.dry_run_summary import DryRunSummary, write_summary
-from src.observability.paper_trading import PaperTradingLedger
+from src.observability.paper_trading import PaperTradingLedger, PortfolioStateSnapshot
 from src.risk.stress_simulator import stress_decision
 from src.signals.entry_chain import EntryChainContext, EntryChainDecision, evaluate_entry_chain
 from src.signals.entry_chain_config import EntryChainConfig, load_entry_chain_config
@@ -35,8 +35,10 @@ from src.signals.entry_chain_features import (
     long_overextension_active,
     long_upper_wick_risk_active,
     quote_volume,
+    risk_reward_geometry_detail,
     wick_anomaly,
 )
+from src.signals.fib_location import detect_fractal_swings
 
 
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
@@ -134,6 +136,8 @@ def run(args: argparse.Namespace) -> None:
             for symbol in symbols:
                 started = time.perf_counter()
                 context, context_health, debug = build_context(symbol, now, args, config, warmup_state.get(symbol))
+                context = apply_paper_state_to_context(context, paper, now)
+                debug["entry_context"] = context_snapshot(context)
                 if context_health != "OK":
                     data_health = context_health
                 decision = apply_dry_run_decision_controls(
@@ -156,6 +160,7 @@ def run(args: argparse.Namespace) -> None:
                     "scores": debug.get("scores", {}),
                     "points": decision_payload.get("component_points", {}),
                     "weights": decision_payload.get("weights", {}),
+                    "diagnostics": debug.get("score_diagnostics", {}),
                     "total_score": decision_payload.get("score"),
                 }
                 decision_payload["entry_context"] = debug.get("entry_context", {})
@@ -252,6 +257,46 @@ def apply_dry_run_decision_controls(
     if not reasons:
         return decision
     return _cap_decision_to_watch(decision, reasons)
+
+
+def apply_paper_state_to_context(
+    context: EntryChainContext,
+    paper: PaperTradingLedger,
+    timestamp: int,
+) -> EntryChainContext:
+    snapshot = paper.get_portfolio_state_snapshot(timestamp)
+    enriched = apply_paper_snapshot_to_context(context, snapshot, paper.initial_equity)
+    return enriched.with_updates(
+        available_margin=max(0.0, paper.initial_equity * 0.8 - _paper_margin_used(paper)),
+    )
+
+
+def apply_paper_snapshot_to_context(
+    context: EntryChainContext,
+    snapshot: PortfolioStateSnapshot,
+    initial_equity: float,
+) -> EntryChainContext:
+    symbol = context.symbol.strip().upper()
+    side = context.side.strip().upper()
+    same_direction_exposure = (
+        snapshot.same_direction_long_pct
+        if side == "LONG"
+        else snapshot.same_direction_short_pct
+        if side == "SHORT"
+        else 0.0
+    )
+    equity = max(0.0, initial_equity * (1.0 + snapshot.daily_profit_pct))
+    return context.with_updates(
+        active_symbols=snapshot.open_position_count,
+        active_symbol_names=frozenset(snapshot.active_symbols),
+        portfolio_trades_today=snapshot.portfolio_trades_today,
+        symbol_trades_today=snapshot.daily_trades_by_symbol.get(symbol, 0),
+        daily_profit_pct=snapshot.daily_profit_pct,
+        symbol_exposure_pct=snapshot.symbol_exposure_pct.get(symbol, 0.0),
+        total_exposure_pct=snapshot.total_exposure_pct,
+        same_direction_exposure_pct=same_direction_exposure,
+        account_equity=equity if equity > 0 else context.account_equity,
+    )
 
 
 def _cap_decision_to_watch(decision: EntryChainDecision, reasons: Sequence[str]) -> EntryChainDecision:
@@ -626,6 +671,16 @@ def public_market_context(
         ema200_gate_mode=config.ema200_gate_mode,
         use_fib_pa_architecture=config.use_fib_pa_architecture,
     )
+    score_diagnostics = {}
+    if config.use_fib_pa_architecture:
+        atr_value = bars_15m[-1].close * max(0.0, atr_pct_value)
+        score_diagnostics["risk_reward_geometry"] = risk_reward_geometry_detail(
+            bars_15m[-1].close,
+            side,
+            atr_value,
+            atr_pct_value,
+            detect_fractal_swings(bars_15m, atr=atr_value),
+        )
     previous_bar = bars_15m[-2]
     current_bar = bars_15m[-1]
     context = EntryChainContext(
@@ -648,7 +703,9 @@ def public_market_context(
         current_volatility_scale=max(0.1, atr_pct_value / 0.01),
         normal_volatility_scale=1.0,
     )
-    return context, public_debug_snapshot(symbol, context, histories, scores, ready=True, required_15m=required_15m)
+    debug = public_debug_snapshot(symbol, context, histories, scores, ready=True, required_15m=required_15m)
+    debug["score_diagnostics"] = score_diagnostics
+    return context, debug
 
 
 def degraded_context(symbol: str, timestamp: int) -> EntryChainContext:
@@ -667,6 +724,16 @@ def degraded_context(symbol: str, timestamp: int) -> EntryChainContext:
 
 
 def synthetic_debug_snapshot(symbol: str, timestamp: int, context: EntryChainContext) -> dict[str, Any]:
+    diagnostics = {}
+    if "risk_reward_geometry" in context.component_scores:
+        diagnostics["risk_reward_geometry"] = {
+            "score": round(float(context.component_scores.get("risk_reward_geometry", 0.0)) * 8.0, 4),
+            "net_tp1_r": None,
+            "stop_pct": context.stop_pct,
+            "tp1_pct": context.stop_pct,
+            "opposition_dist_r": None,
+            "rr_zero_reason": "SYNTHETIC_CONTEXT",
+        }
     return {
         "warmup": {
             "source": "synthetic",
@@ -686,6 +753,7 @@ def synthetic_debug_snapshot(symbol: str, timestamp: int, context: EntryChainCon
             "change_pct": 0.0,
         },
         "scores": dict(context.component_scores),
+        "score_diagnostics": diagnostics,
         "entry_context": context_snapshot(context),
     }
 
@@ -734,6 +802,15 @@ def context_snapshot(context: EntryChainContext) -> dict[str, Any]:
         "atr_pct": context.atr_pct,
         "quote_volume_24h": context.quote_volume_24h,
         "stop_pct": context.stop_pct,
+        "active_symbols": context.active_symbols,
+        "active_symbol_names": sorted(context.active_symbol_names),
+        "portfolio_trades_today": context.portfolio_trades_today,
+        "symbol_trades_today": context.symbol_trades_today,
+        "symbol_exposure_pct": context.symbol_exposure_pct,
+        "total_exposure_pct": context.total_exposure_pct,
+        "same_direction_exposure_pct": context.same_direction_exposure_pct,
+        "daily_profit_pct": context.daily_profit_pct,
+        "available_margin": context.available_margin,
         "long_overextension_active": context.long_overextension_active,
         "long_upper_wick_risk_active": context.long_upper_wick_risk_active,
         "long_chase_risk_active": context.long_chase_risk_active,
@@ -982,6 +1059,7 @@ def render_symbol_log(
     points = score_detail.get("points", {})
     scores = score_detail.get("scores", {})
     weights = score_detail.get("weights", {})
+    diagnostics = score_detail.get("diagnostics", {})
     reasons = decision_payload.get("reasons", [])
     reason_text = ",".join(str(item) for item in reasons) if reasons else "-"
     hold_reason = "approved_order_draft" if draft_payload.get("approved") else str(draft_payload.get("reason", "waiting_rule_confirmation"))
@@ -996,7 +1074,7 @@ def render_symbol_log(
         f"side={context.side}, atr_pct={context.atr_pct:.4f}, stop_pct={fmt_pct(context.stop_pct)}, "
         f"long_flags=overext:{int(context.long_overextension_active)}/wick:{int(context.long_upper_wick_risk_active)}/"
         f"chase:{int(context.long_chase_risk_active)}/lowliq:{int(context.long_low_liquidity_session_active)}/cvdweak:{int(context.long_cvd_weak_active)}",
-        render_score_detail_line(decision_payload.get("score"), scores, points, weights),
+        render_score_detail_line(decision_payload.get("score"), scores, points, weights, diagnostics),
         "   风险检查: "
         f"liquidity_ratio={decision_payload.get('liquidity_ratio')} | stress={stress.get('action')} "
         f"est_loss={fmt_pct(stress.get('estimated_loss_pct'))} | approved={draft_payload.get('approved')}",
@@ -1010,8 +1088,16 @@ def render_score_detail_line(
     scores: Mapping[str, Any],
     points: Mapping[str, Any],
     weights: Mapping[str, Any],
+    diagnostics: Mapping[str, Any] | None = None,
 ) -> str:
     if "trend_ema_context" in weights:
+        rr_detail = (diagnostics or {}).get("risk_reward_geometry", {})
+        rr_suffix = ""
+        if rr_detail:
+            rr_suffix = (
+                f", rr_net={fmt(rr_detail.get('net_tp1_r'))}"
+                f", rr_zero={rr_detail.get('rr_zero_reason') or '-'}"
+            )
         return (
             "   评分明细: "
             f"score={score} | "
@@ -1022,6 +1108,7 @@ def render_score_detail_line(
             f"fib={fmt(scores.get('fibonacci_location'))}->{fmt(points.get('fibonacci_location'))}, "
             f"rr={fmt(scores.get('risk_reward_geometry'))}->{fmt(points.get('risk_reward_geometry'))}, "
             f"fib_cap={fmt(scores.get('fib_action_cap'))}"
+            f"{rr_suffix}"
         )
     return (
         "   评分明细: "

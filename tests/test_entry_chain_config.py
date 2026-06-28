@@ -17,6 +17,7 @@ def test_load_entry_chain_config_from_json(tmp_path):
         '"weak_edge_direct_min_score": 82, "weak_edge_direct_max_score": 85, '
         '"rolling_symbol_cooldown_enabled": true, "rolling_symbol_cooldown_stop_threshold": 2, '
         '"rolling_symbol_cooldown_window_hours": 48, "rolling_symbol_cooldown_hours": 24, '
+        '"probe_conditions": {"enabled": true, "min_score": 72, "min_fib_score": 12}, '
         '"long_threshold_offset": 10, "short_threshold_offset": 0, '
         '"long_min_cvd_direct_score": 0.7}',
         encoding="utf-8",
@@ -43,6 +44,7 @@ def test_load_entry_chain_config_from_json(tmp_path):
     assert config.rolling_symbol_cooldown_stop_threshold == 2
     assert config.rolling_symbol_cooldown_window_hours == 48
     assert config.rolling_symbol_cooldown_hours == 24
+    assert config.probe_conditions == {"enabled": True, "min_score": 72, "min_fib_score": 12}
     assert config.long_threshold_offset == 10
     assert config.short_threshold_offset == 0
     assert config.long_min_cvd_direct_score == 0.7
