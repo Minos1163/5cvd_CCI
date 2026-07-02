@@ -8,6 +8,7 @@ from argparse import Namespace
 from scripts.run_live_dry_run import (
     apply_paper_state_to_context,
     apply_dry_run_decision_controls,
+    build_near_miss_payload,
     build_context,
     next_kline_run_timestamp,
     public_market_context,
@@ -43,6 +44,60 @@ def direct_decision(symbol: str = "SOLUSDT", score: float = 88.0) -> EntryChainD
         notional_hint=2000.0,
         liquidity_ratio=100.0,
         metadata={"symbol": symbol},
+    )
+
+
+def probe_decision(symbol: str = "SOLUSDT", score: float = 82.0) -> EntryChainDecision:
+    return EntryChainDecision(
+        action="PROBE",
+        side="LONG",
+        score=score,
+        weights={},
+        component_points={},
+        reasons=("TEST_PROBE",),
+        risk_allowed=True,
+        leverage=3,
+        max_symbol_exposure_pct=0.2,
+        notional_hint=500.0,
+        liquidity_ratio=100.0,
+        metadata={"symbol": symbol},
+    )
+
+
+def open_and_stop(
+    ledger: PaperTradingLedger,
+    symbol: str,
+    *,
+    opened_at: int,
+    stopped_at: int,
+    side: str = "LONG",
+) -> None:
+    decision_payload = {
+        "action": "PROBE",
+        "side": side,
+        "score": 88,
+        "leverage": 3,
+        "entry_context": {"atr_pct": 0.01},
+        "reasons": ["TEST_PROBE"],
+    }
+    draft_payload = {
+        "approved": True,
+        "request": {"position_side": side, "quantity": 10, "price": 100},
+    }
+    ledger.on_decision(
+        symbol=symbol,
+        decision_payload=decision_payload,
+        draft_payload=draft_payload,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=opened_at,
+    )
+    stop_kline = {"close": 99, "high": 100, "low": 98} if side == "LONG" else {"close": 101, "high": 102, "low": 100}
+    ledger.on_decision(
+        symbol=symbol,
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline=stop_kline,
+        timestamp=stopped_at,
     )
 
 
@@ -178,6 +233,39 @@ def test_fib_pa_dry_run_once_emits_new_score_components_without_orders(tmp_path)
     assert "risk_reward_geometry" in scores
 
 
+def test_live_dry_run_records_near_miss_jsonl_and_summary(tmp_path):
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_live_dry_run.py",
+            "--config",
+            "configs/entry_chain.dry_run_fib_pa_v1.json",
+            "--target-tier",
+            "aggressive",
+            "--market-data-source",
+            "synthetic",
+            "--once",
+            "--output-dir",
+            str(tmp_path),
+            "--symbols",
+            "SOLUSDT",
+            "--near-miss-min-score",
+            "0",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    rows = [json.loads(line) for line in (tmp_path / "near_misses.jsonl").read_text(encoding="utf-8").splitlines()]
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert len(rows) == 1
+    assert rows[0]["scout_candidate"] is True
+    assert rows[0]["action"] in {"WATCH", "NO_TRADE"}
+    assert "component_points" in rows[0]
+    assert summary["near_miss_count"] == 1
+
+
 def test_render_symbol_log_uses_fib_pa_score_detail_when_enabled():
     context = EntryChainContext(
         symbol="SOLUSDT",
@@ -252,6 +340,46 @@ def test_render_symbol_log_uses_fib_pa_score_detail_when_enabled():
     assert "fib_cap=1.0000" in score_line
     assert "rr_net=0.8700" in score_line
     assert "rr_zero=NET_TP1_R_TOO_LOW" in score_line
+
+
+def test_build_near_miss_payload_captures_high_score_rejected_signal():
+    payload = build_near_miss_payload(
+        {
+            "timestamp": 1782992705,
+            "symbol": "CCUSDT",
+            "action": "WATCH",
+            "side": "NONE",
+            "score": 90.59,
+            "reasons": [
+                "FIB_PA_ARCHITECTURE_WEIGHTS",
+                "HIGH_BETA_PROBE_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_3.0",
+            ],
+            "component_points": {
+                "risk_reward_geometry": 2.0,
+                "fibonacci_location": 18.0,
+                "price_action_structure": 21.0,
+            },
+            "score_detail": {
+                "diagnostics": {"risk_reward_geometry": {"net_tp1_r": 1.02}},
+            },
+            "entry_context": {"atr_pct": 0.01, "side": "SHORT"},
+            "kline": {"close": 100.0, "high": 101.0, "low": 99.0, "timestamp": 1782991800},
+        },
+        min_score=82.0,
+    )
+
+    assert payload is not None
+    assert payload["scout_candidate"] is True
+    assert payload["primary_reason"] == "HIGH_BETA_PROBE_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_3.0"
+    assert payload["intended_side"] == "SHORT"
+    assert payload["entry_price"] == 100.0
+    assert payload["component_points"]["risk_reward_geometry"] == 2.0
+    assert payload["diagnostics"]["risk_reward_geometry"]["net_tp1_r"] == 1.02
+
+
+def test_build_near_miss_payload_ignores_tradable_or_low_score_decisions():
+    assert build_near_miss_payload({"action": "PROBE", "score": 90}, min_score=82.0) is None
+    assert build_near_miss_payload({"action": "WATCH", "score": 81.99}, min_score=82.0) is None
 
 
 def test_live_dry_run_paper_ledger_records_open_position_when_draft_is_approved(tmp_path):
@@ -388,6 +516,44 @@ def test_dry_run_decision_controls_keep_weak_edge_with_positive_history(tmp_path
     assert "DIRECT_WEAK_EDGE_DEMOTED" not in controlled.reasons
 
 
+def test_dry_run_decision_controls_demote_weak_edge_probe_without_positive_history(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    config = EntryChainConfig(
+        weak_edge_probe_min_score=77.0,
+        weak_edge_probe_max_score=85.0,
+    )
+
+    controlled = apply_dry_run_decision_controls(
+        probe_decision("SOLUSDT", score=82.0),
+        config=config,
+        paper=ledger,
+        timestamp=5000,
+    )
+
+    assert controlled.action == "WATCH"
+    assert controlled.side == "NONE"
+    assert controlled.risk_allowed is False
+    assert "PROBE_WEAK_EDGE_DEMOTED" in controlled.reasons
+
+
+def test_dry_run_decision_controls_keep_probe_above_weak_edge_band(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    config = EntryChainConfig(
+        weak_edge_probe_min_score=77.0,
+        weak_edge_probe_max_score=82.0,
+    )
+
+    controlled = apply_dry_run_decision_controls(
+        probe_decision("SOLUSDT", score=82.1),
+        config=config,
+        paper=ledger,
+        timestamp=5000,
+    )
+
+    assert controlled.action == "PROBE"
+    assert "PROBE_WEAK_EDGE_DEMOTED" not in controlled.reasons
+
+
 def test_dry_run_decision_controls_apply_rolling_initial_stop_cooldown(tmp_path):
     ledger = PaperTradingLedger(tmp_path)
     decision_payload = {
@@ -417,6 +583,85 @@ def test_dry_run_decision_controls_apply_rolling_initial_stop_cooldown(tmp_path)
 
     assert controlled.action == "WATCH"
     assert "SYMBOL_ROLLING_INITIAL_STOP_COOLDOWN" in controlled.reasons
+
+
+def test_dry_run_decision_controls_apply_single_initial_stop_cooldown(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    open_and_stop(ledger, "LABUSDT", opened_at=1000, stopped_at=1900)
+    config = EntryChainConfig(
+        post_initial_stop_cooldown_enabled=True,
+        post_initial_stop_cooldown_hours=4,
+    )
+
+    controlled = apply_dry_run_decision_controls(
+        probe_decision("LABUSDT", score=90.0),
+        config=config,
+        paper=ledger,
+        timestamp=1900 + 3 * 3600,
+    )
+
+    assert controlled.action == "WATCH"
+    assert "SYMBOL_POST_INITIAL_STOP_COOLDOWN" in controlled.reasons
+
+
+def test_dry_run_decision_controls_allows_symbol_after_single_stop_cooldown_expires(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    open_and_stop(ledger, "LABUSDT", opened_at=1000, stopped_at=1900)
+    config = EntryChainConfig(
+        post_initial_stop_cooldown_enabled=True,
+        post_initial_stop_cooldown_hours=4,
+    )
+
+    controlled = apply_dry_run_decision_controls(
+        probe_decision("LABUSDT", score=90.0),
+        config=config,
+        paper=ledger,
+        timestamp=1900 + 4 * 3600,
+    )
+
+    assert controlled.action == "PROBE"
+    assert "SYMBOL_POST_INITIAL_STOP_COOLDOWN" not in controlled.reasons
+
+
+def test_dry_run_decision_controls_apply_portfolio_consecutive_stop_circuit(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    open_and_stop(ledger, "BNBUSDT", opened_at=1000, stopped_at=1900)
+    open_and_stop(ledger, "DOGEUSDT", opened_at=2800, stopped_at=3700)
+    open_and_stop(ledger, "LABUSDT", opened_at=4600, stopped_at=5500)
+    config = EntryChainConfig(
+        portfolio_stop_circuit_enabled=True,
+        portfolio_stop_circuit_count=3,
+        portfolio_stop_circuit_hours=4,
+    )
+
+    controlled = apply_dry_run_decision_controls(
+        probe_decision("SOLUSDT", score=90.0),
+        config=config,
+        paper=ledger,
+        timestamp=5500 + 2 * 3600,
+    )
+
+    assert controlled.action == "WATCH"
+    assert "PORTFOLIO_CONSECUTIVE_INITIAL_STOP_CIRCUIT_BREAKER" in controlled.reasons
+
+
+def test_dry_run_decision_controls_apply_daily_loss_circuit(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    open_and_stop(ledger, "LABUSDT", opened_at=1000, stopped_at=1900)
+    config = EntryChainConfig(
+        portfolio_daily_loss_circuit_enabled=True,
+        portfolio_daily_loss_limit=-5.0,
+    )
+
+    controlled = apply_dry_run_decision_controls(
+        probe_decision("SOLUSDT", score=90.0),
+        config=config,
+        paper=ledger,
+        timestamp=2000,
+    )
+
+    assert controlled.action == "WATCH"
+    assert "PORTFOLIO_DAILY_LOSS_CIRCUIT_BREAKER" in controlled.reasons
 
 
 def test_live_dry_run_uses_configured_symbols_when_cli_symbols_are_omitted(tmp_path):

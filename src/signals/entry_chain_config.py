@@ -27,6 +27,7 @@ class EntryChainConfig:
     probe_liquidity_ratio: float = 8.0
     max_active_symbols: int = 5
     daily_max_trades_base: int = 4
+    min_daily_trades: int = 1
     max_symbol_trades_per_day: int = 1
     max_same_direction_exposure_pct: float = 1.20
     max_total_exposure_pct: float = 1.50
@@ -73,6 +74,8 @@ class EntryChainConfig:
     leverage_5x_rr_min: float = 4.0
     weak_edge_direct_min_score: float = 82.0
     weak_edge_direct_max_score: float = 85.0
+    weak_edge_probe_min_score: float = 77.0
+    weak_edge_probe_max_score: float = 85.0
     rolling_symbol_cooldown_enabled: bool = False
     rolling_symbol_cooldown_stop_threshold: int = 2
     rolling_symbol_cooldown_window_hours: int = 48
@@ -93,6 +96,15 @@ class EntryChainConfig:
     long_chase_trigger_mult: float = 0.75
     long_cvd_weak_mult: float = 0.80
     long_cvd_weak_threshold: float = 0.80
+    long_overextension_watch_enabled: bool = False
+    long_chase_watch_enabled: bool = False
+    post_initial_stop_cooldown_enabled: bool = False
+    post_initial_stop_cooldown_hours: int = 4
+    portfolio_stop_circuit_enabled: bool = False
+    portfolio_stop_circuit_count: int = 3
+    portfolio_stop_circuit_hours: int = 4
+    portfolio_daily_loss_circuit_enabled: bool = False
+    portfolio_daily_loss_limit: float = -30.0
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "EntryChainConfig":

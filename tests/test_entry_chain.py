@@ -98,6 +98,56 @@ def test_trade_budget_and_symbol_cooldown_block_entries():
     assert "SYMBOL_COOLDOWN_ACTIVE" in symbol_cooldown.reasons
 
 
+def test_min_daily_trades_keeps_low_volatility_budget_open():
+    cfg = EntryChainConfig(daily_max_trades_base=16, min_daily_trades=2)
+    allowed = evaluate_entry_chain(
+        candidate(
+            portfolio_trades_today=1,
+            current_volatility_scale=0.05,
+            normal_volatility_scale=1.0,
+        ),
+        cfg,
+    )
+    blocked = evaluate_entry_chain(
+        candidate(
+            portfolio_trades_today=2,
+            current_volatility_scale=0.05,
+            normal_volatility_scale=1.0,
+        ),
+        cfg,
+    )
+
+    assert allowed.action != "NO_TRADE"
+    assert blocked.action == "NO_TRADE"
+    assert "DAILY_TRADE_BUDGET_USED" in blocked.reasons
+
+
+def test_daily_budget_block_includes_budget_detail_metadata():
+    cfg = EntryChainConfig(daily_max_trades_base=16, min_daily_trades=2)
+
+    decision = evaluate_entry_chain(
+        candidate(
+            portfolio_trades_today=2,
+            current_volatility_scale=0.05,
+            normal_volatility_scale=1.0,
+            daily_profit_pct=0.0,
+        ),
+        cfg,
+    )
+
+    assert decision.action == "NO_TRADE"
+    assert "DAILY_TRADE_BUDGET_USED" in decision.reasons
+    assert decision.metadata["daily_max_trades"] == 2
+    assert decision.metadata["daily_budget_detail"] == {
+        "dynamic_limit": 2,
+        "used_today": 2,
+        "current_volatility_scale": 0.05,
+        "normal_volatility_scale": 1.0,
+        "min_daily_trades": 2,
+        "daily_profit_pct": 0.0,
+    }
+
+
 def test_symbol_caps_and_margin_buffer_reject_oversized_context():
     active_limit = evaluate_entry_chain(candidate(active_symbols=5))
     margin_buffer = evaluate_entry_chain(candidate(available_margin=1_000.0))
@@ -383,3 +433,211 @@ def test_fib_pa_conditional_probe_requires_fib_pa_quality():
     assert allowed.action == "PROBE"
     assert blocked.action == "WATCH"
     assert "PROBE_BELOW_FIBONACCI_LOCATION_MINIMUM_GAP_3.0" in blocked.reasons
+
+
+def test_fib_pa_high_beta_probe_requires_extra_rr():
+    cfg = EntryChainConfig(
+        use_fib_pa_architecture=True,
+        direct_threshold=82.0,
+        probe_threshold=70.0,
+        probe_conditions={
+            "enabled": True,
+            "min_score": 72.0,
+            "min_fib_score": 12.0,
+            "min_pa_score": 10.0,
+            "min_rr_score": 2.0,
+            "high_beta_min_pa_score": 12.0,
+            "high_beta_min_rr_score": 3.0,
+        },
+    )
+
+    decision = evaluate_entry_chain(
+        candidate(
+            symbol="HYPEUSDT",
+            side="SHORT",
+            component_scores=fib_pa_scores(
+                trend_ema_context=18.0 / 20.0,
+                flow_cvd_confirmation=1.0,
+                cci_momentum_quality=10.0 / 14.0,
+                price_action_structure=12.0 / 22.0,
+                fibonacci_location=18.0 / 18.0,
+                risk_reward_geometry=2.5 / 8.0,
+            ),
+        ),
+        cfg,
+    )
+
+    assert decision.action == "WATCH"
+    assert "HIGH_BETA_PROBE_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_0.5" in decision.reasons
+
+
+def test_fib_pa_high_beta_probe_requires_extra_cci_and_ema():
+    cfg = EntryChainConfig(
+        use_fib_pa_architecture=True,
+        direct_threshold=95.0,
+        probe_threshold=70.0,
+        probe_conditions={
+            "enabled": True,
+            "min_score": 72.0,
+            "min_fib_score": 12.0,
+            "min_pa_score": 10.0,
+            "min_rr_score": 4.0,
+            "high_beta_min_pa_score": 12.0,
+            "high_beta_min_rr_score": 5.0,
+            "high_beta_min_cci_score": 9.0,
+            "high_beta_min_ema_score": 12.0,
+        },
+    )
+
+    weak_cci = evaluate_entry_chain(
+        candidate(
+            symbol="LABUSDT",
+            side="LONG",
+            component_scores=fib_pa_scores(
+                trend_ema_context=14.0 / 20.0,
+                flow_cvd_confirmation=1.0,
+                cci_momentum_quality=8.5 / 14.0,
+                price_action_structure=16.0 / 22.0,
+                fibonacci_location=18.0 / 18.0,
+                risk_reward_geometry=6.0 / 8.0,
+            ),
+        ),
+        cfg,
+    )
+    weak_ema = evaluate_entry_chain(
+        candidate(
+            symbol="HYPEUSDT",
+            side="SHORT",
+            component_scores=fib_pa_scores(
+                trend_ema_context=11.0 / 20.0,
+                flow_cvd_confirmation=1.0,
+                cci_momentum_quality=10.0 / 14.0,
+                price_action_structure=16.0 / 22.0,
+                fibonacci_location=18.0 / 18.0,
+                risk_reward_geometry=6.0 / 8.0,
+            ),
+        ),
+        cfg,
+    )
+
+    assert weak_cci.action == "WATCH"
+    assert "HIGH_BETA_PROBE_BELOW_CCI_MOMENTUM_QUALITY_MINIMUM_GAP_0.5" in weak_cci.reasons
+    assert weak_ema.action == "WATCH"
+    assert "HIGH_BETA_PROBE_BELOW_TREND_EMA_CONTEXT_MINIMUM_GAP_1.0" in weak_ema.reasons
+
+
+def test_fib_pa_high_beta_direct_downgrade_rechecks_probe_conditions():
+    cfg = EntryChainConfig(
+        use_fib_pa_architecture=True,
+        direct_threshold=82.0,
+        probe_threshold=70.0,
+        fib_min_direct_score=6.0,
+        pa_min_direct_score=6.0,
+        rr_min_direct_score=4.0,
+        probe_conditions={
+            "enabled": True,
+            "min_score": 72.0,
+            "min_fib_score": 12.0,
+            "min_pa_score": 10.0,
+            "min_rr_score": 4.0,
+            "high_beta_min_pa_score": 12.0,
+            "high_beta_min_rr_score": 5.0,
+            "high_beta_min_cci_score": 9.0,
+            "high_beta_min_ema_score": 12.0,
+        },
+    )
+
+    decision = evaluate_entry_chain(
+        candidate(
+            symbol="HYPEUSDT",
+            side="SHORT",
+            component_scores=fib_pa_scores(
+                trend_ema_context=16.19 / 20.0,
+                flow_cvd_confirmation=1.0,
+                cci_momentum_quality=1.0,
+                price_action_structure=21.0 / 22.0,
+                fibonacci_location=9.0 / 18.0,
+                risk_reward_geometry=5.0 / 8.0,
+            ),
+        ),
+        cfg,
+    )
+
+    assert decision.action == "WATCH"
+    assert "HIGH_BETA_PROBE_ONLY" in decision.reasons
+    assert "HIGH_BETA_DIRECT_TO_PROBE_FAILED_CONDITIONS" in decision.reasons
+    assert "PROBE_BELOW_FIBONACCI_LOCATION_MINIMUM_GAP_3.0" in decision.reasons
+
+
+def test_fib_pa_overextended_or_chasing_long_caps_to_watch_even_when_high_score():
+    cfg = EntryChainConfig(
+        use_fib_pa_architecture=True,
+        direct_threshold=95.0,
+        probe_threshold=70.0,
+        long_overextension_watch_enabled=True,
+        long_chase_watch_enabled=True,
+        probe_conditions={
+            "enabled": True,
+            "min_score": 72.0,
+            "min_fib_score": 12.0,
+            "min_pa_score": 10.0,
+            "min_rr_score": 4.0,
+        },
+    )
+
+    overextended = evaluate_entry_chain(
+        candidate(
+            side="LONG",
+            long_overextension_active=True,
+            component_scores=fib_pa_scores(),
+        ),
+        cfg,
+    )
+    chasing = evaluate_entry_chain(
+        candidate(
+            side="LONG",
+            long_chase_risk_active=True,
+            component_scores=fib_pa_scores(),
+        ),
+        cfg,
+    )
+
+    assert overextended.action == "WATCH"
+    assert chasing.action == "WATCH"
+    assert "LONG_OVEREXTENSION_OR_CHASE_RISK_WATCH" in overextended.reasons
+    assert "LONG_OVEREXTENSION_OR_CHASE_RISK_WATCH" in chasing.reasons
+
+
+def test_fib_pa_long_chase_with_weak_pa_caps_to_watch():
+    cfg = EntryChainConfig(
+        use_fib_pa_architecture=True,
+        direct_threshold=95.0,
+        probe_threshold=70.0,
+        probe_conditions={
+            "enabled": True,
+            "min_score": 72.0,
+            "min_fib_score": 12.0,
+            "min_pa_score": 6.0,
+            "min_rr_score": 2.0,
+            "long_chase_min_pa_score": 12.0,
+        },
+    )
+
+    decision = evaluate_entry_chain(
+        candidate(
+            side="LONG",
+            long_chase_risk_active=True,
+            component_scores=fib_pa_scores(
+                trend_ema_context=17.25 / 20.0,
+                flow_cvd_confirmation=1.0,
+                cci_momentum_quality=10.0 / 14.0,
+                price_action_structure=8.0 / 22.0,
+                fibonacci_location=1.0,
+                risk_reward_geometry=6.5 / 8.0,
+            ),
+        ),
+        cfg,
+    )
+
+    assert decision.action == "WATCH"
+    assert "LONG_CHASE_WEAK_PA_WATCH" in decision.reasons

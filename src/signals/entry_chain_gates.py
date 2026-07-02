@@ -72,9 +72,10 @@ def hard_block_reason(context: EntryGateContext, cfg: EntryChainConfig) -> str |
 
 def daily_max_trades(context: EntryGateContext, cfg: EntryChainConfig) -> int:
     normal = max(context.normal_volatility_scale, 1e-9)
-    dynamic_limit = max(1, floor(cfg.daily_max_trades_base * (context.current_volatility_scale / normal)))
+    floor_limit = max(1, int(cfg.min_daily_trades))
+    dynamic_limit = max(floor_limit, floor(cfg.daily_max_trades_base * (context.current_volatility_scale / normal)))
     if context.daily_profit_pct > 0.03:
-        return max(1, dynamic_limit // 2)
+        return max(floor_limit, dynamic_limit // 2)
     return dynamic_limit
 
 

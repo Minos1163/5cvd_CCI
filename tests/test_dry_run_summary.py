@@ -19,3 +19,29 @@ def test_write_summary_contains_targets_and_decision_counts(tmp_path):
     assert payload["data_health"] == "OK"
     assert payload["stress_risk"][-1]["estimated_loss_pct"] == 0.03
 
+
+def test_summary_tracks_near_misses():
+    summary = DryRunSummary(target_tier="aggressive")
+    summary.record_near_miss(
+        {
+            "timestamp": 1,
+            "symbol": "CCUSDT",
+            "action": "WATCH",
+            "score": 90.59,
+            "primary_reason": "HIGH_BETA_PROBE_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_3.0",
+        }
+    )
+
+    payload = summary.to_dict(orders_submitted=0, data_health="OK")
+
+    assert payload["near_miss_count"] == 1
+    assert payload["near_miss_by_reason"] == {"HIGH_BETA_PROBE_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_3.0": 1}
+    assert payload["recent_near_misses"] == [
+        {
+            "timestamp": 1,
+            "symbol": "CCUSDT",
+            "action": "WATCH",
+            "score": 90.59,
+            "primary_reason": "HIGH_BETA_PROBE_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_3.0",
+        }
+    ]

@@ -7,7 +7,6 @@ from typing import Any, Mapping
 from src.signals.entry_chain_config import EntryChainConfig
 from src.signals.entry_chain_gates import (
     HIGH_BETA_SYMBOLS,
-    daily_max_trades,
     hard_block_reason,
     liquidity_ratio as calculate_liquidity_ratio,
     symbol_exposure_cap,
@@ -120,6 +119,24 @@ def evaluate_entry_chain(context: EntryChainContext, config: EntryChainConfig | 
         reasons,
     )
 
+    if (
+        cfg.use_fib_pa_architecture
+        and side == "LONG"
+        and action in {"PROBE", "DIRECT"}
+        and (
+            (cfg.long_overextension_watch_enabled and context.long_overextension_active)
+            or (cfg.long_chase_watch_enabled and context.long_chase_risk_active)
+        )
+    ):
+        action = "WATCH"
+        reasons.append("LONG_OVEREXTENSION_OR_CHASE_RISK_WATCH")
+
+    if cfg.use_fib_pa_architecture and side == "LONG" and context.long_chase_risk_active:
+        chase_min = float(dict(cfg.probe_conditions or {}).get("long_chase_min_pa_score", 12.0))
+        if action in {"PROBE", "DIRECT"} and float(points.get("price_action_structure", 0.0)) < chase_min:
+            action = "WATCH"
+            reasons.append("LONG_CHASE_WEAK_PA_WATCH")
+
     if cfg.enable_long_context_discounts and side == "LONG" and context.long_low_liquidity_session_active:
         action = _min_action(action, "WATCH")
         reasons.append("LONG_LOW_LIQUIDITY_SESSION_WATCH")
@@ -144,6 +161,11 @@ def evaluate_entry_chain(context: EntryChainContext, config: EntryChainConfig | 
         action = "PROBE"
         reasons.append("HIGH_BETA_PROBE_ONLY")
         action = _apply_probe_disable(action, cfg, reasons)
+        if action == "PROBE" and cfg.use_fib_pa_architecture:
+            rechecked = _apply_fib_pa_probe_minimums(action, score, scores, cfg, symbol, side, reasons)
+            if rechecked == "WATCH":
+                reasons.append("HIGH_BETA_DIRECT_TO_PROBE_FAILED_CONDITIONS")
+            action = rechecked
 
     if context.daily_profit_pct > 0.03:
         if action == "PROBE":
@@ -230,11 +252,23 @@ def _hard_block_reason(context: EntryChainContext, cfg: EntryChainConfig) -> str
 
 
 def _daily_max_trades(context: EntryChainContext, cfg: EntryChainConfig) -> int:
+    return int(_daily_budget_detail(context, cfg)["dynamic_limit"])
+
+
+def _daily_budget_detail(context: EntryChainContext, cfg: EntryChainConfig) -> dict[str, float | int]:
     normal = max(context.normal_volatility_scale, 1e-9)
-    dynamic_limit = max(1, floor(cfg.daily_max_trades_base * (context.current_volatility_scale / normal)))
+    floor_limit = max(1, int(cfg.min_daily_trades))
+    dynamic_limit = max(floor_limit, floor(cfg.daily_max_trades_base * (context.current_volatility_scale / normal)))
     if context.daily_profit_pct > 0.03:
-        return max(1, dynamic_limit // 2)
-    return dynamic_limit
+        dynamic_limit = max(floor_limit, dynamic_limit // 2)
+    return {
+        "dynamic_limit": int(dynamic_limit),
+        "used_today": int(context.portfolio_trades_today),
+        "current_volatility_scale": float(context.current_volatility_scale),
+        "normal_volatility_scale": float(context.normal_volatility_scale),
+        "min_daily_trades": floor_limit,
+        "daily_profit_pct": float(context.daily_profit_pct),
+    }
 
 
 def _score_to_action(score: float, cfg: EntryChainConfig, side: str = "", reasons: list[str] | None = None) -> str:
@@ -325,7 +359,7 @@ def _apply_component_minimums(
         if action == "DIRECT":
             action = _apply_fib_pa_direct_minimums(action, scores, cfg, reasons)
         if action == "PROBE":
-            return _apply_fib_pa_probe_minimums(action, score, scores, cfg, reasons)
+            return _apply_fib_pa_probe_minimums(action, score, scores, cfg, context.symbol, context.side, reasons)
         return action
     if cfg.use_ema_architecture and cfg.ema200_gate_mode == "hard" and float(scores.get("ema_200_gate", 1.0)) <= 0.0:
         reasons.append("EMA200_HARD_GATE_FAILED")
@@ -416,12 +450,16 @@ def _apply_fib_pa_probe_minimums(
     score: float,
     scores: Mapping[str, float],
     cfg: EntryChainConfig,
+    symbol: str,
+    side: str,
     reasons: list[str],
 ) -> str:
     conditions = dict(cfg.probe_conditions or {})
     if not conditions.get("enabled", False):
         return action
     weights = {
+        "trend_ema_context": 20.0,
+        "cci_momentum_quality": 14.0,
         "fibonacci_location": 18.0,
         "price_action_structure": 22.0,
         "risk_reward_geometry": 8.0,
@@ -429,10 +467,10 @@ def _apply_fib_pa_probe_minimums(
     points = _normalized_scores_to_points(scores, weights)
     ok, reason = check_probe_conditions(
         score=score,
-        side="",
+        side=side,
         component_points=points,
         rr_detail=None,
-        config=conditions,
+        config={**conditions, "symbol": symbol},
     )
     if not ok:
         reasons.append(reason)
@@ -483,8 +521,24 @@ def check_probe_conditions(
         "fibonacci_location": float(config.get("min_fib_score", 12.0)),
         "price_action_structure": float(config.get("min_pa_score", 6.0)),
     }
+    symbol = str(config.get("symbol") or "").strip().upper()
+    if symbol in HIGH_BETA_SYMBOLS:
+        if "high_beta_min_pa_score" in config:
+            minimums["price_action_structure"] = float(config["high_beta_min_pa_score"])
+        if "high_beta_min_cci_score" in config:
+            minimums["cci_momentum_quality"] = float(config["high_beta_min_cci_score"])
+        if "high_beta_min_ema_score" in config:
+            minimums["trend_ema_context"] = float(config["high_beta_min_ema_score"])
     ok, reason = check_component_minimums(component_points, "PROBE", minimums)
     if not ok:
+        if symbol in HIGH_BETA_SYMBOLS and reason.startswith(
+            (
+                "PROBE_BELOW_PRICE_ACTION_STRUCTURE",
+                "PROBE_BELOW_CCI_MOMENTUM_QUALITY",
+                "PROBE_BELOW_TREND_EMA_CONTEXT",
+            )
+        ):
+            return False, reason.replace("PROBE_BELOW_", "HIGH_BETA_PROBE_BELOW_", 1)
         return False, reason
 
     details = rr_detail or {}
@@ -498,8 +552,12 @@ def check_probe_conditions(
         rr_min_score = config.get("min_rr_score")
         if rr_min_score is not None:
             minimums = {"risk_reward_geometry": float(rr_min_score)}
+            if symbol in HIGH_BETA_SYMBOLS and "high_beta_min_rr_score" in config:
+                minimums["risk_reward_geometry"] = float(config["high_beta_min_rr_score"])
             ok, reason = check_component_minimums(component_points, "PROBE", minimums)
             if not ok:
+                if symbol in HIGH_BETA_SYMBOLS and reason.startswith("PROBE_BELOW_RISK_REWARD_GEOMETRY"):
+                    return False, reason.replace("PROBE_BELOW_", "HIGH_BETA_PROBE_BELOW_", 1)
                 return False, reason
     return True, ""
 
@@ -620,7 +678,8 @@ def _decision(
         liquidity_ratio=round(liquidity_ratio, 4),
         metadata={
             "strategy_contract": "entry-chain-v1-lite",
-            "daily_max_trades": daily_max_trades(context, cfg),
+            "daily_max_trades": _daily_max_trades(context, cfg),
+            "daily_budget_detail": _daily_budget_detail(context, cfg),
             "symbol": context.symbol.strip().upper(),
         },
     )

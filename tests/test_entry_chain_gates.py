@@ -1,6 +1,6 @@
 from src.signals.entry_chain import EntryChainContext
 from src.signals.entry_chain_config import EntryChainConfig
-from src.signals.entry_chain_gates import hard_block_reason
+from src.signals.entry_chain_gates import daily_max_trades, hard_block_reason
 
 
 def context(**overrides):
@@ -33,3 +33,17 @@ def test_cooldown_ends_exactly_at_until_timestamp():
     assert active == "SYMBOL_COOLDOWN_ACTIVE"
     assert ended is None
 
+
+def test_daily_max_trades_respects_configured_floor_in_low_volatility():
+    config = EntryChainConfig(daily_max_trades_base=16, min_daily_trades=2)
+
+    limit = daily_max_trades(
+        context(
+            macro_weekly_drop_pct=0.0,
+            current_volatility_scale=0.05,
+            normal_volatility_scale=1.0,
+        ),
+        config,
+    )
+
+    assert limit == 2

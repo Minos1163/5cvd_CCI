@@ -166,6 +166,10 @@ def run(args: argparse.Namespace) -> None:
                 decision_payload["entry_context"] = debug.get("entry_context", {})
                 audit.write_decision(decision_payload)
                 summary.record_decision(decision_payload)
+                near_miss = build_near_miss_payload(decision_payload, min_score=args.near_miss_min_score)
+                if near_miss is not None:
+                    audit.write_near_miss(near_miss)
+                    summary.record_near_miss(near_miss)
                 stress = stress_decision(
                     exposure_pct=decision.max_symbol_exposure_pct if decision.action in {"PROBE", "DIRECT"} else 0.0,
                     leverage=decision.leverage,
@@ -232,9 +236,42 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-tier", default="conservative", choices=["conservative", "balanced", "aggressive"])
     parser.add_argument("--stress-move-pct", type=float, default=0.20)
     parser.add_argument("--max-stress-loss-pct", type=float, default=0.25)
+    parser.add_argument("--near-miss-min-score", type=float, default=82.0)
     parser.add_argument("--market-data-source", default="synthetic", choices=["synthetic", "public-binance"])
     parser.add_argument("--public-kline-limit", type=int, default=240)
     return parser.parse_args()
+
+
+def build_near_miss_payload(decision_payload: Mapping[str, Any], *, min_score: float) -> dict[str, Any] | None:
+    action = str(decision_payload.get("action") or "").upper()
+    if action in {"PROBE", "DIRECT"}:
+        return None
+    score = float(decision_payload.get("score") or 0.0)
+    if score < min_score:
+        return None
+    reasons = decision_payload.get("reasons", [])
+    reason_list = [str(item) for item in reasons] if isinstance(reasons, list) else [str(reasons)]
+    primary_reason = next((item for item in reason_list if item != "FIB_PA_ARCHITECTURE_WEIGHTS"), reason_list[0] if reason_list else "")
+    kline = decision_payload.get("kline", {}) if isinstance(decision_payload.get("kline"), Mapping) else {}
+    entry_context = decision_payload.get("entry_context", {}) if isinstance(decision_payload.get("entry_context"), Mapping) else {}
+    score_detail = decision_payload.get("score_detail", {}) if isinstance(decision_payload.get("score_detail"), Mapping) else {}
+    component_points = decision_payload.get("component_points", {})
+    diagnostics = score_detail.get("diagnostics", {}) if isinstance(score_detail, Mapping) else {}
+    return {
+        "timestamp": decision_payload.get("timestamp"),
+        "symbol": decision_payload.get("symbol"),
+        "action": action,
+        "score": score,
+        "reasons": reason_list,
+        "primary_reason": primary_reason,
+        "scout_candidate": True,
+        "intended_side": str(entry_context.get("side") or decision_payload.get("side") or "NONE").upper(),
+        "entry_price": kline.get("close"),
+        "kline_timestamp": kline.get("timestamp"),
+        "component_points": dict(component_points) if isinstance(component_points, Mapping) else {},
+        "diagnostics": dict(diagnostics) if isinstance(diagnostics, Mapping) else {},
+        "entry_context": dict(entry_context),
+    }
 
 
 def apply_dry_run_decision_controls(
@@ -250,10 +287,18 @@ def apply_dry_run_decision_controls(
     reasons: list[str] = []
     if symbol in config.observation_only_symbols:
         reasons.append("SYMBOL_OBSERVATION_ONLY")
+    if _post_initial_stop_cooldown_active(symbol, config, paper, timestamp):
+        reasons.append("SYMBOL_POST_INITIAL_STOP_COOLDOWN")
     if _rolling_initial_stop_cooldown_active(symbol, config, paper, timestamp):
         reasons.append("SYMBOL_ROLLING_INITIAL_STOP_COOLDOWN")
+    if _portfolio_consecutive_stop_circuit_active(config, paper, timestamp):
+        reasons.append("PORTFOLIO_CONSECUTIVE_INITIAL_STOP_CIRCUIT_BREAKER")
+    if _portfolio_daily_loss_circuit_active(config, paper, timestamp):
+        reasons.append("PORTFOLIO_DAILY_LOSS_CIRCUIT_BREAKER")
     if _weak_edge_direct_without_positive_history(decision, config, paper, timestamp):
         reasons.append("DIRECT_WEAK_EDGE_DEMOTED")
+    if _weak_edge_probe_without_positive_history(decision, config, paper, timestamp):
+        reasons.append("PROBE_WEAK_EDGE_DEMOTED")
     if not reasons:
         return decision
     return _cap_decision_to_watch(decision, reasons)
@@ -312,6 +357,27 @@ def _cap_decision_to_watch(decision: EntryChainDecision, reasons: Sequence[str])
     )
 
 
+def _post_initial_stop_cooldown_active(
+    symbol: str,
+    config: EntryChainConfig,
+    paper: PaperTradingLedger,
+    timestamp: int,
+) -> bool:
+    if not config.post_initial_stop_cooldown_enabled:
+        return False
+    cooldown_seconds = max(1, int(config.post_initial_stop_cooldown_hours)) * 3600
+    stops = paper.recent_closed_trades(
+        symbol,
+        reason="INITIAL_STOP_HIT",
+        since_ts=timestamp - cooldown_seconds,
+        until_ts=timestamp,
+    )
+    if not stops:
+        return False
+    latest_stop_ts = max(int(row.get("timestamp") or 0) for row in stops)
+    return timestamp < latest_stop_ts + cooldown_seconds
+
+
 def _rolling_initial_stop_cooldown_active(
     symbol: str,
     config: EntryChainConfig,
@@ -334,6 +400,39 @@ def _rolling_initial_stop_cooldown_active(
     return timestamp < latest_stop_ts + cooldown_seconds
 
 
+def _portfolio_consecutive_stop_circuit_active(
+    config: EntryChainConfig,
+    paper: PaperTradingLedger,
+    timestamp: int,
+) -> bool:
+    if not config.portfolio_stop_circuit_enabled:
+        return False
+    required = max(1, int(config.portfolio_stop_circuit_count))
+    cooldown_seconds = max(1, int(config.portfolio_stop_circuit_hours)) * 3600
+    closed = paper.recent_closed_trades_all(until_ts=timestamp)
+    if len(closed) < required:
+        return False
+    recent = sorted(closed, key=lambda row: int(row.get("timestamp") or 0))[-required:]
+    if any(row.get("reason") != "INITIAL_STOP_HIT" for row in recent):
+        return False
+    latest_stop_ts = int(recent[-1].get("timestamp") or 0)
+    return timestamp < latest_stop_ts + cooldown_seconds
+
+
+def _portfolio_daily_loss_circuit_active(
+    config: EntryChainConfig,
+    paper: PaperTradingLedger,
+    timestamp: int,
+) -> bool:
+    if not config.portfolio_daily_loss_circuit_enabled:
+        return False
+    day_start = int(timestamp) - (int(timestamp) % 86400)
+    realized = 0.0
+    for row in paper.recent_closed_trades_all(since_ts=day_start, until_ts=timestamp):
+        realized += float(row.get("position_realized_pnl") or row.get("net_pnl") or 0.0)
+    return realized <= float(config.portfolio_daily_loss_limit)
+
+
 def _weak_edge_direct_without_positive_history(
     decision: EntryChainDecision,
     config: EntryChainConfig,
@@ -343,6 +442,20 @@ def _weak_edge_direct_without_positive_history(
     if decision.action != "DIRECT":
         return False
     if decision.score < config.weak_edge_direct_min_score or decision.score > config.weak_edge_direct_max_score:
+        return False
+    symbol = str(decision.metadata.get("symbol") or "").strip().upper()
+    return not paper.has_positive_closed_trade(symbol, until_ts=timestamp)
+
+
+def _weak_edge_probe_without_positive_history(
+    decision: EntryChainDecision,
+    config: EntryChainConfig,
+    paper: PaperTradingLedger,
+    timestamp: int,
+) -> bool:
+    if decision.action != "PROBE":
+        return False
+    if decision.score < config.weak_edge_probe_min_score or decision.score > config.weak_edge_probe_max_score:
         return False
     symbol = str(decision.metadata.get("symbol") or "").strip().upper()
     return not paper.has_positive_closed_trade(symbol, until_ts=timestamp)

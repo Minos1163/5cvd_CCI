@@ -16,6 +16,8 @@ ATR_STOP_MULT = 1.5
 MIN_STOP_PCT = 0.005
 MAX_STOP_PCT = 0.03
 MAX_HOLD_BARS = 32
+COST_BREAKEVEN_CHECK_BARS = MAX_HOLD_BARS // 4
+COST_BREAKEVEN_BUFFER_MULT = 0.5
 TP_LEVELS = (1.2, 2.0, 3.0)
 TP_FRACTIONS = (0.40, 0.35, 0.25)
 
@@ -210,6 +212,10 @@ class PaperTradingLedger:
                     break
             if position.remaining_fraction <= 0:
                 self.positions.pop(symbol, None)
+            elif _cost_breakeven_timeout(position, close):
+                net = self._close_fraction(position, timestamp, close, position.remaining_fraction, "COST_BREAKEVEN_TIMEOUT")
+                events.append(f"PAPER_CLOSE:{symbol}:COST_BREAKEVEN_TIMEOUT:{net:.4f}")
+                self.positions.pop(symbol, None)
             elif position.hold_bars >= MAX_HOLD_BARS:
                 net = self._close_fraction(position, timestamp, close, position.remaining_fraction, "MAX_HOLD_EXIT")
                 events.append(f"PAPER_CLOSE:{symbol}:MAX_HOLD_EXIT:{net:.4f}")
@@ -342,6 +348,27 @@ class PaperTradingLedger:
             if row.get("event") != "PAPER_CLOSE":
                 continue
             if str(row.get("symbol", "")).strip().upper() != normalized:
+                continue
+            if reason is not None and row.get("reason") != reason:
+                continue
+            ts = int(row.get("timestamp") or 0)
+            if since_ts is not None and ts < since_ts:
+                continue
+            if until_ts is not None and ts > until_ts:
+                continue
+            rows.append(row)
+        return rows
+
+    def recent_closed_trades_all(
+        self,
+        *,
+        reason: str | None = None,
+        since_ts: int | None = None,
+        until_ts: int | None = None,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for row in self._read_trade_events():
+            if row.get("event") != "PAPER_CLOSE":
                 continue
             if reason is not None and row.get("reason") != reason:
                 continue
@@ -494,6 +521,23 @@ def _gross_pnl(side: str, entry_price: float, exit_price: float, quantity: float
     if side == "SHORT":
         return (entry_price - exit_price) * quantity
     return (exit_price - entry_price) * quantity
+
+
+def _cost_breakeven_timeout(position: PaperPosition, close: float) -> bool:
+    if position.hold_bars < COST_BREAKEVEN_CHECK_BARS or position.tp_consumed:
+        return False
+    fraction = max(0.0, position.remaining_fraction)
+    quantity = position.quantity * fraction
+    gross = _gross_pnl(position.side, position.entry_price, close, quantity)
+    return gross < _round_trip_cost_estimate(position, close) * COST_BREAKEVEN_BUFFER_MULT
+
+
+def _round_trip_cost_estimate(position: PaperPosition, close: float) -> float:
+    fraction = max(0.0, position.remaining_fraction)
+    entry_cost = (position.entry_fee + position.entry_slippage) * fraction
+    exit_notional = abs(position.quantity * fraction * close)
+    exit_cost = fee(exit_notional, FEE_BPS) + fee(exit_notional, SLIPPAGE_BPS)
+    return entry_cost + exit_cost
 
 
 def _margin_used(notional: float, leverage: int) -> float:

@@ -104,17 +104,39 @@ def test_fib_pa_dry_run_config_loads_and_is_dry_run_safe():
 
     assert config.use_fib_pa_architecture is True
     assert config.disable_probe is False
+    assert config.daily_max_trades_base == 16
+    assert config.min_daily_trades == 2
+    assert config.max_symbol_trades_per_day == 2
+    assert config.max_active_symbols == 8
+    assert config.fib_min_direct_score == 9.0
+    assert config.rr_min_direct_score == 4.0
+    assert config.weak_edge_probe_min_score == 77.0
+    assert config.weak_edge_probe_max_score == 82.0
     assert config.probe_conditions == {
         "enabled": True,
         "min_score": 72.0,
         "min_fib_score": 12.0,
-        "min_pa_score": 6.0,
-        "min_rr_net_r": 0.9,
-        "min_rr_score": 2.0,
+        "min_pa_score": 10.0,
+        "min_rr_net_r": 1.3,
+        "min_rr_score": 4.0,
+        "high_beta_min_pa_score": 12.0,
+        "high_beta_min_rr_score": 5.0,
+        "high_beta_min_cci_score": 9.0,
+        "high_beta_min_ema_score": 12.0,
+        "long_chase_min_pa_score": 12.0,
         "long_threshold_offset": 7.0,
         "short_threshold_offset": 0.0,
         "max_active_probes": 2,
     }
+    assert config.post_initial_stop_cooldown_enabled is True
+    assert config.post_initial_stop_cooldown_hours == 4
+    assert config.portfolio_stop_circuit_enabled is True
+    assert config.portfolio_stop_circuit_count == 2
+    assert config.portfolio_stop_circuit_hours == 2
+    assert config.portfolio_daily_loss_circuit_enabled is True
+    assert config.portfolio_daily_loss_limit == -30.0
+    assert config.long_overextension_watch_enabled is True
+    assert config.long_chase_watch_enabled is True
     assert config.long_threshold_offset == 10.0
     assert config.blacklist_symbols == ("XRPUSDT", "ZECUSDT")
     assert "XLMUSDT" in config.observation_only_symbols

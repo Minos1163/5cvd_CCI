@@ -85,6 +85,33 @@ def test_decision_audit_writer_outputs_attribution_jsonl(tmp_path):
     assert rows[0]["decision"]["metadata"]["signal_score"] == 58
 
 
+def test_decision_audit_writer_outputs_near_misses(tmp_path):
+    writer = DecisionAuditWriter(tmp_path)
+    writer.write_near_miss(
+        {
+            "timestamp": 1,
+            "symbol": "SOLUSDT",
+            "action": "WATCH",
+            "score": 86.5,
+            "scout_candidate": True,
+            "reasons": ["PROBE_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0"],
+        }
+    )
+    writer.close()
+
+    rows = [json.loads(line) for line in (tmp_path / "near_misses.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows == [
+        {
+            "action": "WATCH",
+            "reasons": ["PROBE_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0"],
+            "score": 86.5,
+            "scout_candidate": True,
+            "symbol": "SOLUSDT",
+            "timestamp": 1,
+        }
+    ]
+
+
 def test_decision_audit_preserves_model_market_and_latency_fields(tmp_path):
     writer = DecisionAuditWriter(tmp_path)
     writer.write_decision(

@@ -374,3 +374,71 @@ def test_paper_trading_ledger_deduplicates_hold_bars_by_kline_timestamp(tmp_path
 
     positions = json.loads((tmp_path / "paper_positions.json").read_text(encoding="utf-8"))
     assert positions["SOLUSDT"]["hold_bars"] == 2
+
+
+def test_paper_trading_ledger_exits_stagnant_position_at_cost_checkpoint(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision, draft = approved_decision()
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1000,
+    )
+
+    events = []
+    exit_index = None
+    for index in range(1, 9):
+        events = ledger.on_decision(
+            symbol="SOLUSDT",
+            decision_payload={"action": "NO_TRADE"},
+            draft_payload={"approved": False},
+            kline={"close": 100.05, "high": 100.1, "low": 100.0},
+            timestamp=1000 + index * 900,
+        )
+        if events:
+            exit_index = index
+            break
+
+    assert exit_index == 8
+    assert events[0].startswith("PAPER_CLOSE:SOLUSDT:COST_BREAKEVEN_TIMEOUT")
+    trade_rows = [json.loads(line) for line in (tmp_path / "paper_trades.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert trade_rows[-1]["reason"] == "COST_BREAKEVEN_TIMEOUT"
+
+
+def test_paper_trading_ledger_reads_recent_closed_trades_across_symbols(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision, draft = approved_decision()
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1000,
+    )
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 99, "high": 100, "low": 98},
+        timestamp=1900,
+    )
+    ledger.on_decision(
+        symbol="BNBUSDT",
+        decision_payload=decision,
+        draft_payload=draft,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=2800,
+    )
+    ledger.on_decision(
+        symbol="BNBUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 99, "high": 100, "low": 98},
+        timestamp=3700,
+    )
+
+    rows = ledger.recent_closed_trades_all(reason="INITIAL_STOP_HIT", since_ts=1000, until_ts=4000)
+
+    assert [row["symbol"] for row in rows] == ["SOLUSDT", "BNBUSDT"]
