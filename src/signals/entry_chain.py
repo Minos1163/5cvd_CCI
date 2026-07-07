@@ -541,6 +541,36 @@ def check_probe_conditions(
             return False, reason.replace("PROBE_BELOW_", "HIGH_BETA_PROBE_BELOW_", 1)
         return False, reason
 
+    trend_score = float(component_points.get("trend_ema_context", 0.0))
+    cci_score = float(component_points.get("cci_momentum_quality", 0.0))
+    low_score_quality_veto_score = float(config.get("low_score_quality_veto_score", 75.0))
+    low_score_quality_min_ema_score = float(config.get("low_score_quality_min_ema_score", 10.0))
+    low_score_quality_min_cci_score = float(config.get("low_score_quality_min_cci_score", 7.0))
+    if float(score) < low_score_quality_veto_score and (
+        trend_score < low_score_quality_min_ema_score or cci_score < low_score_quality_min_cci_score
+    ):
+        return False, "PROBE_LOW_SCORE_QUALITY_VETO"
+
+    trend_or_cci_min_ema_score = float(config.get("trend_or_cci_min_ema_score", 10.0))
+    trend_or_cci_min_cci_score = float(config.get("trend_or_cci_min_cci_score", 9.0))
+    if trend_score < trend_or_cci_min_ema_score and cci_score < trend_or_cci_min_cci_score:
+        return False, "PROBE_BELOW_TREND_OR_CCI_QUALITY_GATE"
+
+    if bool(config.get("elite_probe_enabled", False)):
+        elite_min_score = float(config.get("elite_probe_min_score", 75.0))
+        if float(score) < elite_min_score:
+            return False, "PROBE_LOW_SCORE_ELITE_VETO"
+        fib_score = float(component_points.get("fibonacci_location", 0.0))
+        pa_score = float(component_points.get("price_action_structure", 0.0))
+        elite_pa = float(config.get("elite_probe_min_pa_score", 18.0))
+        elite_fib = float(config.get("elite_probe_min_fib_score", 15.0))
+        elite_ema = float(config.get("elite_probe_trend_min_ema_score", 15.0))
+        elite_sum = float(config.get("elite_probe_trend_min_structure_sum", 30.0))
+        strong_structure = pa_score >= elite_pa and fib_score >= elite_fib
+        trend_structure = trend_score >= elite_ema and (pa_score + fib_score) >= elite_sum
+        if not (strong_structure or trend_structure):
+            return False, "PROBE_BELOW_ELITE_STRUCTURE_GATE"
+
     details = rr_detail or {}
     net_tp1_r = details.get("net_tp1_r")
     if net_tp1_r is not None:

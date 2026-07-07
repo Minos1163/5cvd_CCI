@@ -119,6 +119,17 @@ def test_fib_pa_dry_run_config_loads_and_is_dry_run_safe():
         "min_pa_score": 10.0,
         "min_rr_net_r": 1.3,
         "min_rr_score": 4.0,
+        "trend_or_cci_min_ema_score": 10.0,
+        "trend_or_cci_min_cci_score": 9.0,
+        "low_score_quality_veto_score": 75.0,
+        "low_score_quality_min_ema_score": 10.0,
+        "low_score_quality_min_cci_score": 7.0,
+        "elite_probe_enabled": True,
+        "elite_probe_min_score": 75.0,
+        "elite_probe_min_pa_score": 18.0,
+        "elite_probe_min_fib_score": 15.0,
+        "elite_probe_trend_min_ema_score": 15.0,
+        "elite_probe_trend_min_structure_sum": 30.0,
         "high_beta_min_pa_score": 12.0,
         "high_beta_min_rr_score": 5.0,
         "high_beta_min_cci_score": 9.0,
@@ -141,4 +152,37 @@ def test_fib_pa_dry_run_config_loads_and_is_dry_run_safe():
     assert config.blacklist_symbols == ("XRPUSDT", "ZECUSDT")
     assert "XLMUSDT" in config.observation_only_symbols
     assert "TONUSDT" in config.observation_only_symbols
+    assert config.scout_micro_symbols == (
+        "XLMUSDT",
+        "CCUSDT",
+        "XMRUSDT",
+        "ADAUSDT",
+        "LINKUSDT",
+        "LABUSDT",
+        "HYPEUSDT",
+        "DOGEUSDT",
+    )
+    assert config.scout_micro_rr_gap_block_symbols == ("XLMUSDT",)
+    assert config.scout_micro_targeted_long_symbols == (
+        "LINKUSDT",
+        "LABUSDT",
+        "HYPEUSDT",
+        "DOGEUSDT",
+        "CCUSDT",
+        "XLMUSDT",
+    )
+    assert config.scout_micro_scout_only_symbols == ("XMRUSDT", "ADAUSDT")
+    assert config.scout_micro_min_score == 82.0
+    assert config.scout_micro_non_rr_min_score == 85.0
+    assert config.scout_micro_targeted_long_min_score == 82.0
+    assert config.scout_micro_targeted_long_min_pa_score == 18.0
+    assert config.scout_micro_targeted_long_min_rr_score == 3.0
+    assert config.scout_micro_scout_only_min_score == 85.0
+    assert config.scout_micro_scout_only_min_fib_score == 12.0
+    assert config.scout_micro_scout_only_min_pa_score == 10.0
+    assert config.scout_micro_scout_only_min_rr_score == 4.0
+    assert config.scout_micro_same_side_cooldown_hours == 2
+    assert config.scout_micro_initial_stop_cooldown_hours == 6
+    assert config.scout_micro_notional == 50.0
+    assert config.scout_micro_leverage == 1
     assert config.dry_run_warmup_15m_bars == 240

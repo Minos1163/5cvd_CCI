@@ -52,6 +52,23 @@ class EntryChainConfig:
     blacklist_symbols: tuple[str, ...] = ()
     watch_only_symbols: tuple[str, ...] = ()
     observation_only_symbols: tuple[str, ...] = ()
+    scout_micro_symbols: tuple[str, ...] = ()
+    scout_micro_rr_gap_block_symbols: tuple[str, ...] = ()
+    scout_micro_targeted_long_symbols: tuple[str, ...] = ()
+    scout_micro_scout_only_symbols: tuple[str, ...] = ()
+    scout_micro_min_score: float = 82.0
+    scout_micro_non_rr_min_score: float = 85.0
+    scout_micro_targeted_long_min_score: float = 82.0
+    scout_micro_targeted_long_min_pa_score: float = 18.0
+    scout_micro_targeted_long_min_rr_score: float = 3.0
+    scout_micro_scout_only_min_score: float = 85.0
+    scout_micro_scout_only_min_fib_score: float = 12.0
+    scout_micro_scout_only_min_pa_score: float = 10.0
+    scout_micro_scout_only_min_rr_score: float = 4.0
+    scout_micro_same_side_cooldown_hours: int = 2
+    scout_micro_initial_stop_cooldown_hours: int = 6
+    scout_micro_notional: float = 50.0
+    scout_micro_leverage: int = 1
     dry_run_symbols: tuple[str, ...] = ()
     dry_run_symbol_source: str = "configured"
     dry_run_rank_start: int = 3
@@ -119,6 +136,14 @@ class EntryChainConfig:
             values["watch_only_symbols"] = _normalize_symbols(values["watch_only_symbols"])
         if "observation_only_symbols" in values:
             values["observation_only_symbols"] = _normalize_symbols(values["observation_only_symbols"])
+        if "scout_micro_symbols" in values:
+            values["scout_micro_symbols"] = _normalize_symbols(values["scout_micro_symbols"])
+        if "scout_micro_rr_gap_block_symbols" in values:
+            values["scout_micro_rr_gap_block_symbols"] = _normalize_symbols(values["scout_micro_rr_gap_block_symbols"])
+        if "scout_micro_targeted_long_symbols" in values:
+            values["scout_micro_targeted_long_symbols"] = _normalize_symbols(values["scout_micro_targeted_long_symbols"])
+        if "scout_micro_scout_only_symbols" in values:
+            values["scout_micro_scout_only_symbols"] = _normalize_symbols(values["scout_micro_scout_only_symbols"])
         if "dry_run_symbols" in values:
             values["dry_run_symbols"] = _normalize_symbols(values["dry_run_symbols"])
         return cls(**values)

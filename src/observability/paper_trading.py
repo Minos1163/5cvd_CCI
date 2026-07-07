@@ -45,6 +45,7 @@ class PaperPosition:
     last_processed_kline_ts: int
     score: float
     reasons: list[str]
+    scout_mission: str | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +151,7 @@ class PaperTradingLedger:
             last_processed_kline_ts=timestamp,
             score=float(decision_payload.get("score") or 0.0),
             reasons=[str(item) for item in decision_payload.get("reasons", [])],
+            scout_mission=str(decision_payload.get("scout_mission")) if decision_payload.get("scout_mission") else None,
         )
         self.positions[symbol] = position
         self.realized_pnl += position.realized_pnl
@@ -172,6 +174,7 @@ class PaperTradingLedger:
                 "pnl_accounting_mode": "notional_primary_margin_reporting",
                 "score": position.score,
                 "reasons": position.reasons,
+                "scout_mission": position.scout_mission,
             }
         )
         return position
@@ -260,6 +263,7 @@ class PaperTradingLedger:
                 "position_margin_realized_pnl": position.realized_margin_pnl,
                 "pnl_accounting_mode": "notional_primary_margin_reporting",
                 "remaining_fraction": position.remaining_fraction,
+                "scout_mission": position.scout_mission,
             }
         )
         return net
@@ -455,6 +459,7 @@ class PaperTradingLedger:
             values.setdefault("tp_consumed", [])
             values.setdefault("last_processed_kline_ts", values.get("entry_time", 0))
             values.setdefault("realized_margin_pnl", float(values.get("realized_pnl") or 0.0) * max(1, int(values.get("leverage") or 1)))
+            values.setdefault("scout_mission", None)
             positions[symbol] = PaperPosition(**values)
         return positions
 

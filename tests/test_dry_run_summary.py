@@ -45,3 +45,50 @@ def test_summary_tracks_near_misses():
             "primary_reason": "HIGH_BETA_PROBE_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_3.0",
         }
     ]
+
+
+def test_summary_splits_rejection_reasons_by_layer():
+    summary = DryRunSummary(target_tier="aggressive")
+    summary.record_decision(
+        {
+            "action": "WATCH",
+            "symbol": "LINKUSDT",
+            "score": 87.3,
+            "reasons": [
+                "FIB_PA_ARCHITECTURE_WEIGHTS",
+                "DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0",
+                "PROBE_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0",
+            ],
+        }
+    )
+    summary.record_decision(
+        {
+            "action": "NO_TRADE",
+            "symbol": "TRXUSDT",
+            "score": 77.7,
+            "reasons": ["FIB_PA_ARCHITECTURE_WEIGHTS", "DAILY_TRADE_BUDGET_USED"],
+        }
+    )
+
+    payload = summary.to_dict(orders_submitted=0, data_health="OK")
+
+    assert payload["gate_rejections_by_layer"]["direct"] == 1
+    assert payload["gate_rejections_by_layer"]["probe"] == 1
+    assert payload["gate_rejections_by_layer"]["budget"] == 1
+    assert payload["gate_rejections_by_layer_reason"]["probe"] == {
+        "PROBE_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0": 1
+    }
+
+
+def test_summary_includes_assumptions_and_latest_portfolio_exposure():
+    summary = DryRunSummary(target_tier="aggressive", assumptions={"fee_bps": 5.0, "slippage_bps": 5.0})
+    summary.record_portfolio_snapshot({"total_exposure_pct": 0.6, "net_side_exposure_pct": -0.2, "open_position_count": 2})
+
+    payload = summary.to_dict(orders_submitted=0, data_health="OK")
+
+    assert payload["dry_run_assumptions"] == {"fee_bps": 5.0, "slippage_bps": 5.0}
+    assert payload["latest_portfolio_exposure"] == {
+        "total_exposure_pct": 0.6,
+        "net_side_exposure_pct": -0.2,
+        "open_position_count": 2,
+    }

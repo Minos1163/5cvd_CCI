@@ -22,7 +22,7 @@ from src.execution.live_entry_chain_adapter import build_live_entry_order_draft
 from src.backtest.engine import BacktestBar
 from src.observability.decision_audit import DecisionAuditWriter
 from src.observability.dry_run_summary import DryRunSummary, write_summary
-from src.observability.paper_trading import PaperTradingLedger, PortfolioStateSnapshot
+from src.observability.paper_trading import FEE_BPS, SLIPPAGE_BPS, TP_FRACTIONS, TP_LEVELS, PaperTradingLedger, PortfolioStateSnapshot
 from src.risk.stress_simulator import stress_decision
 from src.signals.entry_chain import EntryChainContext, EntryChainDecision, evaluate_entry_chain
 from src.signals.entry_chain_config import EntryChainConfig, load_entry_chain_config
@@ -92,12 +92,13 @@ def run(args: argparse.Namespace) -> None:
     symbols, symbol_meta = resolve_runtime_symbols(args, config)
     warmup_state = warmup_symbols(symbols, args, config) if args.market_data_source == "public-binance" else synthetic_warmup_state(symbols, config)
     orders_submitted = 0
-    summary = DryRunSummary(target_tier=args.target_tier)
+    summary = DryRunSummary(target_tier=args.target_tier, assumptions=dry_run_assumptions(config))
     data_health = "OK"
     cycle = 0
     output_dir: Path | None = None
     audit: DecisionAuditWriter | None = None
     paper: PaperTradingLedger | None = None
+    scout_paper: PaperTradingLedger | None = None
     startup_ts = int(time.time())
     startup_output_dir = resolve_output_dir(args, timestamp=startup_ts)
     write_runtime_log(
@@ -117,10 +118,13 @@ def run(args: argparse.Namespace) -> None:
                     audit.close()
                 output_dir = current_output_dir
                 audit = DecisionAuditWriter(output_dir)
-                paper = PaperTradingLedger(output_dir, state_dir=resolve_paper_state_dir(args))
+                paper_state_dir = resolve_paper_state_dir(args)
+                paper = PaperTradingLedger(output_dir, state_dir=paper_state_dir)
+                scout_paper = PaperTradingLedger(output_dir / "scout_micro", state_dir=paper_state_dir / "scout_micro")
             assert output_dir is not None
             assert audit is not None
             assert paper is not None
+            assert scout_paper is not None
             runtime_lines = render_cycle_header(
                 cycle,
                 now,
@@ -200,8 +204,18 @@ def run(args: argparse.Namespace) -> None:
                     kline=debug.get("kline", {}),
                     timestamp=int(debug.get("kline", {}).get("timestamp") or now),
                 )
+                scout_events = update_scout_micro_ledger(
+                    scout_paper=scout_paper,
+                    symbol=symbol,
+                    near_miss=near_miss,
+                    config=config,
+                    data_health=data_health,
+                    kline=debug.get("kline", {}),
+                    timestamp=int(debug.get("kline", {}).get("timestamp") or now),
+                )
                 runtime_lines.extend(render_symbol_log(symbol, context, decision_payload, draft_payload, stress, debug))
                 runtime_lines.extend(render_paper_log(symbol, paper_events))
+                runtime_lines.extend(render_scout_micro_log(symbol, scout_events))
                 processed += 1
             elapsed = time.perf_counter() - cycle_started
             cycle_finished_ts = time.time()
@@ -209,6 +223,7 @@ def run(args: argparse.Namespace) -> None:
             runtime_lines.append(render_schedule_wait_log(args, now, cycle_finished_ts, elapsed))
             write_runtime_log(output_dir, runtime_lines)
             write_health(output_dir, symbols, orders_submitted, data_health, symbol_meta, warmup_state, config.dry_run_warmup_15m_bars)
+            summary.record_portfolio_snapshot(portfolio_exposure_snapshot(paper.get_portfolio_state_snapshot(now), config))
             write_summary(output_dir / "summary.json", summary, orders_submitted=orders_submitted, data_health=data_health)
             if args.once:
                 break
@@ -242,13 +257,50 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def dry_run_assumptions(config: EntryChainConfig) -> dict[str, Any]:
+    return {
+        "direct_risk_pct": config.direct_risk_pct,
+        "probe_risk_pct": config.probe_risk_pct,
+        "max_active_symbols": config.max_active_symbols,
+        "max_total_exposure_pct": config.max_total_exposure_pct,
+        "max_same_direction_exposure_pct": config.max_same_direction_exposure_pct,
+        "max_symbol_trades_per_day": config.max_symbol_trades_per_day,
+        "daily_max_trades_base": config.daily_max_trades_base,
+        "min_daily_trades": config.min_daily_trades,
+        "paper_fee_bps": FEE_BPS,
+        "paper_slippage_bps": SLIPPAGE_BPS,
+        "paper_tp_levels": list(TP_LEVELS),
+        "paper_tp_fractions": list(TP_FRACTIONS),
+        "pnl_accounting_mode": "notional_primary_margin_reporting",
+        "net_beta_exposure_model": "not_configured",
+    }
+
+
+def portfolio_exposure_snapshot(snapshot: PortfolioStateSnapshot, config: EntryChainConfig) -> dict[str, Any]:
+    net_side_exposure_pct = snapshot.same_direction_long_pct - snapshot.same_direction_short_pct
+    return {
+        "active_symbols": sorted(snapshot.active_symbols),
+        "open_position_count": snapshot.open_position_count,
+        "total_exposure_pct": snapshot.total_exposure_pct,
+        "same_direction_long_pct": snapshot.same_direction_long_pct,
+        "same_direction_short_pct": snapshot.same_direction_short_pct,
+        "net_side_exposure_pct": net_side_exposure_pct,
+        "max_total_exposure_pct": config.max_total_exposure_pct,
+        "max_same_direction_exposure_pct": config.max_same_direction_exposure_pct,
+        "portfolio_trades_today": snapshot.portfolio_trades_today,
+        "daily_profit_pct": snapshot.daily_profit_pct,
+        "symbol_exposure_pct": dict(sorted(snapshot.symbol_exposure_pct.items())),
+        "net_beta_exposure_pct": None,
+        "net_beta_exposure_cap_pct": None,
+        "net_beta_exposure_model": "not_configured",
+    }
+
+
 def build_near_miss_payload(decision_payload: Mapping[str, Any], *, min_score: float) -> dict[str, Any] | None:
     action = str(decision_payload.get("action") or "").upper()
     if action in {"PROBE", "DIRECT"}:
         return None
     score = float(decision_payload.get("score") or 0.0)
-    if score < min_score:
-        return None
     reasons = decision_payload.get("reasons", [])
     reason_list = [str(item) for item in reasons] if isinstance(reasons, list) else [str(reasons)]
     primary_reason = next((item for item in reason_list if item != "FIB_PA_ARCHITECTURE_WEIGHTS"), reason_list[0] if reason_list else "")
@@ -257,7 +309,7 @@ def build_near_miss_payload(decision_payload: Mapping[str, Any], *, min_score: f
     score_detail = decision_payload.get("score_detail", {}) if isinstance(decision_payload.get("score_detail"), Mapping) else {}
     component_points = decision_payload.get("component_points", {})
     diagnostics = score_detail.get("diagnostics", {}) if isinstance(score_detail, Mapping) else {}
-    return {
+    payload = {
         "timestamp": decision_payload.get("timestamp"),
         "symbol": decision_payload.get("symbol"),
         "action": action,
@@ -272,6 +324,235 @@ def build_near_miss_payload(decision_payload: Mapping[str, Any], *, min_score: f
         "diagnostics": dict(diagnostics) if isinstance(diagnostics, Mapping) else {},
         "entry_context": dict(entry_context),
     }
+    if _is_targeted_long_offset_near_miss(payload):
+        payload["targeted_long_offset"] = True
+        payload["scout_tags"] = ["TARGETED_LONG_OFFSET"]
+    elif score < min_score:
+        return None
+    return payload
+
+
+def _is_targeted_long_offset_near_miss(payload: Mapping[str, Any]) -> bool:
+    reasons = payload.get("reasons", [])
+    reason_list = [str(item) for item in reasons] if isinstance(reasons, list) else [str(reasons)]
+    component_points = payload.get("component_points", {})
+    pa_score = 0.0
+    if isinstance(component_points, Mapping):
+        pa_score = float(component_points.get("price_action_structure") or 0.0)
+    return (
+        "SIDE_THRESHOLD_OFFSET_LONG_10.00" in reason_list
+        and str(payload.get("intended_side") or "").upper() == "LONG"
+        and float(payload.get("score") or 0.0) >= 80.0
+        and pa_score >= 18.0
+    )
+
+
+def should_open_scout_micro(
+    *,
+    symbol: str,
+    near_miss: Mapping[str, Any] | None,
+    config: EntryChainConfig,
+    data_health: str,
+    scout_paper: PaperTradingLedger,
+    timestamp: int | None = None,
+) -> bool:
+    normalized_symbol = symbol.strip().upper()
+    if normalized_symbol not in config.scout_micro_symbols:
+        return False
+    if str(data_health).upper() != "OK":
+        return False
+    if normalized_symbol in scout_paper.positions:
+        return False
+    if near_miss is None:
+        return False
+    if str(near_miss.get("symbol") or "").strip().upper() != normalized_symbol:
+        return False
+    if float(near_miss.get("score") or 0.0) < float(config.scout_micro_min_score):
+        return False
+    side = str(near_miss.get("intended_side") or "").upper()
+    if side not in {"LONG", "SHORT"}:
+        return False
+    if float(near_miss.get("entry_price") or 0.0) <= 0.0:
+        return False
+    if scout_micro_mission(normalized_symbol, near_miss, config) is None:
+        return False
+    return _scout_micro_cooldown_reason(normalized_symbol, side, config, scout_paper, timestamp) is None
+
+
+def scout_micro_mission(symbol: str, near_miss: Mapping[str, Any], config: EntryChainConfig) -> str | None:
+    normalized_symbol = symbol.strip().upper()
+    if _targeted_long_offset_scout_eligible(normalized_symbol, near_miss, config):
+        return "TARGETED_LONG_OFFSET"
+    if _scout_only_high_score_eligible(normalized_symbol, near_miss, config):
+        return "SCOUT_ONLY_HIGH_SCORE"
+    if normalized_symbol in config.scout_micro_rr_gap_block_symbols and _has_rr_gap_reason(near_miss):
+        return None
+    if float(near_miss.get("score") or 0.0) >= float(config.scout_micro_non_rr_min_score) and not _has_rr_gap_reason(near_miss):
+        return "NON_RR_HIGH_SCORE"
+    return None
+
+
+def _targeted_long_offset_scout_eligible(symbol: str, near_miss: Mapping[str, Any], config: EntryChainConfig) -> bool:
+    if symbol not in config.scout_micro_targeted_long_symbols:
+        return False
+    if str(near_miss.get("intended_side") or "").upper() != "LONG":
+        return False
+    reasons = _near_miss_reasons(near_miss)
+    tags = near_miss.get("scout_tags", [])
+    tag_list = [str(item) for item in tags] if isinstance(tags, list) else [str(tags)]
+    if "SIDE_THRESHOLD_OFFSET_LONG_10.00" not in reasons and "TARGETED_LONG_OFFSET" not in tag_list:
+        return False
+    return (
+        float(near_miss.get("score") or 0.0) >= float(config.scout_micro_targeted_long_min_score)
+        and _component_point(near_miss, "price_action_structure") >= float(config.scout_micro_targeted_long_min_pa_score)
+        and _component_point(near_miss, "risk_reward_geometry") >= float(config.scout_micro_targeted_long_min_rr_score)
+    )
+
+
+def _scout_only_high_score_eligible(symbol: str, near_miss: Mapping[str, Any], config: EntryChainConfig) -> bool:
+    if symbol not in config.scout_micro_scout_only_symbols:
+        return False
+    return (
+        float(near_miss.get("score") or 0.0) >= float(config.scout_micro_scout_only_min_score)
+        and _component_point(near_miss, "fibonacci_location") >= float(config.scout_micro_scout_only_min_fib_score)
+        and _component_point(near_miss, "price_action_structure") >= float(config.scout_micro_scout_only_min_pa_score)
+        and _component_point(near_miss, "risk_reward_geometry") >= float(config.scout_micro_scout_only_min_rr_score)
+    )
+
+
+def _scout_micro_cooldown_reason(
+    symbol: str,
+    side: str,
+    config: EntryChainConfig,
+    scout_paper: PaperTradingLedger,
+    timestamp: int | None,
+) -> str | None:
+    if timestamp is None:
+        return None
+    initial_stop_hours = int(config.scout_micro_initial_stop_cooldown_hours)
+    if initial_stop_hours > 0:
+        since_ts = int(timestamp) - initial_stop_hours * 3600
+        if scout_paper.recent_closed_trades(symbol, reason="INITIAL_STOP_HIT", since_ts=since_ts, until_ts=int(timestamp)):
+            return "SCOUT_MICRO_INITIAL_STOP_COOLDOWN"
+    same_side_hours = int(config.scout_micro_same_side_cooldown_hours)
+    if same_side_hours > 0:
+        since_ts = int(timestamp) - same_side_hours * 3600
+        for row in scout_paper.recent_closed_trades(symbol, since_ts=since_ts, until_ts=int(timestamp)):
+            if str(row.get("side") or "").upper() == side:
+                return "SCOUT_MICRO_SAME_SIDE_COOLDOWN"
+    return None
+
+
+def _has_rr_gap_reason(near_miss: Mapping[str, Any]) -> bool:
+    return any("_BELOW_RISK_REWARD_GEOMETRY" in reason for reason in _near_miss_reasons(near_miss))
+
+
+def _near_miss_reasons(near_miss: Mapping[str, Any]) -> list[str]:
+    reasons = near_miss.get("reasons", [])
+    return [str(item) for item in reasons] if isinstance(reasons, list) else [str(reasons)]
+
+
+def _component_point(near_miss: Mapping[str, Any], component: str) -> float:
+    points = near_miss.get("component_points", {})
+    if not isinstance(points, Mapping):
+        return 0.0
+    return float(points.get(component) or 0.0)
+
+
+def build_scout_micro_payloads(
+    *,
+    symbol: str,
+    near_miss: Mapping[str, Any],
+    price: float,
+    config: EntryChainConfig,
+    timestamp: int,
+    mission: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    side = str(near_miss.get("intended_side") or "").upper()
+    notional = float(config.scout_micro_notional)
+    quantity = notional / float(price)
+    entry_context = near_miss.get("entry_context", {})
+    entry_context_payload = dict(entry_context) if isinstance(entry_context, Mapping) else {}
+    entry_context_payload["side"] = side
+    reasons = near_miss.get("reasons", [])
+    reason_list = [str(item) for item in reasons] if isinstance(reasons, list) else [str(reasons)]
+    mission_reason = f"SCOUT_MISSION_{mission}" if mission else "SCOUT_MISSION_UNCLASSIFIED"
+    decision_payload = {
+        "timestamp": timestamp,
+        "symbol": symbol,
+        "action": "PROBE",
+        "side": side,
+        "score": float(near_miss.get("score") or 0.0),
+        "leverage": int(config.scout_micro_leverage),
+        "notional_hint": notional,
+        "max_symbol_exposure_pct": 0.0,
+        "risk_allowed": True,
+        "reasons": ["SCOUT_MICRO", mission_reason, *reason_list],
+        "entry_context": entry_context_payload,
+        "scout_micro": True,
+        "scout_mission": mission,
+    }
+    draft_payload = {
+        "approved": True,
+        "reason": "SCOUT_MICRO",
+        "request": {
+            "position_side": side,
+            "quantity": quantity,
+            "price": float(price),
+        },
+    }
+    return decision_payload, draft_payload
+
+
+def update_scout_micro_ledger(
+    *,
+    scout_paper: PaperTradingLedger,
+    symbol: str,
+    near_miss: Mapping[str, Any] | None,
+    config: EntryChainConfig,
+    data_health: str,
+    kline: Mapping[str, Any],
+    timestamp: int,
+) -> list[str]:
+    normalized_symbol = symbol.strip().upper()
+    if normalized_symbol not in config.scout_micro_symbols and normalized_symbol not in scout_paper.positions:
+        return []
+    near_miss_price = near_miss.get("entry_price") if near_miss is not None else None
+    price = float(kline.get("close") or near_miss_price or 0.0)
+    if should_open_scout_micro(
+        symbol=normalized_symbol,
+        near_miss=near_miss,
+        config=config,
+        data_health=data_health,
+        scout_paper=scout_paper,
+        timestamp=timestamp,
+    ):
+        mission = scout_micro_mission(normalized_symbol, near_miss or {}, config)
+        decision_payload, draft_payload = build_scout_micro_payloads(
+            symbol=normalized_symbol,
+            near_miss=near_miss or {},
+            price=price,
+            config=config,
+            timestamp=timestamp,
+            mission=mission,
+        )
+    else:
+        decision_payload = {
+            "timestamp": timestamp,
+            "symbol": normalized_symbol,
+            "action": "NO_TRADE",
+            "side": "NONE",
+            "reasons": ["SCOUT_MICRO_NO_OPEN"],
+            "entry_context": {},
+        }
+        draft_payload = {"approved": False, "reason": "SCOUT_MICRO_NO_OPEN"}
+    return scout_paper.on_decision(
+        symbol=normalized_symbol,
+        decision_payload=decision_payload,
+        draft_payload=draft_payload,
+        kline=kline,
+        timestamp=timestamp,
+    )
 
 
 def apply_dry_run_decision_controls(
@@ -1238,6 +1519,12 @@ def render_paper_log(symbol: str, events: Sequence[str]) -> list[str]:
     if not events:
         return [f"   PAPER账本: symbol={symbol}, event=NO_CHANGE"]
     return [f"   PAPER账本: symbol={symbol}, event={event}" for event in events]
+
+
+def render_scout_micro_log(symbol: str, events: Sequence[str]) -> list[str]:
+    if not events:
+        return []
+    return [f"   SCOUT_MICRO账本: symbol={symbol}, event={event}" for event in events]
 
 
 def warmup_summary(

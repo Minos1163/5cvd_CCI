@@ -8,6 +8,7 @@ from argparse import Namespace
 from scripts.run_live_dry_run import (
     apply_paper_state_to_context,
     apply_dry_run_decision_controls,
+    build_scout_micro_payloads,
     build_near_miss_payload,
     build_context,
     next_kline_run_timestamp,
@@ -21,6 +22,8 @@ from scripts.run_live_dry_run import (
     resolve_output_dir,
     resolve_runtime_symbols,
     runtime_log_name,
+    scout_micro_mission,
+    should_open_scout_micro,
     warmup_summary,
     warmup_symbols,
 )
@@ -154,6 +157,16 @@ def test_live_dry_run_once_writes_audit_files(tmp_path):
     assert health["orders_submitted"] == 0
     assert summary["orders_submitted"] == 0
     assert summary["data_health"] == "OK"
+    assert "gate_rejections_by_layer" in summary
+    assert "probe" in summary["gate_rejections_by_layer"]
+    assert "dry_run_assumptions" in summary
+    assert summary["dry_run_assumptions"]["paper_fee_bps"] == 5.0
+    assert summary["dry_run_assumptions"]["paper_slippage_bps"] == 5.0
+    assert summary["dry_run_assumptions"]["net_beta_exposure_model"] == "not_configured"
+    assert "latest_portfolio_exposure" in summary
+    assert summary["latest_portfolio_exposure"]["open_position_count"] >= 0
+    assert "net_side_exposure_pct" in summary["latest_portfolio_exposure"]
+    assert summary["latest_portfolio_exposure"]["net_beta_exposure_model"] == "not_configured"
     paper_summary = json.loads((tmp_path / "paper_summary.json").read_text(encoding="utf-8"))
     assert paper_summary["open_positions"] >= 0
     assert "realized_pnl" in paper_summary
@@ -264,6 +277,53 @@ def test_live_dry_run_records_near_miss_jsonl_and_summary(tmp_path):
     assert rows[0]["action"] in {"WATCH", "NO_TRADE"}
     assert "component_points" in rows[0]
     assert summary["near_miss_count"] == 1
+
+
+def test_live_dry_run_opens_observation_only_xlm_in_scout_micro_ledger(tmp_path):
+    config_path = tmp_path / "entry_chain.scout_micro_test.json"
+    config_payload = json.loads(Path("configs/entry_chain.dry_run_fib_pa_v1.json").read_text(encoding="utf-8"))
+    config_payload["scout_micro_min_score"] = 0.0
+    config_payload["scout_micro_non_rr_min_score"] = 0.0
+    config_path.write_text(json.dumps(config_payload), encoding="utf-8")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_live_dry_run.py",
+            "--config",
+            str(config_path),
+            "--target-tier",
+            "aggressive",
+            "--market-data-source",
+            "synthetic",
+            "--once",
+            "--output-dir",
+            str(tmp_path),
+            "--symbols",
+            "XLMUSDT",
+            "--near-miss-min-score",
+            "0",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    main_trades = (tmp_path / "paper_trades.jsonl").read_text(encoding="utf-8").splitlines()
+    scout_trades = [
+        json.loads(line)
+        for line in (tmp_path / "scout_micro" / "paper_trades.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    scout_summary = json.loads((tmp_path / "scout_micro" / "paper_summary.json").read_text(encoding="utf-8"))
+
+    assert main_trades == []
+    assert scout_trades[0]["event"] == "PAPER_OPEN"
+    assert scout_trades[0]["symbol"] == "XLMUSDT"
+    assert scout_trades[0]["notional"] == 50.0
+    assert scout_trades[0]["leverage"] == 1
+    assert "SCOUT_MICRO" in scout_trades[0]["reasons"]
+    assert scout_trades[0]["scout_mission"] == "NON_RR_HIGH_SCORE"
+    assert scout_summary["open_positions"] == 1
 
 
 def test_render_symbol_log_uses_fib_pa_score_detail_when_enabled():
@@ -377,9 +437,453 @@ def test_build_near_miss_payload_captures_high_score_rejected_signal():
     assert payload["diagnostics"]["risk_reward_geometry"]["net_tp1_r"] == 1.02
 
 
+def test_build_near_miss_payload_tags_targeted_long_offset_candidate():
+    payload = build_near_miss_payload(
+        {
+            "timestamp": 1782992705,
+            "symbol": "XLMUSDT",
+            "action": "WATCH",
+            "side": "NONE",
+            "score": 80.5,
+            "reasons": ["SIDE_THRESHOLD_OFFSET_LONG_10.00"],
+            "component_points": {
+                "price_action_structure": 18.0,
+                "fibonacci_location": 13.0,
+                "risk_reward_geometry": 4.0,
+            },
+            "entry_context": {"side": "LONG"},
+            "kline": {"close": 0.25, "timestamp": 1782991800},
+        },
+        min_score=80.0,
+    )
+
+    assert payload is not None
+    assert payload["targeted_long_offset"] is True
+    assert payload["scout_tags"] == ["TARGETED_LONG_OFFSET"]
+
+
+def test_build_near_miss_payload_records_targeted_long_below_global_min_score():
+    payload = build_near_miss_payload(
+        {
+            "timestamp": 1782992705,
+            "symbol": "CCUSDT",
+            "action": "WATCH",
+            "side": "NONE",
+            "score": 80.5,
+            "reasons": ["SIDE_THRESHOLD_OFFSET_LONG_10.00"],
+            "component_points": {
+                "price_action_structure": 18.0,
+                "fibonacci_location": 18.0,
+                "risk_reward_geometry": 3.0,
+            },
+            "entry_context": {"side": "LONG"},
+            "kline": {"close": 0.25, "timestamp": 1782991800},
+        },
+        min_score=82.0,
+    )
+
+    assert payload is not None
+    assert payload["targeted_long_offset"] is True
+    assert payload["scout_tags"] == ["TARGETED_LONG_OFFSET"]
+
+
+def test_build_near_miss_payload_does_not_tag_short_or_weak_pa_offset():
+    short_payload = build_near_miss_payload(
+        {
+            "timestamp": 1782992705,
+            "symbol": "XLMUSDT",
+            "action": "WATCH",
+            "score": 84.0,
+            "reasons": ["SIDE_THRESHOLD_OFFSET_LONG_10.00"],
+            "component_points": {"price_action_structure": 21.0},
+            "entry_context": {"side": "SHORT"},
+            "kline": {"close": 0.25, "timestamp": 1782991800},
+        },
+        min_score=80.0,
+    )
+    weak_pa_payload = build_near_miss_payload(
+        {
+            "timestamp": 1782992705,
+            "symbol": "XLMUSDT",
+            "action": "WATCH",
+            "score": 84.0,
+            "reasons": ["SIDE_THRESHOLD_OFFSET_LONG_10.00"],
+            "component_points": {"price_action_structure": 17.9},
+            "entry_context": {"side": "LONG"},
+            "kline": {"close": 0.25, "timestamp": 1782991800},
+        },
+        min_score=80.0,
+    )
+
+    assert short_payload is not None
+    assert weak_pa_payload is not None
+    assert short_payload.get("targeted_long_offset") is not True
+    assert weak_pa_payload.get("targeted_long_offset") is not True
+    assert "scout_tags" not in short_payload
+    assert "scout_tags" not in weak_pa_payload
+
+
 def test_build_near_miss_payload_ignores_tradable_or_low_score_decisions():
     assert build_near_miss_payload({"action": "PROBE", "score": 90}, min_score=82.0) is None
     assert build_near_miss_payload({"action": "WATCH", "score": 81.99}, min_score=82.0) is None
+
+
+def test_scout_micro_open_is_blocked_when_data_health_is_degraded(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "XLMUSDT",
+        "intended_side": "LONG",
+        "entry_price": 0.25,
+        "score": 91.0,
+    }
+    config = EntryChainConfig(scout_micro_symbols=("XLMUSDT",))
+
+    assert (
+        should_open_scout_micro(
+            symbol="XLMUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="DEGRADED",
+            scout_paper=ledger,
+        )
+        is False
+    )
+
+
+def test_scout_micro_open_requires_configured_minimum_score(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "XLMUSDT",
+        "intended_side": "LONG",
+        "entry_price": 0.25,
+        "score": 81.99,
+    }
+    config = EntryChainConfig(scout_micro_symbols=("XLMUSDT",), scout_micro_min_score=82.0)
+
+    assert (
+        should_open_scout_micro(
+            symbol="XLMUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+        )
+        is False
+    )
+
+
+def test_scout_micro_blocks_xlm_rr_gap_mission(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "XLMUSDT",
+        "intended_side": "SHORT",
+        "entry_price": 0.25,
+        "score": 91.0,
+        "reasons": ["DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_0.5"],
+        "component_points": {"risk_reward_geometry": 3.5},
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("XLMUSDT",),
+        scout_micro_rr_gap_block_symbols=("XLMUSDT",),
+        scout_micro_non_rr_min_score=85.0,
+    )
+
+    assert (
+        should_open_scout_micro(
+            symbol="XLMUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+        )
+        is False
+    )
+
+
+def test_scout_micro_allows_xlm_non_rr_high_score_mission(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "XLMUSDT",
+        "intended_side": "SHORT",
+        "entry_price": 0.25,
+        "score": 86.0,
+        "reasons": ["SYMBOL_OBSERVATION_ONLY"],
+        "component_points": {
+            "risk_reward_geometry": 4.0,
+            "fibonacci_location": 18.0,
+            "price_action_structure": 21.0,
+        },
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("XLMUSDT",),
+        scout_micro_rr_gap_block_symbols=("XLMUSDT",),
+        scout_micro_non_rr_min_score=85.0,
+    )
+
+    assert (
+        should_open_scout_micro(
+            symbol="XLMUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+        )
+        is True
+    )
+
+
+def test_scout_micro_allows_targeted_long_offset_mission(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "CCUSDT",
+        "intended_side": "LONG",
+        "entry_price": 1.0,
+        "score": 82.0,
+        "reasons": ["SIDE_THRESHOLD_OFFSET_LONG_10.00"],
+        "component_points": {
+            "price_action_structure": 18.0,
+            "risk_reward_geometry": 3.0,
+        },
+        "scout_tags": ["TARGETED_LONG_OFFSET"],
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("CCUSDT",),
+        scout_micro_targeted_long_symbols=("CCUSDT",),
+    )
+
+    assert (
+        should_open_scout_micro(
+            symbol="CCUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+        )
+        is True
+    )
+
+
+def test_scout_micro_allows_targeted_long_offset_for_authorized_mission_pool_symbol(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "LINKUSDT",
+        "intended_side": "LONG",
+        "entry_price": 18.0,
+        "score": 86.0,
+        "reasons": ["FIB_PA_ARCHITECTURE_WEIGHTS", "SIDE_THRESHOLD_OFFSET_LONG_10.00"],
+        "component_points": {
+            "price_action_structure": 21.0,
+            "risk_reward_geometry": 3.0,
+        },
+        "scout_tags": ["TARGETED_LONG_OFFSET"],
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("LINKUSDT",),
+        scout_micro_targeted_long_symbols=("LINKUSDT",),
+    )
+
+    assert scout_micro_mission("LINKUSDT", near_miss, config) == "TARGETED_LONG_OFFSET"
+    assert (
+        should_open_scout_micro(
+            symbol="LINKUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+        )
+        is True
+    )
+
+
+def test_scout_micro_uses_targeted_long_tag_even_when_reason_list_is_compacted(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "LABUSDT",
+        "intended_side": "LONG",
+        "entry_price": 1.0,
+        "score": 86.0,
+        "reasons": ["FIB_PA_ARCHITECTURE_WEIGHTS"],
+        "component_points": {
+            "price_action_structure": 21.0,
+            "risk_reward_geometry": 3.0,
+        },
+        "scout_tags": ["TARGETED_LONG_OFFSET"],
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("LABUSDT",),
+        scout_micro_targeted_long_symbols=("LABUSDT",),
+    )
+
+    assert scout_micro_mission("LABUSDT", near_miss, config) == "TARGETED_LONG_OFFSET"
+    assert (
+        should_open_scout_micro(
+            symbol="LABUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+        )
+        is True
+    )
+
+
+def test_scout_micro_rejects_targeted_long_offset_with_low_rr(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "CCUSDT",
+        "intended_side": "LONG",
+        "entry_price": 1.0,
+        "score": 84.0,
+        "reasons": ["SIDE_THRESHOLD_OFFSET_LONG_10.00"],
+        "component_points": {
+            "price_action_structure": 21.0,
+            "risk_reward_geometry": 2.0,
+        },
+        "scout_tags": ["TARGETED_LONG_OFFSET"],
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("CCUSDT",),
+        scout_micro_targeted_long_symbols=("CCUSDT",),
+    )
+
+    assert (
+        should_open_scout_micro(
+            symbol="CCUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+        )
+        is False
+    )
+
+
+def test_scout_micro_allows_scout_only_high_score_with_probe_minima(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "ZECUSDT",
+        "intended_side": "LONG",
+        "entry_price": 20.0,
+        "score": 89.0,
+        "reasons": ["SYMBOL_BLACKLISTED"],
+        "component_points": {
+            "fibonacci_location": 18.0,
+            "price_action_structure": 21.0,
+            "risk_reward_geometry": 5.0,
+        },
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("ZECUSDT",),
+        scout_micro_scout_only_symbols=("ZECUSDT",),
+    )
+
+    assert (
+        should_open_scout_micro(
+            symbol="ZECUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+        )
+        is True
+    )
+
+
+def test_scout_micro_blocks_same_symbol_same_side_cooldown(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    open_and_stop(ledger, "XLMUSDT", opened_at=1000, stopped_at=1900, side="SHORT")
+    near_miss = {
+        "symbol": "XLMUSDT",
+        "intended_side": "SHORT",
+        "entry_price": 0.25,
+        "score": 86.0,
+        "reasons": ["SYMBOL_OBSERVATION_ONLY"],
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("XLMUSDT",),
+        scout_micro_non_rr_min_score=85.0,
+        scout_micro_same_side_cooldown_hours=2,
+        scout_micro_initial_stop_cooldown_hours=0,
+    )
+
+    assert (
+        should_open_scout_micro(
+            symbol="XLMUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+            timestamp=1900 + 3600,
+        )
+        is False
+    )
+
+
+def test_scout_micro_blocks_symbol_after_initial_stop_cooldown(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    open_and_stop(ledger, "XLMUSDT", opened_at=1000, stopped_at=1900, side="SHORT")
+    near_miss = {
+        "symbol": "XLMUSDT",
+        "intended_side": "LONG",
+        "entry_price": 0.25,
+        "score": 86.0,
+        "reasons": ["SYMBOL_OBSERVATION_ONLY"],
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("XLMUSDT",),
+        scout_micro_non_rr_min_score=85.0,
+        scout_micro_same_side_cooldown_hours=0,
+        scout_micro_initial_stop_cooldown_hours=6,
+    )
+
+    assert (
+        should_open_scout_micro(
+            symbol="XLMUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+            timestamp=1900 + 3 * 3600,
+        )
+        is False
+    )
+
+
+def test_build_scout_micro_payloads_uses_fixed_notional_and_leverage():
+    near_miss = {
+        "timestamp": 1782992705,
+        "symbol": "XLMUSDT",
+        "score": 91.0,
+        "reasons": ["SYMBOL_OBSERVATION_ONLY"],
+        "intended_side": "SHORT",
+        "entry_price": 0.25,
+        "entry_context": {"atr_pct": 0.01, "side": "SHORT"},
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("XLMUSDT",),
+        scout_micro_notional=50.0,
+        scout_micro_leverage=1,
+    )
+
+    decision_payload, draft_payload = build_scout_micro_payloads(
+        symbol="XLMUSDT",
+        near_miss=near_miss,
+        price=0.25,
+        config=config,
+        timestamp=1782992705,
+    )
+
+    assert decision_payload["action"] == "PROBE"
+    assert decision_payload["side"] == "SHORT"
+    assert decision_payload["notional_hint"] == 50.0
+    assert decision_payload["leverage"] == 1
+    assert "SCOUT_MICRO" in decision_payload["reasons"]
+    assert "SCOUT_MISSION_UNCLASSIFIED" in decision_payload["reasons"]
+    assert decision_payload["scout_mission"] is None
+    assert draft_payload["approved"] is True
+    assert draft_payload["request"]["position_side"] == "SHORT"
+    assert draft_payload["request"]["quantity"] == 200.0
+    assert draft_payload["request"]["price"] == 0.25
 
 
 def test_live_dry_run_paper_ledger_records_open_position_when_draft_is_approved(tmp_path):

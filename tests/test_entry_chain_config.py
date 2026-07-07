@@ -11,6 +11,23 @@ def test_load_entry_chain_config_from_json(tmp_path):
         '"disable_probe": true, "blacklist_symbols": ["XRPUSDT"], '
         '"watch_only_symbols": ["ADAUSDT"], '
         '"observation_only_symbols": ["xlmusdt"], '
+        '"scout_micro_symbols": [" xlmusdt "], '
+        '"scout_micro_rr_gap_block_symbols": ["xlmusdt"], '
+        '"scout_micro_targeted_long_symbols": ["ccusdt"], '
+        '"scout_micro_scout_only_symbols": ["xmrusdt", " zecusdt "], '
+        '"scout_micro_min_score": 82, '
+        '"scout_micro_non_rr_min_score": 85, '
+        '"scout_micro_targeted_long_min_score": 82, '
+        '"scout_micro_targeted_long_min_pa_score": 18, '
+        '"scout_micro_targeted_long_min_rr_score": 3, '
+        '"scout_micro_scout_only_min_score": 85, '
+        '"scout_micro_scout_only_min_fib_score": 12, '
+        '"scout_micro_scout_only_min_pa_score": 10, '
+        '"scout_micro_scout_only_min_rr_score": 4, '
+        '"scout_micro_same_side_cooldown_hours": 2, '
+        '"scout_micro_initial_stop_cooldown_hours": 6, '
+        '"scout_micro_notional": 50, '
+        '"scout_micro_leverage": 1, '
         '"dry_run_symbols": ["bnbusdt", " solusdt "], '
         '"dry_run_symbol_source": "market_cap_rank", '
         '"dry_run_rank_start": 3, "dry_run_rank_end": 25, '
@@ -41,6 +58,23 @@ def test_load_entry_chain_config_from_json(tmp_path):
     assert config.blacklist_symbols == ("XRPUSDT",)
     assert config.watch_only_symbols == ("ADAUSDT",)
     assert config.observation_only_symbols == ("XLMUSDT",)
+    assert config.scout_micro_symbols == ("XLMUSDT",)
+    assert config.scout_micro_rr_gap_block_symbols == ("XLMUSDT",)
+    assert config.scout_micro_targeted_long_symbols == ("CCUSDT",)
+    assert config.scout_micro_scout_only_symbols == ("XMRUSDT", "ZECUSDT")
+    assert config.scout_micro_min_score == 82
+    assert config.scout_micro_non_rr_min_score == 85
+    assert config.scout_micro_targeted_long_min_score == 82
+    assert config.scout_micro_targeted_long_min_pa_score == 18
+    assert config.scout_micro_targeted_long_min_rr_score == 3
+    assert config.scout_micro_scout_only_min_score == 85
+    assert config.scout_micro_scout_only_min_fib_score == 12
+    assert config.scout_micro_scout_only_min_pa_score == 10
+    assert config.scout_micro_scout_only_min_rr_score == 4
+    assert config.scout_micro_same_side_cooldown_hours == 2
+    assert config.scout_micro_initial_stop_cooldown_hours == 6
+    assert config.scout_micro_notional == 50
+    assert config.scout_micro_leverage == 1
     assert config.dry_run_symbols == ("BNBUSDT", "SOLUSDT")
     assert config.dry_run_symbol_source == "market_cap_rank"
     assert config.dry_run_rank_start == 3
