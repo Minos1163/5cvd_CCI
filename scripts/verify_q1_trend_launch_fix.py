@@ -120,6 +120,10 @@ def historical_check(log_root: Path, start: str, end: str, config_path: Path) ->
             continue
         nm2 = dict(nm)
         ec = dict(nm.get("entry_context") or {})
+        # 反事实中性化:历史 near-miss 若缺 LONG 防反转字段(旧版本记录),
+        # 按 False(不触发拒绝)处理,避免系统性低估解锁数;在线数据字段齐全不受影响。
+        for _k in ("long_overextension_active", "long_upper_wick_risk_active", "long_chase_risk_active"):
+            ec.setdefault(_k, False)
         ec["extreme_position_ratio"] = extreme_ratio_from_series(series.get(sym, []), int(ts or 0))
         nm2["entry_context"] = ec
         ok = _q1_trend_launch_eligible(nm2, config, "OK")

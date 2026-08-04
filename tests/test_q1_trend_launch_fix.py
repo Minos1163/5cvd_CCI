@@ -97,6 +97,22 @@ def test_extreme_position_ratio_insufficient_bars_is_neutral():
     assert extreme_position_ratio([_bar(1, 10.0, 10.0, 11.0, 9.0), _bar(2, 10.5, 10.5, 11.5, 10.0)]) == 0.5
 
 
+def test_eligible_non_numeric_extreme_ratio_falls_back_neutral():
+    # 防御:entry_context 含非数值 extreme_position_ratio(脏数据)时回退 0.5,
+    # 不抛 ValueError 中断主循环;合法 0.0 仍按 0.0 参与极值下限检查。
+    nm = _make_near_miss(
+        entry_context={
+            "extreme_position_ratio": "abc",
+            "long_overextension_active": False,
+            "long_upper_wick_risk_active": False,
+            "long_chase_risk_active": False,
+        }
+    )
+    assert _q1_trend_launch_eligible(nm, BASE_CONFIG, "OK") is True
+    nm0 = _make_near_miss(entry_context={"extreme_position_ratio": 0.0})
+    assert _q1_trend_launch_eligible(nm0, BASE_CONFIG, "OK") is False  # 0.0 < 0.20 被极值下限拒绝
+
+
 # ---------- _q1_trend_launch_eligible ----------
 
 def test_eligible_without_confirmation_tags():

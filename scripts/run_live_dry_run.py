@@ -863,6 +863,10 @@ def _q1_green_channel_eligible(
     config: EntryChainConfig,
     data_health: str,
 ) -> bool:
+    # 说明:green channel 与 trend-launch 为同一通道的两套命名(08-02 报告将两者合并)。
+    # 实现无条件委托 _q1_trend_launch_eligible,实际门槛/仓位全部取自
+    # dry_run_q1_trend_launch_* 字段;dry_run_q1_green_channel_* 字段为兼容保留(死配置),
+    # 调整它们不产生任何效果——若要独立配置 green channel 需先接线独立逻辑。
     return _q1_trend_launch_eligible(near_miss, config, data_health)
 
 
@@ -893,8 +897,11 @@ def _q1_trend_launch_eligible(
     entry_ctx = dict(entry_ctx) if isinstance(entry_ctx, Mapping) else {}
     raw_extreme = entry_ctx.get("extreme_position_ratio")
     # 保留合法测量值 0.0(close 恰为窗口最低价时会被极值下限检查拒绝);
-    # 仅当字段缺失/为 None 时才回退中性值 0.5。
-    extreme_ratio = float(raw_extreme) if raw_extreme is not None else 0.5
+    # 仅当字段缺失/为 None/非数值(防御 'abc' 等脏数据)时才回退中性值 0.5。
+    try:
+        extreme_ratio = float(raw_extreme) if raw_extreme is not None else 0.5
+    except (TypeError, ValueError):
+        extreme_ratio = 0.5
     if not (
         float(config.dry_run_q1_trend_launch_extreme_ratio_min)
         <= extreme_ratio
