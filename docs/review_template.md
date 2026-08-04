@@ -1,5 +1,13 @@
 # AI300 Strategy Review Template
 
+> **强制开篇: 上轮建议实施回顾(2026-08-04 追踪协议)**
+> 先运行 `python scripts/recommendation_tracker.py check`; 存在未解决 P0 时必须逐条说明阻塞原因, 不得直接分析新窗口数据。
+> 表格内容见 `docs/recommendations_tracking.md`(与追踪表保持一致):
+
+| 建议ID | 优先级 | 内容摘要 | 实施状态 | 验证结果 |
+|---|---|---|---|---|
+| (从 recommendations_tracking.md 复制) |  |  |  |  |
+
 Review window:
 
 - Start:

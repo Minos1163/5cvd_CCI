@@ -161,6 +161,9 @@ def test_fib_pa_dry_run_config_loads_and_is_dry_run_safe():
         "LABUSDT",
         "HYPEUSDT",
         "DOGEUSDT",
+        "SOLUSDT",
+        "BNBUSDT",
+        "BCHUSDT",
     )
     assert config.scout_micro_rr_gap_block_symbols == ("XLMUSDT",)
     assert config.scout_micro_targeted_long_symbols == (
@@ -170,6 +173,9 @@ def test_fib_pa_dry_run_config_loads_and_is_dry_run_safe():
         "DOGEUSDT",
         "CCUSDT",
         "XLMUSDT",
+        "SOLUSDT",
+        "BNBUSDT",
+        "BCHUSDT",
     )
     assert config.scout_micro_scout_only_symbols == ("XMRUSDT", "ADAUSDT")
     assert config.scout_micro_min_score == 82.0
@@ -181,8 +187,60 @@ def test_fib_pa_dry_run_config_loads_and_is_dry_run_safe():
     assert config.scout_micro_scout_only_min_fib_score == 12.0
     assert config.scout_micro_scout_only_min_pa_score == 10.0
     assert config.scout_micro_scout_only_min_rr_score == 4.0
+    assert config.scout_micro_high_score_long_offset_min_score == 82.0
+    assert config.scout_micro_high_score_long_offset_min_pa_score == 18.0
+    assert config.scout_micro_high_score_long_offset_min_fib_score == 15.0
+    assert config.scout_micro_high_score_long_offset_min_cvd_score == 14.0
+    assert config.scout_micro_high_score_long_offset_min_rr_score == 2.0
+    assert list(config.scout_micro_high_score_long_offset_quadrants) == ["Q1", "Q3"]
+    assert config.scout_micro_fib_continuation_min_score == 82.0
+    assert config.scout_micro_fib_continuation_min_ema_score == 16.0
+    assert config.scout_micro_fib_continuation_min_cvd_score == 14.0
+    assert config.scout_micro_fib_continuation_min_pa_score == 18.0
+    assert config.scout_micro_watch_only_promotion_min_score == 85.0
+    assert config.scout_micro_q1_rr_gap_enabled is False
+    assert config.scout_micro_q1_rr_gap_min_score == 82.0
+    assert config.scout_micro_q1_rr_gap_min_cvd_score == 16.0
+    assert config.scout_micro_q2_pending_enabled is True
+    assert config.scout_micro_q2_pending_min_score == 70.0
+    assert config.scout_micro_q2_pending_min_pa_score == 18.0
+    assert config.scout_micro_q2_pending_confirm_bars == 6
+    assert config.scout_micro_q2_pending_confirm_cci_score == 9.0
+    assert config.quadrant_pending_state_enabled is True
+    assert config.dry_run_q1_trend_launch_enabled is True
+    assert config.dry_run_q1_trend_launch_min_score == 82.0
+    assert config.dry_run_q1_trend_launch_min_fib_score == 15.0
+    assert config.dry_run_q1_trend_launch_min_rr_score == 0.5
+    assert config.dry_run_q1_trend_launch_exit_mode == "trend_capture"
+    assert config.mirror_ab_enabled is True
+    assert config.mirror_ab_min_score == 82.0
+    assert config.mirror_ab_include_q1_watch is True
+    assert config.paper_ab_auto_report_enabled is True
+    assert config.paper_ab_report_closed_trade_interval == 20
+    assert config.paper_ab_auto_switch_enabled is True
+    assert config.paper_ab_auto_switch_min_reports == 2
+    assert config.paper_ab_auto_switch_min_closed_trades == 40
+    assert config.paper_ab_auto_switch_payoff_mult == 1.3
+    assert config.dry_run_q1_green_channel_enabled is True
+    assert config.dry_run_q1_green_channel_min_score == 85.0
+    assert config.dry_run_q1_green_channel_base_exposure_pct == 0.05
+    assert config.dry_run_q1_green_channel_exit_mode == "trend_capture"
+    assert config.experiment_war_fund_loss_limit == -150.0
+    assert config.experiment_daily_loss_limit == -200.0
     assert config.scout_micro_same_side_cooldown_hours == 2
     assert config.scout_micro_initial_stop_cooldown_hours == 6
+    assert config.scout_micro_mission_stop_circuit_enabled is True
+    assert config.scout_micro_mission_stop_circuit_count == 3
+    assert config.scout_micro_mission_stop_circuit_hours == 12
+    assert config.scout_micro_allow_degraded_data is True
+    assert config.scout_micro_reversal_pivot_enabled is True
+    assert config.scout_micro_reversal_pivot_notional == 25.0
     assert config.scout_micro_notional == 50.0
     assert config.scout_micro_leverage == 1
+    assert config.paper_exit_mode == "legacy"
+    assert config.paper_exit_trend_trigger_r == 1.5
+    assert config.paper_exit_trailing_r_mult == 1.0
+    assert config.scout_micro_exit_mode == "trend_capture"
+    assert config.scout_micro_exit_trend_trigger_r == 1.5
+    assert config.scout_micro_exit_trailing_r_mult == 1.0
     assert config.dry_run_warmup_15m_bars == 240

@@ -22,6 +22,15 @@ TP_LEVELS = (1.2, 2.0, 3.0)
 TP_FRACTIONS = (0.40, 0.35, 0.25)
 
 
+@dataclass(frozen=True)
+class PaperExitConfig:
+    mode: str = "legacy"
+    trend_trigger_r: float = 1.5
+    trailing_r_mult: float = 1.0
+    early_breakeven_enabled: bool = False
+    early_breakeven_trigger_r: float = 1.0
+
+
 @dataclass
 class PaperPosition:
     symbol: str
@@ -41,11 +50,19 @@ class PaperPosition:
     entry_fee: float
     entry_slippage: float
     last_price: float
+    best_price: float
+    max_favorable_r_observed: float
     hold_bars: int
     last_processed_kline_ts: int
     score: float
     reasons: list[str]
+    exit_mode: str = "legacy"
     scout_mission: str | None = None
+    experiment_id: str | None = None
+    entry_channel: str | None = None
+    source_quadrant: str | None = None
+    q3_reduced: bool = False
+    q4_streak: int = 0
 
 
 @dataclass(frozen=True)
@@ -68,11 +85,13 @@ class PaperTradingLedger:
         *,
         state_dir: str | Path | None = None,
         initial_equity: float = INITIAL_EQUITY,
+        exit_config: PaperExitConfig | None = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.state_dir = Path(state_dir) if state_dir is not None else self.output_dir
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.exit_config = exit_config or PaperExitConfig()
         (self.output_dir / "paper_trades.jsonl").touch(exist_ok=True)
         if self.state_dir != self.output_dir:
             (self.state_dir / "paper_trades.jsonl").touch(exist_ok=True)
@@ -97,7 +116,7 @@ class PaperTradingLedger:
     ) -> list[str]:
         events: list[str] = []
         if symbol in self.positions:
-            events.extend(self._update_position(symbol, kline, timestamp))
+            events.extend(self._update_position(symbol, kline, timestamp, decision_payload))
         if draft_payload.get("approved") and symbol not in self.positions:
             opened = self._open_position(symbol, decision_payload, draft_payload, kline, timestamp)
             if opened:
@@ -147,11 +166,19 @@ class PaperTradingLedger:
             entry_fee=fee(notional, FEE_BPS),
             entry_slippage=fee(notional, SLIPPAGE_BPS),
             last_price=price,
+            best_price=price,
+            max_favorable_r_observed=0.0,
             hold_bars=0,
             last_processed_kline_ts=timestamp,
             score=float(decision_payload.get("score") or 0.0),
             reasons=[str(item) for item in decision_payload.get("reasons", [])],
+            exit_mode=str(decision_payload.get("exit_mode") or self.exit_config.mode),
             scout_mission=str(decision_payload.get("scout_mission")) if decision_payload.get("scout_mission") else None,
+            experiment_id=str(decision_payload.get("experiment_id")) if decision_payload.get("experiment_id") else None,
+            entry_channel=str(decision_payload.get("entry_channel")) if decision_payload.get("entry_channel") else None,
+            source_quadrant=str(decision_payload.get("source_quadrant") or decision_payload.get("quadrant")) if (decision_payload.get("source_quadrant") or decision_payload.get("quadrant")) else None,
+            q3_reduced=False,
+            q4_streak=0,
         )
         self.positions[symbol] = position
         self.realized_pnl += position.realized_pnl
@@ -174,12 +201,17 @@ class PaperTradingLedger:
                 "pnl_accounting_mode": "notional_primary_margin_reporting",
                 "score": position.score,
                 "reasons": position.reasons,
+                "exit_mode": position.exit_mode,
                 "scout_mission": position.scout_mission,
+                "experiment_id": position.experiment_id,
+                "entry_channel": position.entry_channel,
+                "source_quadrant": position.source_quadrant,
+                "max_favorable_r_observed": position.max_favorable_r_observed,
             }
         )
         return position
 
-    def _update_position(self, symbol: str, kline: Mapping[str, Any], timestamp: int) -> list[str]:
+    def _update_position(self, symbol: str, kline: Mapping[str, Any], timestamp: int, decision_payload: Mapping[str, Any] | None = None) -> list[str]:
         position = self.positions[symbol]
         high = _positive_float(kline.get("high"))
         low = _positive_float(kline.get("low"))
@@ -190,6 +222,11 @@ class PaperTradingLedger:
             return []
 
         position.last_price = close
+        _update_best_price(position, high, low)
+        _update_max_favorable_r_observed(position)
+        _apply_early_breakeven(position, self._position_exit_config(position))
+        if position.tp_consumed:
+            _apply_post_tp_stop(position, self._position_exit_config(position))
         position.hold_bars += 1
         position.last_processed_kline_ts = timestamp
         events: list[str] = []
@@ -199,6 +236,21 @@ class PaperTradingLedger:
             events.append(f"PAPER_CLOSE:{symbol}:{reason}:{net:.4f}")
             self.positions.pop(symbol, None)
         else:
+            _update_q4_streak(position, decision_payload)
+            _apply_q2_stop_tightening(position, decision_payload)
+            if _q4_defensive_exit(position, close):
+                net = self._close_fraction(position, timestamp, close, position.remaining_fraction, "Q4_DEFENSIVE_EXIT")
+                events.append(f"PAPER_CLOSE:{symbol}:Q4_DEFENSIVE_EXIT:{net:.4f}")
+                self.positions.pop(symbol, None)
+                return events
+            if _q3_defensive_reduce(position, decision_payload):
+                fraction = min(position.remaining_fraction, 0.5)
+                net = self._close_fraction(position, timestamp, close, fraction, "Q3_DEFENSIVE_REDUCE")
+                position.q3_reduced = True
+                events.append(f"PAPER_REDUCE:{symbol}:Q3_DEFENSIVE_REDUCE:{net:.4f}")
+                if position.remaining_fraction <= 0:
+                    self.positions.pop(symbol, None)
+                return events
             consumed = set(position.tp_consumed)
             for index, tp_price in enumerate(list(position.tp_prices)):
                 if position.remaining_fraction <= 0:
@@ -211,7 +263,7 @@ class PaperTradingLedger:
                     net = self._close_fraction(position, timestamp, tp_price, fraction, f"TP{index + 1}_HIT")
                     events.append(f"PAPER_REDUCE:{symbol}:TP{index + 1}_HIT:{net:.4f}")
                     if index == 0:
-                        position.stop_price = position.entry_price * (1.001 if position.side == "LONG" else 0.999)
+                        _apply_post_tp_stop(position, self._position_exit_config(position))
                     break
             if position.remaining_fraction <= 0:
                 self.positions.pop(symbol, None)
@@ -224,6 +276,15 @@ class PaperTradingLedger:
                 events.append(f"PAPER_CLOSE:{symbol}:MAX_HOLD_EXIT:{net:.4f}")
                 self.positions.pop(symbol, None)
         return events
+
+    def _position_exit_config(self, position: PaperPosition) -> PaperExitConfig:
+        return PaperExitConfig(
+            mode=position.exit_mode or self.exit_config.mode,
+            trend_trigger_r=self.exit_config.trend_trigger_r,
+            trailing_r_mult=self.exit_config.trailing_r_mult,
+            early_breakeven_enabled=self.exit_config.early_breakeven_enabled,
+            early_breakeven_trigger_r=self.exit_config.early_breakeven_trigger_r,
+        )
 
     def _close_fraction(self, position: PaperPosition, timestamp: int, price: float, fraction: float, reason: str) -> float:
         quantity = position.quantity * fraction
@@ -263,7 +324,12 @@ class PaperTradingLedger:
                 "position_margin_realized_pnl": position.realized_margin_pnl,
                 "pnl_accounting_mode": "notional_primary_margin_reporting",
                 "remaining_fraction": position.remaining_fraction,
+                "exit_mode": position.exit_mode,
                 "scout_mission": position.scout_mission,
+                "experiment_id": position.experiment_id,
+                "entry_channel": position.entry_channel,
+                "source_quadrant": position.source_quadrant,
+                "max_favorable_r_observed": position.max_favorable_r_observed,
             }
         )
         return net
@@ -307,6 +373,12 @@ class PaperTradingLedger:
         losses = [item for item in self.closed_trade_pnls if item < 0]
         gross_profit = sum(wins)
         gross_loss = abs(sum(losses))
+        win_rate = len(wins) / len(self.closed_trade_pnls) if self.closed_trade_pnls else 0.0
+        avg_win = gross_profit / len(wins) if wins else 0.0
+        avg_loss = gross_loss / len(losses) if losses else 0.0
+        actual_payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0.0
+        breakeven_payoff_ratio = (1.0 - win_rate) / win_rate if win_rate > 0 else 0.0
+        payoff_ratio_health = actual_payoff_ratio / breakeven_payoff_ratio if breakeven_payoff_ratio > 0 else 0.0
         margin_wins = [item for item in self.closed_trade_margin_pnls if item > 0]
         margin_losses = [item for item in self.closed_trade_margin_pnls if item < 0]
         unrealized = self._unrealized_pnl()
@@ -328,13 +400,19 @@ class PaperTradingLedger:
             "max_drawdown": self.max_drawdown,
             "trade_count": len(self.closed_trade_pnls),
             "open_positions": len(self.positions),
-            "win_rate": len(wins) / len(self.closed_trade_pnls) if self.closed_trade_pnls else 0.0,
+            "win_rate": win_rate,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "actual_payoff_ratio": actual_payoff_ratio,
+            "breakeven_payoff_ratio": breakeven_payoff_ratio,
+            "payoff_ratio_health": payoff_ratio_health,
             "profit_factor": gross_profit / gross_loss if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0),
             "margin_profit_factor": (
                 sum(margin_wins) / abs(sum(margin_losses))
                 if sum(margin_losses) < 0
                 else (sum(margin_wins) if margin_wins else 0.0)
             ),
+            "exit_mode": self.exit_config.mode,
             "pnl_accounting_mode": "notional_primary_margin_reporting",
         }
 
@@ -383,6 +461,9 @@ class PaperTradingLedger:
                 continue
             rows.append(row)
         return rows
+
+    def trade_events(self) -> list[dict[str, Any]]:
+        return self._read_trade_events()
 
     def has_positive_closed_trade(self, symbol: str, *, until_ts: int | None = None) -> bool:
         return any(float(row.get("position_realized_pnl") or row.get("net_pnl") or 0.0) > 0.0 for row in self.recent_closed_trades(symbol, until_ts=until_ts))
@@ -457,9 +538,17 @@ class PaperTradingLedger:
         for symbol, payload in data.items():
             values = dict(payload)
             values.setdefault("tp_consumed", [])
+            values.setdefault("best_price", values.get("last_price", values.get("entry_price", 0.0)))
+            values.setdefault("max_favorable_r_observed", 0.0)
             values.setdefault("last_processed_kline_ts", values.get("entry_time", 0))
             values.setdefault("realized_margin_pnl", float(values.get("realized_pnl") or 0.0) * max(1, int(values.get("leverage") or 1)))
+            values.setdefault("exit_mode", values.get("exit_mode") or self.exit_config.mode)
             values.setdefault("scout_mission", None)
+            values.setdefault("experiment_id", None)
+            values.setdefault("entry_channel", None)
+            values.setdefault("source_quadrant", None)
+            values.setdefault("q3_reduced", False)
+            values.setdefault("q4_streak", 0)
             positions[symbol] = PaperPosition(**values)
         return positions
 
@@ -543,6 +632,122 @@ def _round_trip_cost_estimate(position: PaperPosition, close: float) -> float:
     exit_notional = abs(position.quantity * fraction * close)
     exit_cost = fee(exit_notional, FEE_BPS) + fee(exit_notional, SLIPPAGE_BPS)
     return entry_cost + exit_cost
+
+
+def _update_best_price(position: PaperPosition, high: float, low: float) -> None:
+    if position.side == "SHORT":
+        position.best_price = min(position.best_price, low)
+    else:
+        position.best_price = max(position.best_price, high)
+
+
+def _update_max_favorable_r_observed(position: PaperPosition) -> None:
+    risk_distance = _initial_risk_distance(position)
+    if risk_distance <= 0:
+        return
+    favorable_r = abs(position.best_price - position.entry_price) / risk_distance
+    position.max_favorable_r_observed = max(position.max_favorable_r_observed, favorable_r)
+
+
+def _update_q4_streak(position: PaperPosition, decision_payload: Mapping[str, Any] | None) -> None:
+    quadrant = ""
+    if isinstance(decision_payload, Mapping):
+        quadrant = str(decision_payload.get("quadrant") or "").upper()
+    if quadrant == "Q4":
+        position.q4_streak += 1
+    elif quadrant:
+        position.q4_streak = 0
+
+
+def _q4_defensive_exit(position: PaperPosition, close: float) -> bool:
+    if not position.experiment_id:
+        return False
+    if position.q4_streak < 2:
+        return False
+    fraction = max(0.0, position.remaining_fraction)
+    quantity = position.quantity * fraction
+    gross = _gross_pnl(position.side, position.entry_price, close, quantity)
+    exit_notional = abs(quantity * close)
+    net = gross - fee(exit_notional, FEE_BPS) - fee(exit_notional, SLIPPAGE_BPS)
+    return net < 0.0
+
+
+def _apply_q2_stop_tightening(position: PaperPosition, decision_payload: Mapping[str, Any] | None) -> None:
+    if not position.experiment_id or _payload_quadrant(decision_payload) != "Q2":
+        return
+    breakeven = _breakeven_stop(position)
+    if position.side == "SHORT":
+        position.stop_price = min(position.stop_price, breakeven)
+    else:
+        position.stop_price = max(position.stop_price, breakeven)
+
+
+def _q3_defensive_reduce(position: PaperPosition, decision_payload: Mapping[str, Any] | None) -> bool:
+    if not position.experiment_id:
+        return False
+    if position.q3_reduced:
+        return False
+    if _payload_quadrant(decision_payload) != "Q3":
+        return False
+    return position.remaining_fraction > 0.0
+
+
+def _payload_quadrant(decision_payload: Mapping[str, Any] | None) -> str:
+    if not isinstance(decision_payload, Mapping):
+        return ""
+    return str(decision_payload.get("quadrant") or "").upper()
+
+
+def _apply_early_breakeven(position: PaperPosition, config: PaperExitConfig) -> None:
+    """Payoff 试点: 未触发 TP 时, 一旦达到 early_breakeven_trigger_r 即把止损移到成本(带 buffer)。
+
+    仅当 config.early_breakeven_enabled=True 时生效(试点仅 trend_capture_mirror 分支)。
+    已 TP 的仓位交给 _apply_post_tp_stop; 止损只收紧不放宽(LONG 取 max, SHORT 取 min)。
+    """
+    if not config.early_breakeven_enabled:
+        return
+    if position.tp_consumed:
+        return
+    if position.max_favorable_r_observed < max(0.0, config.early_breakeven_trigger_r):
+        return
+    be = _breakeven_stop(position)
+    if position.side == "LONG":
+        if position.stop_price < be:
+            position.stop_price = be
+    else:
+        if position.stop_price > be:
+            position.stop_price = be
+
+
+def _apply_post_tp_stop(position: PaperPosition, config: PaperExitConfig) -> None:
+    if config.mode != "trend_capture":
+        position.stop_price = _breakeven_stop(position)
+        return
+    risk_distance = _initial_risk_distance(position)
+    if risk_distance <= 0:
+        position.stop_price = _breakeven_stop(position)
+        return
+    favorable_r = position.max_favorable_r_observed
+    if favorable_r < max(0.0, config.trend_trigger_r):
+        position.stop_price = _breakeven_stop(position)
+        return
+    trailing_distance = risk_distance * max(0.0, config.trailing_r_mult)
+    if position.side == "SHORT":
+        trailed = position.best_price + trailing_distance
+        position.stop_price = min(position.stop_price, trailed)
+    else:
+        trailed = position.best_price - trailing_distance
+        position.stop_price = max(position.stop_price, trailed)
+
+
+def _breakeven_stop(position: PaperPosition) -> float:
+    return position.entry_price * (1.001 if position.side == "LONG" else 0.999)
+
+
+def _initial_risk_distance(position: PaperPosition) -> float:
+    if not position.tp_prices:
+        return 0.0
+    return abs(position.tp_prices[0] - position.entry_price) / TP_LEVELS[0]
 
 
 def _margin_used(notional: float, leverage: int) -> float:

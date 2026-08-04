@@ -340,6 +340,25 @@ def long_chase_risk_active(bars: Sequence[BacktestBar], atr_pct_value: float) ->
     return (end - start) / start > atr_pct_value * 2.0
 
 
+def extreme_position_ratio(bars: Sequence[BacktestBar], lookback: int = 8) -> float:
+    """当前 close 在近 lookback 根 [low, high] 区间内的相对位置。
+
+    0.0 = 贴近区间最低点, 1.0 = 贴近区间最高点。
+    用于"非极值追单"检查(08-02 报告 Task A 量化定义: close 不在
+    最近 8 根 K 线极值区间的最外 20%, 即 ratio 应落在 [0.20, 0.80])。
+    样本不足或区间退化时返回 0.5(中性, 不阻断)。
+    """
+    window = list(bars)[-lookback:]
+    if len(window) < 3:
+        return 0.5
+    lo = min(bar.low for bar in window)
+    hi = max(bar.high for bar in window)
+    if hi <= lo:
+        return 0.5
+    close = window[-1].close
+    return (close - lo) / (hi - lo)
+
+
 def long_low_liquidity_session_active(timestamp: int, bars: Sequence[BacktestBar]) -> bool:
     if len(bars) < 40:
         return False

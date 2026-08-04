@@ -112,6 +112,33 @@ def test_decision_audit_writer_outputs_near_misses(tmp_path):
     ]
 
 
+def test_decision_audit_writer_outputs_scout_decisions(tmp_path):
+    writer = DecisionAuditWriter(tmp_path)
+    writer.write_scout_decision(
+        {
+            "timestamp": 1,
+            "symbol": "SOLUSDT",
+            "candidate": True,
+            "accepted": False,
+            "mission": "Q1_RR_GAP_SCOUT",
+            "reject_reason": "SCOUT_DATA_HEALTH_DEGRADED",
+        }
+    )
+    writer.close()
+
+    rows = [json.loads(line) for line in (tmp_path / "scout_decisions.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows == [
+        {
+            "accepted": False,
+            "candidate": True,
+            "mission": "Q1_RR_GAP_SCOUT",
+            "reject_reason": "SCOUT_DATA_HEALTH_DEGRADED",
+            "symbol": "SOLUSDT",
+            "timestamp": 1,
+        }
+    ]
+
+
 def test_decision_audit_preserves_model_market_and_latency_fields(tmp_path):
     writer = DecisionAuditWriter(tmp_path)
     writer.write_decision(

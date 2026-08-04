@@ -8,10 +8,26 @@ from argparse import Namespace
 from scripts.run_live_dry_run import (
     apply_paper_state_to_context,
     apply_dry_run_decision_controls,
+    apply_experimental_quadrant_entry_rules,
+    annotate_quadrant,
+    build_mirror_ab_payloads,
     build_scout_micro_payloads,
     build_near_miss_payload,
+    build_paper_exit_ab_ledgers,
+    build_q1_green_channel_decision,
+    build_q2_pending_candidate,
+    build_q3_pending_candidate,
+    build_scout_decision_audit,
     build_context,
+    confirm_q2_to_q1_pending,
+    confirm_q3_to_q1_pending,
+    decision_quadrant,
+    effective_paper_exit_mode,
+    experiment_entry_circuit_active,
+    load_quadrant_pending_state,
+    maybe_write_paper_ab_auto_report,
     next_kline_run_timestamp,
+    paper_ab_switch_state_path,
     public_market_context,
     render_symbol_log,
     render_paper_account_header,
@@ -23,7 +39,11 @@ from scripts.run_live_dry_run import (
     resolve_runtime_symbols,
     runtime_log_name,
     scout_micro_mission,
+    scout_micro_entry_side,
     should_open_scout_micro,
+    should_open_mirror_ab_sample,
+    update_mirror_ab_ledgers,
+    write_quadrant_pending_state,
     warmup_summary,
     warmup_symbols,
 )
@@ -104,6 +124,23 @@ def open_and_stop(
     )
 
 
+def append_close_row(path: Path, *, timestamp: int, symbol: str, pnl: float, reason: str = "MAX_HOLD_EXIT", mission: str | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "timestamp": timestamp,
+        "event": "PAPER_CLOSE",
+        "symbol": symbol,
+        "reason": reason,
+        "position_margin_realized_pnl": pnl,
+        "position_realized_pnl": pnl,
+        "net_pnl": pnl,
+    }
+    if mission is not None:
+        payload["scout_mission"] = mission
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
 def test_live_dry_run_once_writes_audit_files(tmp_path):
     result = subprocess.run(
         [
@@ -162,11 +199,22 @@ def test_live_dry_run_once_writes_audit_files(tmp_path):
     assert "dry_run_assumptions" in summary
     assert summary["dry_run_assumptions"]["paper_fee_bps"] == 5.0
     assert summary["dry_run_assumptions"]["paper_slippage_bps"] == 5.0
-    assert summary["dry_run_assumptions"]["net_beta_exposure_model"] == "not_configured"
+    assert summary["dry_run_assumptions"]["net_beta_exposure_model"] == "static_v1_observation_only"
+    assert summary["dry_run_assumptions"]["paper_exit_mode"] == "legacy"
+    assert summary["dry_run_assumptions"]["paper_exit_trend_trigger_r"] == 1.5
+    assert summary["dry_run_assumptions"]["paper_exit_trailing_r_mult"] == 1.0
+    assert summary["dry_run_assumptions"]["scout_micro_exit_mode"] == "legacy"
+    assert summary["dry_run_assumptions"]["scout_micro_exit_trend_trigger_r"] == 1.5
+    assert summary["dry_run_assumptions"]["scout_micro_exit_trailing_r_mult"] == 1.0
+    assert summary["dry_run_assumptions"]["quadrant_thresholds"]["trend_ema_min"] == 15.0
+    assert summary["dry_run_assumptions"]["mirror_ab_enabled"] is False
+    assert summary["dry_run_assumptions"]["dry_run_q1_green_channel_enabled"] is False
     assert "latest_portfolio_exposure" in summary
     assert summary["latest_portfolio_exposure"]["open_position_count"] >= 0
     assert "net_side_exposure_pct" in summary["latest_portfolio_exposure"]
-    assert summary["latest_portfolio_exposure"]["net_beta_exposure_model"] == "not_configured"
+    assert summary["latest_portfolio_exposure"]["net_beta_exposure_model"] == "static_v1_observation_only"
+    assert "net_beta_exposure_pct" in summary["latest_portfolio_exposure"]
+    assert summary["latest_portfolio_exposure"]["net_beta_exposure_cap_pct"] == 0.5
     paper_summary = json.loads((tmp_path / "paper_summary.json").read_text(encoding="utf-8"))
     assert paper_summary["open_positions"] >= 0
     assert "realized_pnl" in paper_summary
@@ -176,10 +224,18 @@ def test_live_dry_run_once_writes_audit_files(tmp_path):
     assert "profit_factor" in paper_summary
     assert "updated_at" in paper_summary
     assert "latest_kline_timestamp" in paper_summary
+    assert paper_summary["ab_ledger"]["legacy"]["exit_mode"] == "legacy"
+    assert paper_summary["ab_ledger"]["trend_capture"]["exit_mode"] == "trend_capture"
+    assert (tmp_path / "paper_ab" / "legacy" / "paper_summary.json").exists()
+    assert (tmp_path / "paper_ab" / "trend_capture" / "paper_summary.json").exists()
     paper_equity = json.loads((tmp_path / "paper_equity.json").read_text(encoding="utf-8"))
     assert "updated_at" in paper_equity
     assert "latest_kline_timestamp" in paper_equity
     assert "margin_equity" in paper_equity
+    decision_row = json.loads((tmp_path / "decisions.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert decision_row["quadrant"] in {"Q1", "Q2", "Q3", "Q4"}
+    assert "trend_structure_axis_ok" in decision_row
+    assert "flow_momentum_axis_ok" in decision_row
 
 
 def test_live_dry_run_decision_json_contains_warmup_and_context_snapshot(tmp_path):
@@ -238,6 +294,8 @@ def test_fib_pa_dry_run_once_emits_new_score_components_without_orders(tmp_path)
     scores = row["score_detail"]["scores"]
 
     assert summary["orders_submitted"] == 0
+    assert summary["dry_run_assumptions"]["paper_exit_mode"] == "legacy"
+    assert summary["dry_run_assumptions"]["scout_micro_exit_mode"] == "trend_capture"
     assert "trend_ema_context" in scores
     assert "flow_cvd_confirmation" in scores
     assert "cci_momentum_quality" in scores
@@ -276,10 +334,11 @@ def test_live_dry_run_records_near_miss_jsonl_and_summary(tmp_path):
     assert rows[0]["scout_candidate"] is True
     assert rows[0]["action"] in {"WATCH", "NO_TRADE"}
     assert "component_points" in rows[0]
+    assert rows[0]["quadrant"] in {"Q1", "Q2", "Q3", "Q4"}
     assert summary["near_miss_count"] == 1
 
 
-def test_live_dry_run_opens_observation_only_xlm_in_scout_micro_ledger(tmp_path):
+def test_live_dry_run_does_not_open_generic_observation_only_scout_micro_ledger(tmp_path):
     config_path = tmp_path / "entry_chain.scout_micro_test.json"
     config_payload = json.loads(Path("configs/entry_chain.dry_run_fib_pa_v1.json").read_text(encoding="utf-8"))
     config_payload["scout_micro_min_score"] = 0.0
@@ -317,13 +376,8 @@ def test_live_dry_run_opens_observation_only_xlm_in_scout_micro_ledger(tmp_path)
     scout_summary = json.loads((tmp_path / "scout_micro" / "paper_summary.json").read_text(encoding="utf-8"))
 
     assert main_trades == []
-    assert scout_trades[0]["event"] == "PAPER_OPEN"
-    assert scout_trades[0]["symbol"] == "XLMUSDT"
-    assert scout_trades[0]["notional"] == 50.0
-    assert scout_trades[0]["leverage"] == 1
-    assert "SCOUT_MICRO" in scout_trades[0]["reasons"]
-    assert scout_trades[0]["scout_mission"] == "NON_RR_HIGH_SCORE"
-    assert scout_summary["open_positions"] == 1
+    assert scout_trades == []
+    assert scout_summary["open_positions"] == 0
 
 
 def test_render_symbol_log_uses_fib_pa_score_detail_when_enabled():
@@ -600,7 +654,7 @@ def test_scout_micro_blocks_xlm_rr_gap_mission(tmp_path):
     )
 
 
-def test_scout_micro_allows_xlm_non_rr_high_score_mission(tmp_path):
+def test_scout_micro_rejects_generic_non_rr_high_score_mission(tmp_path):
     ledger = PaperTradingLedger(tmp_path / "scout_micro")
     near_miss = {
         "symbol": "XLMUSDT",
@@ -620,6 +674,7 @@ def test_scout_micro_allows_xlm_non_rr_high_score_mission(tmp_path):
         scout_micro_non_rr_min_score=85.0,
     )
 
+    assert scout_micro_mission("XLMUSDT", near_miss, config) is None
     assert (
         should_open_scout_micro(
             symbol="XLMUSDT",
@@ -628,7 +683,7 @@ def test_scout_micro_allows_xlm_non_rr_high_score_mission(tmp_path):
             data_health="OK",
             scout_paper=ledger,
         )
-        is True
+        is False
     )
 
 
@@ -638,10 +693,14 @@ def test_scout_micro_allows_targeted_long_offset_mission(tmp_path):
         "symbol": "CCUSDT",
         "intended_side": "LONG",
         "entry_price": 1.0,
-        "score": 82.0,
+        "score": 85.0,
         "reasons": ["SIDE_THRESHOLD_OFFSET_LONG_10.00"],
         "component_points": {
+            "trend_ema_context": 15.0,
             "price_action_structure": 18.0,
+            "fibonacci_location": 15.0,
+            "flow_cvd_confirmation": 14.0,
+            "cci_momentum_quality": 7.0,
             "risk_reward_geometry": 3.0,
         },
         "scout_tags": ["TARGETED_LONG_OFFSET"],
@@ -651,6 +710,7 @@ def test_scout_micro_allows_targeted_long_offset_mission(tmp_path):
         scout_micro_targeted_long_symbols=("CCUSDT",),
     )
 
+    assert scout_micro_mission("CCUSDT", near_miss, config) == "HIGH_SCORE_LONG_OFFSET_PROBE"
     assert (
         should_open_scout_micro(
             symbol="CCUSDT",
@@ -672,7 +732,11 @@ def test_scout_micro_allows_targeted_long_offset_for_authorized_mission_pool_sym
         "score": 86.0,
         "reasons": ["FIB_PA_ARCHITECTURE_WEIGHTS", "SIDE_THRESHOLD_OFFSET_LONG_10.00"],
         "component_points": {
+            "trend_ema_context": 16.0,
             "price_action_structure": 21.0,
+            "fibonacci_location": 18.0,
+            "flow_cvd_confirmation": 18.0,
+            "cci_momentum_quality": 9.0,
             "risk_reward_geometry": 3.0,
         },
         "scout_tags": ["TARGETED_LONG_OFFSET"],
@@ -682,7 +746,7 @@ def test_scout_micro_allows_targeted_long_offset_for_authorized_mission_pool_sym
         scout_micro_targeted_long_symbols=("LINKUSDT",),
     )
 
-    assert scout_micro_mission("LINKUSDT", near_miss, config) == "TARGETED_LONG_OFFSET"
+    assert scout_micro_mission("LINKUSDT", near_miss, config) == "HIGH_SCORE_LONG_OFFSET_PROBE"
     assert (
         should_open_scout_micro(
             symbol="LINKUSDT",
@@ -704,7 +768,11 @@ def test_scout_micro_uses_targeted_long_tag_even_when_reason_list_is_compacted(t
         "score": 86.0,
         "reasons": ["FIB_PA_ARCHITECTURE_WEIGHTS"],
         "component_points": {
+            "trend_ema_context": 16.0,
             "price_action_structure": 21.0,
+            "fibonacci_location": 18.0,
+            "flow_cvd_confirmation": 18.0,
+            "cci_momentum_quality": 9.0,
             "risk_reward_geometry": 3.0,
         },
         "scout_tags": ["TARGETED_LONG_OFFSET"],
@@ -714,7 +782,7 @@ def test_scout_micro_uses_targeted_long_tag_even_when_reason_list_is_compacted(t
         scout_micro_targeted_long_symbols=("LABUSDT",),
     )
 
-    assert scout_micro_mission("LABUSDT", near_miss, config) == "TARGETED_LONG_OFFSET"
+    assert scout_micro_mission("LABUSDT", near_miss, config) == "HIGH_SCORE_LONG_OFFSET_PROBE"
     assert (
         should_open_scout_micro(
             symbol="LABUSDT",
@@ -724,6 +792,43 @@ def test_scout_micro_uses_targeted_long_tag_even_when_reason_list_is_compacted(t
             scout_paper=ledger,
         )
         is True
+    )
+
+
+def test_scout_micro_rejects_targeted_long_offset_when_not_q1(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "LABUSDT",
+        "intended_side": "LONG",
+        "entry_price": 1.0,
+        "score": 86.0,
+        "reasons": ["SIDE_THRESHOLD_OFFSET_LONG_10.00"],
+        "component_points": {
+            "trend_ema_context": 16.0,
+            "price_action_structure": 21.0,
+            "fibonacci_location": 18.0,
+            "flow_cvd_confirmation": 18.0,
+            "cci_momentum_quality": 0.0,
+            "risk_reward_geometry": 3.0,
+        },
+        "scout_tags": ["TARGETED_LONG_OFFSET"],
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("LABUSDT",),
+        scout_micro_targeted_long_symbols=("LABUSDT",),
+    )
+
+    assert decision_quadrant(near_miss, config) == "Q2"
+    assert scout_micro_mission("LABUSDT", near_miss, config) is None
+    assert (
+        should_open_scout_micro(
+            symbol="LABUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+        )
+        is False
     )
 
 
@@ -737,6 +842,8 @@ def test_scout_micro_rejects_targeted_long_offset_with_low_rr(tmp_path):
         "reasons": ["SIDE_THRESHOLD_OFFSET_LONG_10.00"],
         "component_points": {
             "price_action_structure": 21.0,
+            "fibonacci_location": 18.0,
+            "flow_cvd_confirmation": 18.0,
             "risk_reward_geometry": 2.0,
         },
         "scout_tags": ["TARGETED_LONG_OFFSET"],
@@ -786,6 +893,146 @@ def test_scout_micro_allows_scout_only_high_score_with_probe_minima(tmp_path):
             scout_paper=ledger,
         )
         is True
+    )
+
+
+def test_scout_micro_allows_fib_continuation_mission(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "SHORT",
+        "entry_price": 100.0,
+        "score": 84.0,
+        "reasons": ["FIB_EXTENSION_EXHAUSTION_BLOCK"],
+        "component_points": {
+            "trend_ema_context": 16.0,
+            "flow_cvd_confirmation": 14.0,
+            "price_action_structure": 18.0,
+        },
+    }
+    config = EntryChainConfig(scout_micro_symbols=("SOLUSDT",))
+
+    assert scout_micro_mission("SOLUSDT", near_miss, config) == "FIB_CONTINUATION_SCOUT"
+    assert (
+        should_open_scout_micro(
+            symbol="SOLUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+        )
+        is True
+    )
+
+
+def test_scout_micro_allows_watch_only_symbol_promotion_mission(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "ADAUSDT",
+        "intended_side": "LONG",
+        "entry_price": 0.2,
+        "score": 88.0,
+        "reasons": ["SYMBOL_WATCH_ONLY"],
+        "component_points": {
+            "fibonacci_location": 12.0,
+            "price_action_structure": 10.0,
+            "risk_reward_geometry": 4.0,
+        },
+    }
+    config = EntryChainConfig(
+        watch_only_symbols=("ADAUSDT",),
+        scout_micro_symbols=("ADAUSDT",),
+        probe_conditions={"min_fib_score": 12.0, "min_pa_score": 10.0, "min_rr_score": 4.0},
+    )
+
+    assert scout_micro_mission("ADAUSDT", near_miss, config) == "WATCH_ONLY_SYMBOL_PROMOTION_TEST"
+    assert (
+        should_open_scout_micro(
+            symbol="ADAUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+        )
+        is True
+    )
+
+
+def test_high_beta_long_offset_probe_uses_half_scout_notional():
+    near_miss = {
+        "symbol": "HYPEUSDT",
+        "score": 88.0,
+        "reasons": ["SIDE_THRESHOLD_OFFSET_LONG_10.00"],
+        "intended_side": "LONG",
+        "entry_price": 10.0,
+        "entry_context": {"atr_pct": 0.01, "side": "LONG"},
+    }
+    config = EntryChainConfig(scout_micro_notional=50.0, scout_micro_leverage=1)
+
+    decision_payload, draft_payload = build_scout_micro_payloads(
+        symbol="HYPEUSDT",
+        near_miss=near_miss,
+        price=10.0,
+        config=config,
+        timestamp=1782992705,
+        mission="HIGH_SCORE_LONG_OFFSET_PROBE",
+    )
+
+    assert decision_payload["notional_hint"] == 25.0
+    assert "LONG_OFFSET_Q1_PROBE" in decision_payload["reasons"]
+    assert decision_payload["scout_tags"] == ["LONG_OFFSET_Q1_PROBE"]
+    assert draft_payload["request"]["quantity"] == 2.5
+
+
+def test_scout_micro_blocks_mission_after_three_initial_stops_across_symbols(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    mission = "HIGH_SCORE_LONG_OFFSET_PROBE"
+    for index, symbol in enumerate(("CCUSDT", "LINKUSDT", "HYPEUSDT")):
+        append_close_row(
+            tmp_path / "scout_micro" / "paper_trades.jsonl",
+            timestamp=1_000 + index,
+            symbol=symbol,
+            pnl=-1.0,
+            reason="INITIAL_STOP_HIT",
+            mission=mission,
+        )
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "LONG",
+        "entry_price": 100.0,
+        "score": 86.0,
+        "reasons": ["SIDE_THRESHOLD_OFFSET_LONG_10.00"],
+        "component_points": {
+            "trend_ema_context": 16.0,
+            "price_action_structure": 21.0,
+            "fibonacci_location": 18.0,
+            "flow_cvd_confirmation": 18.0,
+            "cci_momentum_quality": 9.0,
+            "risk_reward_geometry": 3.0,
+        },
+        "scout_tags": ["TARGETED_LONG_OFFSET"],
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("SOLUSDT",),
+        scout_micro_targeted_long_symbols=("SOLUSDT",),
+        scout_micro_same_side_cooldown_hours=0,
+        scout_micro_initial_stop_cooldown_hours=0,
+        scout_micro_mission_stop_circuit_enabled=True,
+        scout_micro_mission_stop_circuit_count=3,
+        scout_micro_mission_stop_circuit_hours=12,
+    )
+
+    assert scout_micro_mission("SOLUSDT", near_miss, config) == mission
+    assert (
+        should_open_scout_micro(
+            symbol="SOLUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+            timestamp=2_000,
+        )
+        is False
     )
 
 
@@ -884,6 +1131,708 @@ def test_build_scout_micro_payloads_uses_fixed_notional_and_leverage():
     assert draft_payload["request"]["position_side"] == "SHORT"
     assert draft_payload["request"]["quantity"] == 200.0
     assert draft_payload["request"]["price"] == 0.25
+
+
+def test_decision_quadrant_classifies_q1_and_q3():
+    config = EntryChainConfig()
+
+    assert (
+        decision_quadrant(
+            {
+                "component_points": {
+                    "trend_ema_context": 15.0,
+                    "price_action_structure": 10.0,
+                    "flow_cvd_confirmation": 14.0,
+                    "cci_momentum_quality": 7.0,
+                }
+            },
+            config,
+        )
+        == "Q1"
+    )
+    assert (
+        decision_quadrant(
+            {
+                "component_points": {
+                    "trend_ema_context": 14.0,
+                    "price_action_structure": 9.0,
+                    "flow_cvd_confirmation": 16.0,
+                    "cci_momentum_quality": 10.0,
+                }
+            },
+            config,
+        )
+        == "Q3"
+    )
+    annotated = annotate_quadrant(
+        {
+            "component_points": {
+                "trend_ema_context": 15.0,
+                "price_action_structure": 10.0,
+                "flow_cvd_confirmation": 4.0,
+                "cci_momentum_quality": 3.0,
+            }
+        },
+        config,
+    )
+    assert annotated["quadrant"] == "Q2"
+    assert annotated["trend_structure_axis_ok"] is True
+    assert annotated["flow_momentum_axis_ok"] is False
+
+
+def test_scout_micro_allows_q1_rr_gap_mission(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "SHORT",
+        "entry_price": 150.0,
+        "score": 85.0,
+        "reasons": ["DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0"],
+        "component_points": {
+            "trend_ema_context": 16.0,
+            "price_action_structure": 21.0,
+            "flow_cvd_confirmation": 18.0,
+            "cci_momentum_quality": 10.0,
+        },
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("SOLUSDT",),
+        scout_micro_q1_rr_gap_enabled=True,
+        scout_micro_q1_rr_gap_min_score=82.0,
+    )
+
+    assert scout_micro_mission("SOLUSDT", near_miss, config) == "Q1_RR_GAP_SCOUT"
+    assert (
+        should_open_scout_micro(
+            symbol="SOLUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="OK",
+            scout_paper=ledger,
+        )
+        is True
+    )
+
+
+def test_scout_micro_rejects_q1_rr_gap_when_cvd_is_below_minimum():
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "SHORT",
+        "entry_price": 150.0,
+        "score": 85.0,
+        "reasons": ["DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0"],
+        "component_points": {
+            "trend_ema_context": 16.0,
+            "price_action_structure": 21.0,
+            "flow_cvd_confirmation": 15.0,
+            "cci_momentum_quality": 10.0,
+        },
+    }
+
+    assert (
+        scout_micro_mission(
+            "SOLUSDT",
+            near_miss,
+            EntryChainConfig(
+                scout_micro_q1_rr_gap_enabled=True,
+                scout_micro_q1_rr_gap_min_score=82.0,
+                scout_micro_q1_rr_gap_min_cvd_score=16.0,
+            ),
+        )
+        is None
+    )
+
+
+def test_scout_micro_allows_reversal_pivot_with_side_flip(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "LONG",
+        "entry_price": 150.0,
+        "score": 74.0,
+        "primary_reason": "FIB_EXTENSION_EXHAUSTION_BLOCK",
+        "reasons": ["FIB_EXTENSION_EXHAUSTION_BLOCK"],
+        "diagnostics": {
+            "risk_reward_geometry": {
+                "rr_zero_reason": "OPPOSITION_STRUCTURE_TOO_CLOSE",
+            }
+        },
+        "component_points": {
+            "trend_ema_context": 16.0,
+            "price_action_structure": 18.0,
+            "flow_cvd_confirmation": 15.0,
+            "cci_momentum_quality": 10.0,
+        },
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("SOLUSDT",),
+        scout_micro_allow_degraded_data=True,
+        scout_micro_reversal_pivot_enabled=True,
+        scout_micro_reversal_pivot_min_score=70.0,
+        scout_micro_reversal_pivot_max_cvd_score=16.0,
+        scout_micro_reversal_pivot_notional=25.0,
+    )
+
+    mission = scout_micro_mission("SOLUSDT", near_miss, config)
+
+    assert mission == "REVERSAL_PIVOT_SCOUT"
+    assert scout_micro_entry_side(near_miss, mission) == "SHORT"
+    assert (
+        should_open_scout_micro(
+            symbol="SOLUSDT",
+            near_miss=near_miss,
+            config=config,
+            data_health="DEGRADED",
+            scout_paper=ledger,
+        )
+        is True
+    )
+    decision_payload, draft_payload = build_scout_micro_payloads(
+        symbol="SOLUSDT",
+        near_miss=near_miss,
+        price=150.0,
+        config=config,
+        timestamp=1_000,
+        mission=mission,
+    )
+    assert decision_payload["side"] == "SHORT"
+    assert decision_payload["notional_hint"] == 25.0
+    assert draft_payload["request"]["position_side"] == "SHORT"
+    assert draft_payload["request"]["quantity"] == 25.0 / 150.0
+
+
+def test_scout_decision_audit_records_reject_reason(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "SHORT",
+        "entry_price": 150.0,
+        "score": 85.0,
+        "primary_reason": "DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0",
+        "reasons": ["DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0"],
+        "component_points": {
+            "trend_ema_context": 16.0,
+            "price_action_structure": 21.0,
+            "flow_cvd_confirmation": 18.0,
+            "cci_momentum_quality": 10.0,
+        },
+    }
+    config = EntryChainConfig(
+        scout_micro_symbols=("SOLUSDT",),
+        scout_micro_q1_rr_gap_enabled=True,
+        scout_micro_q1_rr_gap_min_score=82.0,
+        scout_micro_allow_degraded_data=False,
+    )
+
+    row = build_scout_decision_audit(
+        symbol="SOLUSDT",
+        near_miss=near_miss,
+        config=config,
+        data_health="DEGRADED",
+        scout_paper=ledger,
+        timestamp=1_000,
+        experiment_circuit_active=False,
+        accepted=False,
+    )
+
+    assert row["candidate"] is True
+    assert row["accepted"] is False
+    assert row["mission"] == "Q1_RR_GAP_SCOUT"
+    assert row["reject_reason"] == "SCOUT_DATA_HEALTH_DEGRADED"
+
+
+def test_q1_green_channel_rejects_direct_q1_rr_gap_chase(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    base = EntryChainDecision(
+        action="WATCH",
+        side="NONE",
+        score=86.0,
+        weights={},
+        component_points={
+            "trend_ema_context": 18.0,
+            "price_action_structure": 20.0,
+            "flow_cvd_confirmation": 18.0,
+            "cci_momentum_quality": 10.0,
+            "risk_reward_geometry": 2.0,
+        },
+        reasons=("FIB_PA_ARCHITECTURE_WEIGHTS", "DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0"),
+        risk_allowed=False,
+        leverage=0,
+        max_symbol_exposure_pct=0.2,
+        notional_hint=0.0,
+        liquidity_ratio=100.0,
+        metadata={"symbol": "SOLUSDT"},
+    )
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "SHORT",
+        "entry_price": 150.0,
+        "score": 86.0,
+        "reasons": ["DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0"],
+        "component_points": base.component_points,
+    }
+    config = EntryChainConfig(
+        dry_run_q1_green_channel_enabled=True,
+        dry_run_q1_trend_launch_enabled=True,
+        dry_run_q1_green_channel_base_exposure_pct=0.05,
+        dry_run_q1_green_channel_notional_mult=1.0,
+        dry_run_q1_green_channel_min_score=85.0,
+        dry_run_q1_green_channel_min_pa_score=18.0,
+        dry_run_q1_green_channel_min_cvd_score=16.0,
+        dry_run_q1_trend_launch_min_score=82.0,
+        dry_run_q1_trend_launch_min_pa_score=18.0,
+        dry_run_q1_trend_launch_min_fib_score=15.0,
+        dry_run_q1_trend_launch_min_cvd_score=16.0,
+        dry_run_q1_trend_launch_min_rr_score=0.5,
+    )
+
+    converted = build_q1_green_channel_decision(
+        base_decision=base,
+        near_miss=near_miss,
+        config=config,
+        data_health="OK",
+        paper=ledger,
+    )
+
+    assert converted is None
+
+
+def test_q1_trend_launch_converts_confirmed_pullback_to_probe(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    base = EntryChainDecision(
+        action="WATCH",
+        side="NONE",
+        score=86.0,
+        weights={},
+        component_points={
+            "trend_ema_context": 18.0,
+            "price_action_structure": 20.0,
+            "flow_cvd_confirmation": 18.0,
+            "cci_momentum_quality": 10.0,
+            "fibonacci_location": 18.0,
+            "risk_reward_geometry": 4.0,
+        },
+        reasons=("FIB_PA_ARCHITECTURE_WEIGHTS", "PROBE_BELOW_SCORE_MINIMUM_GAP_1.0"),
+        risk_allowed=False,
+        leverage=0,
+        max_symbol_exposure_pct=0.2,
+        notional_hint=0.0,
+        liquidity_ratio=100.0,
+        metadata={"symbol": "SOLUSDT"},
+    )
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "LONG",
+        "entry_price": 150.0,
+        "score": 86.0,
+        "reasons": ["PROBE_BELOW_SCORE_MINIMUM_GAP_1.0"],
+        "component_points": base.component_points,
+        "scout_tags": ["Q2_PENDING_MOMENTUM_CONFIRMED"],
+        "q2_pending_source": {"source_quadrant": "Q2", "created_at": 1_000},
+    }
+    config = EntryChainConfig(
+        dry_run_q1_trend_launch_enabled=True,
+        dry_run_q1_trend_launch_base_exposure_pct=0.025,
+        dry_run_q1_trend_launch_min_score=82.0,
+        dry_run_q1_trend_launch_min_pa_score=18.0,
+        dry_run_q1_trend_launch_min_fib_score=15.0,
+        dry_run_q1_trend_launch_min_cvd_score=16.0,
+        dry_run_q1_trend_launch_min_rr_score=0.5,
+    )
+
+    converted = build_q1_green_channel_decision(
+        base_decision=base,
+        near_miss=near_miss,
+        config=config,
+        data_health="OK",
+        paper=ledger,
+    )
+
+    assert converted is not None
+    assert converted.action == "PROBE"
+    assert converted.side == "LONG"
+    assert converted.risk_allowed is True
+    assert converted.leverage == 1
+    assert converted.notional_hint == 125.0
+    assert "DRY_RUN_Q1_TREND_LAUNCH" in converted.reasons
+    assert converted.metadata["experiment_id"] == "four_quadrant_navigation_v1"
+    assert converted.metadata["entry_channel"] == "q1_trend_launch"
+    assert converted.metadata["exit_mode"] == "trend_capture"
+
+
+def test_q1_green_channel_rejects_blacklisted_symbol(tmp_path):
+    base = EntryChainDecision(
+        action="WATCH",
+        side="NONE",
+        score=90.0,
+        weights={},
+        component_points={},
+        reasons=("DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0",),
+        risk_allowed=False,
+        leverage=0,
+        max_symbol_exposure_pct=0.2,
+        notional_hint=0.0,
+        liquidity_ratio=100.0,
+        metadata={"symbol": "ZECUSDT"},
+    )
+    near_miss = {
+        "symbol": "ZECUSDT",
+        "intended_side": "LONG",
+        "entry_price": 100.0,
+        "score": 90.0,
+        "reasons": ["DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_2.0"],
+        "component_points": {
+            "trend_ema_context": 18.0,
+            "price_action_structure": 20.0,
+            "flow_cvd_confirmation": 18.0,
+            "cci_momentum_quality": 10.0,
+            "risk_reward_geometry": 8.0,
+        },
+    }
+
+    assert (
+        build_q1_green_channel_decision(
+            base_decision=base,
+            near_miss=near_miss,
+            config=EntryChainConfig(dry_run_q1_green_channel_enabled=True, blacklist_symbols=("ZECUSDT",)),
+            data_health="OK",
+            paper=PaperTradingLedger(tmp_path),
+        )
+        is None
+    )
+
+
+def test_experimental_quadrant_entry_rules_block_q2_q3_adds(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={
+            "action": "PROBE",
+            "side": "LONG",
+            "score": 90,
+            "leverage": 1,
+            "entry_context": {"atr_pct": 0.01},
+            "experiment_id": "four_quadrant_navigation_v1",
+            "entry_channel": "q1_green_channel",
+        },
+        draft_payload={"approved": True, "request": {"position_side": "LONG", "quantity": 1, "price": 100}},
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1_000,
+    )
+    decision = probe_decision("SOLUSDT")
+    payload = {
+        "symbol": "SOLUSDT",
+        "action": "PROBE",
+        "quadrant": "Q2",
+        "reasons": ["TEST_PROBE"],
+    }
+
+    blocked, blocked_payload = apply_experimental_quadrant_entry_rules(
+        decision=decision,
+        decision_payload=payload,
+        paper=ledger,
+    )
+
+    assert blocked.action == "WATCH"
+    assert blocked.risk_allowed is False
+    assert "Q2_Q3_EXPERIMENT_ADD_BLOCK" in blocked.reasons
+    assert blocked_payload["q2_q3_experiment_add_blocked"] is True
+
+
+def test_q3_to_q1_pending_confirmation_marks_scout_mission():
+    config = EntryChainConfig(
+        scout_micro_q3_to_q1_enabled=True,
+        scout_micro_q3_to_q1_min_score=85.0,
+        scout_micro_q3_to_q1_min_cvd_score=16.0,
+        scout_micro_q3_to_q1_confirm_bars=3,
+        scout_micro_q3_to_q1_confirm_pa_score=15.0,
+    )
+    q3_near_miss = {
+        "symbol": "ADAUSDT",
+        "intended_side": "LONG",
+        "entry_price": 0.8,
+        "score": 86.0,
+        "reasons": ["SYMBOL_WATCH_ONLY"],
+        "component_points": {
+            "trend_ema_context": 14.0,
+            "price_action_structure": 9.0,
+            "flow_cvd_confirmation": 16.0,
+            "cci_momentum_quality": 10.0,
+        },
+    }
+    pending = build_q3_pending_candidate(q3_near_miss, config, timestamp=1_000)
+
+    assert pending is not None
+    assert pending["expires_at"] == 1_000 + 3 * 900
+
+    q1_near_miss = {
+        **q3_near_miss,
+        "component_points": {
+            "trend_ema_context": 16.0,
+            "price_action_structure": 15.0,
+            "flow_cvd_confirmation": 16.0,
+            "cci_momentum_quality": 10.0,
+        },
+    }
+    confirmed = confirm_q3_to_q1_pending("ADAUSDT", q1_near_miss, config, pending, timestamp=1_900)
+
+    assert confirmed is not None
+    assert "Q3_TO_Q1_CONFIRMED" in confirmed["scout_tags"]
+    assert scout_micro_mission("ADAUSDT", confirmed, config) == "Q3_TO_Q1_CONFIRMATION"
+    assert confirm_q3_to_q1_pending("ADAUSDT", q1_near_miss, config, pending, timestamp=4_000) is None
+
+
+def test_q2_pending_confirmation_marks_scout_mission():
+    config = EntryChainConfig(
+        scout_micro_q2_pending_enabled=True,
+        scout_micro_q2_pending_min_score=85.0,
+        scout_micro_q2_pending_min_pa_score=18.0,
+        scout_micro_q2_pending_confirm_bars=6,
+        scout_micro_q2_pending_confirm_cci_score=9.0,
+    )
+    q2_near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "LONG",
+        "entry_price": 150.0,
+        "score": 86.0,
+        "reasons": ["SYMBOL_WATCH_ONLY"],
+        "component_points": {
+            "trend_ema_context": 16.0,
+            "price_action_structure": 18.0,
+            "flow_cvd_confirmation": 10.0,
+            "cci_momentum_quality": 2.0,
+        },
+    }
+    pending = build_q2_pending_candidate(q2_near_miss, config, timestamp=1_000)
+
+    assert pending is not None
+    assert pending["source_quadrant"] == "Q2"
+    assert pending["expires_at"] == 1_000 + 6 * 900
+
+    q1_near_miss = {
+        **q2_near_miss,
+        "component_points": {
+            "trend_ema_context": 16.0,
+            "price_action_structure": 18.0,
+            "flow_cvd_confirmation": 16.0,
+            "cci_momentum_quality": 9.0,
+        },
+    }
+    confirmed = confirm_q2_to_q1_pending("SOLUSDT", q1_near_miss, config, pending, timestamp=2_800)
+
+    assert confirmed is not None
+    assert "Q2_PENDING_MOMENTUM_CONFIRMED" in confirmed["scout_tags"]
+    assert scout_micro_mission("SOLUSDT", confirmed, config) == "Q2_PENDING_MOMENTUM"
+    assert confirm_q2_to_q1_pending("SOLUSDT", q1_near_miss, config, pending, timestamp=7_000) is None
+
+
+def test_quadrant_pending_state_round_trips(tmp_path):
+    path = tmp_path / "state" / "quadrant_pending.json"
+    pending = {
+        "solusdt": {
+            "symbol": "SOLUSDT",
+            "side": "LONG",
+            "created_at": 1_000,
+            "expires_at": 2_800,
+            "source_score": 86.0,
+            "source_quadrant": "Q2",
+        }
+    }
+
+    write_quadrant_pending_state(path, pending)
+
+    assert load_quadrant_pending_state(path) == {
+        "SOLUSDT": {
+            "symbol": "SOLUSDT",
+            "side": "LONG",
+            "created_at": 1_000,
+            "expires_at": 2_800,
+            "source_score": 86.0,
+            "source_quadrant": "Q2",
+        }
+    }
+
+
+def test_mirror_ab_sample_opens_only_ab_ledgers(tmp_path):
+    config = EntryChainConfig(
+        mirror_ab_enabled=True,
+        mirror_ab_min_score=85.0,
+        mirror_ab_notional=50.0,
+        mirror_ab_allowed_reasons=("BELOW_RISK_REWARD_GEOMETRY",),
+    )
+    ab_ledgers = build_paper_exit_ab_ledgers(tmp_path, tmp_path / "state", config)
+    main_ledger = PaperTradingLedger(tmp_path / "main")
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "SHORT",
+        "entry_price": 150.0,
+        "score": 88.0,
+        "primary_reason": "DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_0.5",
+        "reasons": ["DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_0.5"],
+        "entry_context": {"atr_pct": 0.01, "side": "SHORT"},
+    }
+
+    assert should_open_mirror_ab_sample(near_miss, config, ab_ledgers) is True
+    decision_payload, draft_payload = build_mirror_ab_payloads(
+        symbol="SOLUSDT",
+        near_miss=near_miss,
+        price=150.0,
+        config=config,
+        timestamp=1_000,
+    )
+    assert decision_payload["mirror_ab_sample"] is True
+    assert decision_payload["scout_mission"] == "MIRROR_AB_SAMPLE"
+    assert decision_payload["experiment_id"] == "four_quadrant_navigation_v1"
+    assert decision_payload["entry_channel"] == "mirror_ab_sample"
+    assert decision_payload["source_quadrant"] == "Q4"
+    assert "MIRROR_AB_SAMPLE" in decision_payload["reasons"]
+    assert draft_payload["request"]["quantity"] == 50.0 / 150.0
+
+    events = update_mirror_ab_ledgers(
+        ab_ledgers=ab_ledgers,
+        symbol="SOLUSDT",
+        near_miss=near_miss,
+        config=config,
+        kline={"close": 150.0, "high": 151.0, "low": 149.0},
+        timestamp=1_000,
+    )
+
+    assert any(event.startswith("legacy:PAPER_OPEN:SOLUSDT") for event in events)
+    assert any(event.startswith("trend_capture:PAPER_OPEN:SOLUSDT") for event in events)
+    assert "SOLUSDT" in ab_ledgers["legacy"].positions
+    assert "SOLUSDT" in ab_ledgers["trend_capture"].positions
+    assert main_ledger.positions == {}
+    assert should_open_mirror_ab_sample(near_miss, config, ab_ledgers) is False
+
+
+def test_mirror_ab_allows_q1_watch_sample_when_enabled(tmp_path):
+    config = EntryChainConfig(
+        mirror_ab_enabled=True,
+        mirror_ab_min_score=82.0,
+        mirror_ab_notional=50.0,
+        mirror_ab_allowed_reasons=(),
+        mirror_ab_include_q1_watch=True,
+    )
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "action": "WATCH",
+        "intended_side": "LONG",
+        "entry_price": 150.0,
+        "score": 82.0,
+        "primary_reason": "PROBE_BELOW_SCORE_MINIMUM_GAP_1.0",
+        "reasons": ["PROBE_BELOW_SCORE_MINIMUM_GAP_1.0"],
+        "component_points": {
+            "trend_ema_context": 16.0,
+            "price_action_structure": 18.0,
+            "flow_cvd_confirmation": 16.0,
+            "cci_momentum_quality": 9.0,
+        },
+        "quadrant": "Q1",
+    }
+
+    assert should_open_mirror_ab_sample(near_miss, config, build_paper_exit_ab_ledgers(tmp_path, tmp_path / "state", config)) is True
+
+    decision_payload, _ = build_mirror_ab_payloads(
+        symbol="SOLUSDT",
+        near_miss=near_miss,
+        price=150.0,
+        config=config,
+        timestamp=1_000,
+    )
+    assert decision_payload["source_quadrant"] == "Q1"
+
+
+def test_paper_ab_auto_report_writes_report_and_auto_switches_after_two_qualified_batches(tmp_path):
+    output_dir = tmp_path / "logs"
+    state_dir = tmp_path / "state"
+    config = EntryChainConfig(
+        paper_ab_auto_report_enabled=True,
+        paper_ab_report_closed_trade_interval=20,
+        paper_ab_auto_switch_enabled=True,
+        paper_ab_auto_switch_min_reports=2,
+        paper_ab_auto_switch_min_closed_trades=40,
+        paper_ab_auto_switch_payoff_mult=1.3,
+    )
+    ab_ledgers = build_paper_exit_ab_ledgers(output_dir, state_dir, config)
+    legacy_path = state_dir / "paper_ab" / "legacy" / "paper_trades.jsonl"
+    trend_path = state_dir / "paper_ab" / "trend_capture" / "paper_trades.jsonl"
+    for index in range(10):
+        append_close_row(legacy_path, timestamp=1_000 + index, symbol=f"L{index}USDT", pnl=1.0)
+        append_close_row(legacy_path, timestamp=1_100 + index, symbol=f"L{index}USDT", pnl=-1.0)
+        append_close_row(trend_path, timestamp=1_000 + index, symbol=f"T{index}USDT", pnl=2.0)
+        append_close_row(trend_path, timestamp=1_100 + index, symbol=f"T{index}USDT", pnl=-1.0)
+
+    first = maybe_write_paper_ab_auto_report(
+        output_dir=output_dir,
+        state_dir=state_dir,
+        config=config,
+        ab_ledgers=ab_ledgers,
+        timestamp=2_000,
+    )
+
+    assert first is not None
+    assert first["closed_trade_count"] == 20
+    assert (output_dir / "paper_ab" / "reports" / "ab_report_batch_0001.json").exists()
+    assert effective_paper_exit_mode(config, state_dir) == "legacy"
+
+    for index in range(10, 20):
+        append_close_row(legacy_path, timestamp=2_000 + index, symbol=f"L{index}USDT", pnl=1.0)
+        append_close_row(legacy_path, timestamp=2_100 + index, symbol=f"L{index}USDT", pnl=-1.0)
+        append_close_row(trend_path, timestamp=2_000 + index, symbol=f"T{index}USDT", pnl=2.0)
+        append_close_row(trend_path, timestamp=2_100 + index, symbol=f"T{index}USDT", pnl=-1.0)
+
+    second = maybe_write_paper_ab_auto_report(
+        output_dir=output_dir,
+        state_dir=state_dir,
+        config=config,
+        ab_ledgers=ab_ledgers,
+        timestamp=3_000,
+    )
+
+    assert second is not None
+    assert second["closed_trade_count"] == 40
+    assert effective_paper_exit_mode(config, state_dir) == "trend_capture"
+    switch_state = json.loads(paper_ab_switch_state_path(state_dir).read_text(encoding="utf-8"))
+    assert switch_state["paper_exit_mode_override"] == "trend_capture"
+
+
+def test_experiment_entry_circuit_blocks_after_war_fund_loss(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    decision_payload = {
+        "action": "DIRECT",
+        "side": "LONG",
+        "score": 90,
+        "leverage": 1,
+        "entry_context": {"atr_pct": 0.01},
+        "reasons": ["TEST_EXPERIMENT"],
+        "experiment_id": "four_quadrant_navigation_v1",
+        "entry_channel": "q1_green_channel",
+    }
+    draft_payload = {
+        "approved": True,
+        "request": {"position_side": "LONG", "quantity": 10, "price": 100},
+    }
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload=decision_payload,
+        draft_payload=draft_payload,
+        kline={"close": 100, "high": 100, "low": 100},
+        timestamp=1_000,
+    )
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={"action": "NO_TRADE"},
+        draft_payload={"approved": False},
+        kline={"close": 99, "high": 100, "low": 98},
+        timestamp=1_900,
+    )
+
+    assert experiment_entry_circuit_active(
+        config=EntryChainConfig(experiment_war_fund_loss_limit=-1.0, experiment_daily_loss_limit=-200.0),
+        timestamp=2_000,
+        experiment_ledgers=[ledger],
+        daily_ledgers=[ledger],
+    ) is True
 
 
 def test_live_dry_run_paper_ledger_records_open_position_when_draft_is_approved(tmp_path):

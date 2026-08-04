@@ -22,7 +22,12 @@ from src.execution.live_entry_chain_adapter import build_live_entry_order_draft
 from src.backtest.engine import BacktestBar
 from src.observability.decision_audit import DecisionAuditWriter
 from src.observability.dry_run_summary import DryRunSummary, write_summary
-from src.observability.paper_trading import FEE_BPS, SLIPPAGE_BPS, TP_FRACTIONS, TP_LEVELS, PaperTradingLedger, PortfolioStateSnapshot
+from src.observability.paper_trading import FEE_BPS, SLIPPAGE_BPS, TP_FRACTIONS, TP_LEVELS, PaperExitConfig, PaperTradingLedger, PortfolioStateSnapshot
+from src.risk.net_beta_exposure_model import (
+    NET_BETA_EXPOSURE_CAP_PCT,
+    NET_BETA_EXPOSURE_MODEL_NAME,
+    compute_net_beta_exposure,
+)
 from src.risk.stress_simulator import stress_decision
 from src.signals.entry_chain import EntryChainContext, EntryChainDecision, evaluate_entry_chain
 from src.signals.entry_chain_config import EntryChainConfig, load_entry_chain_config
@@ -30,6 +35,7 @@ from src.signals.entry_chain_features import (
     atr_pct,
     component_scores,
     direction_from_history,
+    extreme_position_ratio,
     long_chase_risk_active,
     long_low_liquidity_session_active,
     long_overextension_active,
@@ -38,6 +44,7 @@ from src.signals.entry_chain_features import (
     risk_reward_geometry_detail,
     wick_anomaly,
 )
+from src.signals.entry_chain_gates import HIGH_BETA_SYMBOLS
 from src.signals.fib_location import detect_fractal_swings
 
 
@@ -71,6 +78,7 @@ STABLE_IDS = {
     "paxos-standard",
     "frax",
 }
+FOUR_QUADRANT_EXPERIMENT_ID = "four_quadrant_navigation_v1"
 COINGECKO_BASE_OVERRIDES = {
     "binancecoin": "BNB",
     "the-open-network": "TON",
@@ -99,6 +107,9 @@ def run(args: argparse.Namespace) -> None:
     audit: DecisionAuditWriter | None = None
     paper: PaperTradingLedger | None = None
     scout_paper: PaperTradingLedger | None = None
+    paper_exit_ab_ledgers: dict[str, PaperTradingLedger] = {}
+    quadrant_pending_by_symbol: dict[str, dict[str, Any]] = {}
+    quadrant_pending_path: Path | None = None
     startup_ts = int(time.time())
     startup_output_dir = resolve_output_dir(args, timestamp=startup_ts)
     write_runtime_log(
@@ -119,8 +130,17 @@ def run(args: argparse.Namespace) -> None:
                 output_dir = current_output_dir
                 audit = DecisionAuditWriter(output_dir)
                 paper_state_dir = resolve_paper_state_dir(args)
-                paper = PaperTradingLedger(output_dir, state_dir=paper_state_dir)
-                scout_paper = PaperTradingLedger(output_dir / "scout_micro", state_dir=paper_state_dir / "scout_micro")
+                quadrant_pending_path = paper_state_dir / "quadrant_pending.json"
+                if config.quadrant_pending_state_enabled:
+                    quadrant_pending_by_symbol = load_quadrant_pending_state(quadrant_pending_path)
+                paper_mode = effective_paper_exit_mode(config, paper_state_dir)
+                paper = PaperTradingLedger(output_dir, state_dir=paper_state_dir, exit_config=paper_exit_config(config, scout=False, mode_override=paper_mode))
+                scout_paper = PaperTradingLedger(
+                    output_dir / "scout_micro",
+                    state_dir=paper_state_dir / "scout_micro",
+                    exit_config=paper_exit_config(config, scout=True),
+                )
+                paper_exit_ab_ledgers = build_paper_exit_ab_ledgers(output_dir, paper_state_dir, config)
             assert output_dir is not None
             assert audit is not None
             assert paper is not None
@@ -168,9 +188,66 @@ def run(args: argparse.Namespace) -> None:
                     "total_score": decision_payload.get("score"),
                 }
                 decision_payload["entry_context"] = debug.get("entry_context", {})
+                decision_payload = annotate_quadrant(decision_payload, config)
+                near_miss = build_near_miss_payload(decision_payload, min_score=args.near_miss_min_score)
+                kline_timestamp = int(debug.get("kline", {}).get("timestamp") or now)
+                if near_miss is not None:
+                    confirmed = confirm_q3_to_q1_pending(symbol, near_miss, config, quadrant_pending_by_symbol.get(symbol), kline_timestamp)
+                    if confirmed is None:
+                        confirmed = confirm_q2_to_q1_pending(symbol, near_miss, config, quadrant_pending_by_symbol.get(symbol), kline_timestamp)
+                    if confirmed is not None:
+                        near_miss = confirmed
+                        quadrant_pending_by_symbol.pop(symbol, None)
+                    else:
+                        pending = build_q3_pending_candidate(near_miss, config, kline_timestamp)
+                        if pending is None:
+                            pending = build_q2_pending_candidate(near_miss, config, kline_timestamp)
+                        if pending is not None:
+                            quadrant_pending_by_symbol[symbol] = pending
+                        elif symbol in quadrant_pending_by_symbol and kline_timestamp > int(quadrant_pending_by_symbol[symbol].get("expires_at") or 0):
+                            quadrant_pending_by_symbol.pop(symbol, None)
+                if near_miss is not None:
+                    near_miss = annotate_quadrant(near_miss, config)
+                experiment_circuit_active = experiment_entry_circuit_active(
+                    config=config,
+                    timestamp=now,
+                    experiment_ledgers=[paper, scout_paper, *paper_exit_ab_ledgers.values()],
+                    daily_ledgers=[paper, scout_paper],
+                )
+                entry_near_miss = None if experiment_circuit_active else near_miss
+                green_channel_decision = build_q1_green_channel_decision(
+                    base_decision=decision,
+                    near_miss=entry_near_miss,
+                    config=config,
+                    data_health=data_health,
+                    paper=paper,
+                )
+                if green_channel_decision is not None:
+                    decision = apply_dry_run_decision_controls(
+                        green_channel_decision,
+                        config=config,
+                        paper=paper,
+                        timestamp=now,
+                    )
+                    decision_payload = annotate_quadrant(
+                        enrich_decision_payload(
+                            decision.to_dict(),
+                            symbol=symbol,
+                            timestamp=now,
+                            target_tier=args.target_tier,
+                            market_snapshot=market_snapshot,
+                            latency_ms=latency_ms,
+                            debug=debug,
+                        ),
+                        config,
+                    )
+                decision, decision_payload = apply_experimental_quadrant_entry_rules(
+                    decision=decision,
+                    decision_payload=decision_payload,
+                    paper=paper,
+                )
                 audit.write_decision(decision_payload)
                 summary.record_decision(decision_payload)
-                near_miss = build_near_miss_payload(decision_payload, min_score=args.near_miss_min_score)
                 if near_miss is not None:
                     audit.write_near_miss(near_miss)
                     summary.record_near_miss(near_miss)
@@ -204,17 +281,47 @@ def run(args: argparse.Namespace) -> None:
                     kline=debug.get("kline", {}),
                     timestamp=int(debug.get("kline", {}).get("timestamp") or now),
                 )
+                for ab_ledger in paper_exit_ab_ledgers.values():
+                    ab_ledger.on_decision(
+                        symbol=symbol,
+                        decision_payload=decision_payload,
+                        draft_payload=draft_payload,
+                        kline=debug.get("kline", {}),
+                        timestamp=kline_timestamp,
+                    )
+                mirror_ab_events = update_mirror_ab_ledgers(
+                    ab_ledgers=paper_exit_ab_ledgers,
+                    symbol=symbol,
+                    near_miss=entry_near_miss,
+                    config=config,
+                    kline=debug.get("kline", {}),
+                    timestamp=kline_timestamp,
+                )
                 scout_events = update_scout_micro_ledger(
                     scout_paper=scout_paper,
                     symbol=symbol,
-                    near_miss=near_miss,
+                    near_miss=entry_near_miss,
                     config=config,
                     data_health=data_health,
                     kline=debug.get("kline", {}),
-                    timestamp=int(debug.get("kline", {}).get("timestamp") or now),
+                    timestamp=kline_timestamp,
                 )
+                if near_miss is not None:
+                    audit.write_scout_decision(
+                        build_scout_decision_audit(
+                            symbol=symbol,
+                            near_miss=near_miss,
+                            config=config,
+                            data_health=data_health,
+                            scout_paper=scout_paper,
+                            timestamp=kline_timestamp,
+                            experiment_circuit_active=experiment_circuit_active,
+                            accepted=bool(scout_events and any(event.startswith("PAPER_OPEN:") for event in scout_events)),
+                        )
+                    )
                 runtime_lines.extend(render_symbol_log(symbol, context, decision_payload, draft_payload, stress, debug))
                 runtime_lines.extend(render_paper_log(symbol, paper_events))
+                runtime_lines.extend(render_mirror_ab_log(symbol, mirror_ab_events))
                 runtime_lines.extend(render_scout_micro_log(symbol, scout_events))
                 processed += 1
             elapsed = time.perf_counter() - cycle_started
@@ -223,8 +330,32 @@ def run(args: argparse.Namespace) -> None:
             runtime_lines.append(render_schedule_wait_log(args, now, cycle_finished_ts, elapsed))
             write_runtime_log(output_dir, runtime_lines)
             write_health(output_dir, symbols, orders_submitted, data_health, symbol_meta, warmup_state, config.dry_run_warmup_15m_bars)
-            summary.record_portfolio_snapshot(portfolio_exposure_snapshot(paper.get_portfolio_state_snapshot(now), config))
+            summary.record_portfolio_snapshot(portfolio_exposure_snapshot(paper.get_portfolio_state_snapshot(now), config, paper.positions))
+            if config.quadrant_pending_state_enabled and quadrant_pending_path is not None:
+                write_quadrant_pending_state(quadrant_pending_path, quadrant_pending_by_symbol)
+            ab_report = maybe_write_paper_ab_auto_report(
+                output_dir=output_dir,
+                state_dir=resolve_paper_state_dir(args),
+                config=config,
+                ab_ledgers=paper_exit_ab_ledgers,
+                timestamp=now,
+            )
+            effective_mode = effective_paper_exit_mode(config, resolve_paper_state_dir(args))
+            if paper.exit_config.mode != effective_mode:
+                paper.exit_config = paper_exit_config(config, scout=False, mode_override=effective_mode)
+            summary.assumptions = {
+                **dict(summary.assumptions),
+                "effective_paper_exit_mode": paper.exit_config.mode,
+                "paper_ab_last_report": {
+                    "batch": ab_report.get("batch"),
+                    "closed_trade_count": ab_report.get("closed_trade_count"),
+                }
+                if isinstance(ab_report, Mapping)
+                else None,
+                "paper_ab_switch_state": load_paper_ab_state(paper_ab_switch_state_path(resolve_paper_state_dir(args))),
+            }
             write_summary(output_dir / "summary.json", summary, orders_submitted=orders_submitted, data_health=data_health)
+            write_paper_summary_with_ab(output_dir, paper, paper_exit_ab_ledgers, now)
             if args.once:
                 break
             if not args.align_to_kline_close:
@@ -272,12 +403,356 @@ def dry_run_assumptions(config: EntryChainConfig) -> dict[str, Any]:
         "paper_tp_levels": list(TP_LEVELS),
         "paper_tp_fractions": list(TP_FRACTIONS),
         "pnl_accounting_mode": "notional_primary_margin_reporting",
-        "net_beta_exposure_model": "not_configured",
+        "net_beta_exposure_model": NET_BETA_EXPOSURE_MODEL_NAME,
+        "paper_exit_mode": config.paper_exit_mode,
+        "paper_exit_trend_trigger_r": config.paper_exit_trend_trigger_r,
+        "paper_exit_trailing_r_mult": config.paper_exit_trailing_r_mult,
+        "scout_micro_exit_mode": config.scout_micro_exit_mode,
+        "scout_micro_exit_trend_trigger_r": config.scout_micro_exit_trend_trigger_r,
+        "scout_micro_exit_trailing_r_mult": config.scout_micro_exit_trailing_r_mult,
+        "quadrant_thresholds": {
+            "trend_ema_min": config.quadrant_trend_ema_min,
+            "price_action_min": config.quadrant_price_action_min,
+            "flow_cvd_min": config.quadrant_flow_cvd_min,
+            "cci_min": config.quadrant_cci_min,
+        },
+        "scout_micro_q1_rr_gap_enabled": config.scout_micro_q1_rr_gap_enabled,
+        "scout_micro_q1_rr_gap_min_score": config.scout_micro_q1_rr_gap_min_score,
+        "scout_micro_q1_rr_gap_min_cvd_score": config.scout_micro_q1_rr_gap_min_cvd_score,
+        "scout_micro_q3_to_q1_enabled": config.scout_micro_q3_to_q1_enabled,
+        "scout_micro_q3_to_q1_min_score": config.scout_micro_q3_to_q1_min_score,
+        "scout_micro_q3_to_q1_confirm_bars": config.scout_micro_q3_to_q1_confirm_bars,
+        "scout_micro_q2_pending_enabled": config.scout_micro_q2_pending_enabled,
+        "scout_micro_q2_pending_min_score": config.scout_micro_q2_pending_min_score,
+        "scout_micro_q2_pending_min_pa_score": config.scout_micro_q2_pending_min_pa_score,
+        "scout_micro_q2_pending_confirm_bars": config.scout_micro_q2_pending_confirm_bars,
+        "scout_micro_q2_pending_confirm_cci_score": config.scout_micro_q2_pending_confirm_cci_score,
+        "quadrant_pending_state_enabled": config.quadrant_pending_state_enabled,
+        "dry_run_q1_trend_launch_enabled": config.dry_run_q1_trend_launch_enabled,
+        "dry_run_q1_trend_launch_min_score": config.dry_run_q1_trend_launch_min_score,
+        "dry_run_q1_trend_launch_min_pa_score": config.dry_run_q1_trend_launch_min_pa_score,
+        "dry_run_q1_trend_launch_min_fib_score": config.dry_run_q1_trend_launch_min_fib_score,
+        "dry_run_q1_trend_launch_min_cvd_score": config.dry_run_q1_trend_launch_min_cvd_score,
+        "dry_run_q1_trend_launch_min_rr_score": config.dry_run_q1_trend_launch_min_rr_score,
+        "dry_run_q1_trend_launch_base_exposure_pct": config.dry_run_q1_trend_launch_base_exposure_pct,
+        "dry_run_q1_trend_launch_exit_mode": config.dry_run_q1_trend_launch_exit_mode,
+        "dry_run_q1_trend_launch_allow_degraded_data": config.dry_run_q1_trend_launch_allow_degraded_data,
+        "mirror_ab_enabled": config.mirror_ab_enabled,
+        "mirror_ab_min_score": config.mirror_ab_min_score,
+        "mirror_ab_notional": config.mirror_ab_notional,
+        "mirror_ab_allowed_reasons": list(config.mirror_ab_allowed_reasons),
+        "mirror_ab_include_q1_watch": config.mirror_ab_include_q1_watch,
+        "paper_ab_auto_report_enabled": config.paper_ab_auto_report_enabled,
+        "paper_ab_report_closed_trade_interval": config.paper_ab_report_closed_trade_interval,
+        "paper_ab_auto_switch_enabled": config.paper_ab_auto_switch_enabled,
+        "paper_ab_auto_switch_min_reports": config.paper_ab_auto_switch_min_reports,
+        "paper_ab_auto_switch_min_closed_trades": config.paper_ab_auto_switch_min_closed_trades,
+        "paper_ab_auto_switch_payoff_mult": config.paper_ab_auto_switch_payoff_mult,
+        "dry_run_q1_green_channel_enabled": config.dry_run_q1_green_channel_enabled,
+        "dry_run_q1_green_channel_notional_mult": config.dry_run_q1_green_channel_notional_mult,
+        "dry_run_q1_green_channel_min_score": config.dry_run_q1_green_channel_min_score,
+        "dry_run_q1_green_channel_min_pa_score": config.dry_run_q1_green_channel_min_pa_score,
+        "dry_run_q1_green_channel_min_cvd_score": config.dry_run_q1_green_channel_min_cvd_score,
+        "dry_run_q1_green_channel_base_exposure_pct": config.dry_run_q1_green_channel_base_exposure_pct,
+        "dry_run_q1_green_channel_exit_mode": config.dry_run_q1_green_channel_exit_mode,
+        "experiment_war_fund_loss_limit": config.experiment_war_fund_loss_limit,
+        "experiment_daily_loss_limit": config.experiment_daily_loss_limit,
+        "scout_micro_mission_stop_circuit_enabled": config.scout_micro_mission_stop_circuit_enabled,
+        "scout_micro_mission_stop_circuit_count": config.scout_micro_mission_stop_circuit_count,
+        "scout_micro_mission_stop_circuit_hours": config.scout_micro_mission_stop_circuit_hours,
+        "scout_micro_allow_degraded_data": config.scout_micro_allow_degraded_data,
+        "scout_micro_reversal_pivot_enabled": config.scout_micro_reversal_pivot_enabled,
+        "scout_micro_reversal_pivot_min_score": config.scout_micro_reversal_pivot_min_score,
+        "scout_micro_reversal_pivot_max_cvd_score": config.scout_micro_reversal_pivot_max_cvd_score,
+        "scout_micro_reversal_pivot_max_cci_score": config.scout_micro_reversal_pivot_max_cci_score,
+        "scout_micro_reversal_pivot_notional": config.scout_micro_reversal_pivot_notional,
     }
 
 
-def portfolio_exposure_snapshot(snapshot: PortfolioStateSnapshot, config: EntryChainConfig) -> dict[str, Any]:
+def enrich_decision_payload(
+    payload: Mapping[str, Any],
+    *,
+    symbol: str,
+    timestamp: int,
+    target_tier: str,
+    market_snapshot: Mapping[str, Any],
+    latency_ms: int,
+    debug: Mapping[str, Any],
+) -> dict[str, Any]:
+    enriched = dict(payload)
+    enriched["timestamp"] = timestamp
+    enriched["symbol"] = symbol
+    enriched["model_version"] = f"entry-chain-vps-dry-run:{target_tier}"
+    enriched["market_snapshot"] = dict(market_snapshot)
+    enriched["latency_ms"] = latency_ms
+    enriched["warmup"] = debug.get("warmup", {})
+    enriched["kline"] = debug.get("kline", {})
+    enriched["score_detail"] = {
+        "scores": debug.get("scores", {}),
+        "points": enriched.get("component_points", {}),
+        "weights": enriched.get("weights", {}),
+        "diagnostics": debug.get("score_diagnostics", {}),
+        "total_score": enriched.get("score"),
+    }
+    enriched["entry_context"] = debug.get("entry_context", {})
+    metadata = enriched.get("metadata", {})
+    if isinstance(metadata, Mapping):
+        for key in ("experiment_id", "entry_channel", "source_quadrant", "exit_mode"):
+            if key in metadata:
+                enriched[key] = metadata[key]
+    return enriched
+
+
+def paper_exit_config(config: EntryChainConfig, *, scout: bool, mode_override: str | None = None) -> PaperExitConfig:
+    if scout:
+        return PaperExitConfig(
+            mode=config.scout_micro_exit_mode,
+            trend_trigger_r=config.scout_micro_exit_trend_trigger_r,
+            trailing_r_mult=config.scout_micro_exit_trailing_r_mult,
+        )
+    return PaperExitConfig(
+        mode=mode_override or config.paper_exit_mode,
+        trend_trigger_r=config.paper_exit_trend_trigger_r,
+        trailing_r_mult=config.paper_exit_trailing_r_mult,
+    )
+
+
+def build_paper_exit_ab_ledgers(output_dir: Path, state_dir: Path, config: EntryChainConfig) -> dict[str, PaperTradingLedger]:
+    return {
+        "legacy": PaperTradingLedger(
+            output_dir / "paper_ab" / "legacy",
+            state_dir=state_dir / "paper_ab" / "legacy",
+            exit_config=PaperExitConfig(mode="legacy"),
+        ),
+        "trend_capture": PaperTradingLedger(
+            output_dir / "paper_ab" / "trend_capture",
+            state_dir=state_dir / "paper_ab" / "trend_capture",
+            exit_config=PaperExitConfig(
+                mode="trend_capture",
+                trend_trigger_r=config.mirror_ab_payoff_trend_trigger_r if config.mirror_ab_payoff_pilot_enabled else config.paper_exit_trend_trigger_r,
+                trailing_r_mult=config.paper_exit_trailing_r_mult,
+                early_breakeven_enabled=config.mirror_ab_payoff_pilot_enabled,
+                early_breakeven_trigger_r=config.mirror_ab_payoff_early_breakeven_trigger_r,
+            ),
+        ),
+    }
+
+
+def paper_ab_state_dir(state_dir: Path) -> Path:
+    return state_dir / "paper_ab"
+
+
+def paper_ab_report_state_path(state_dir: Path) -> Path:
+    return paper_ab_state_dir(state_dir) / "ab_report_state.json"
+
+
+def paper_ab_switch_state_path(state_dir: Path) -> Path:
+    return paper_ab_state_dir(state_dir) / "ab_switch_state.json"
+
+
+def load_paper_ab_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_paper_ab_state(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def effective_paper_exit_mode(config: EntryChainConfig, state_dir: Path) -> str:
+    state = load_paper_ab_state(paper_ab_switch_state_path(state_dir))
+    override = str(state.get("paper_exit_mode_override") or "").strip().lower()
+    if config.paper_ab_auto_switch_enabled and override == "trend_capture":
+        return "trend_capture"
+    return config.paper_exit_mode
+
+
+def paper_exit_ab_summary(ab_ledgers: Mapping[str, PaperTradingLedger], timestamp: int) -> dict[str, Any]:
+    return {name: ledger.summary(timestamp) for name, ledger in sorted(ab_ledgers.items())}
+
+
+def paper_ab_closed_stats(ledger: PaperTradingLedger) -> dict[str, Any]:
+    closed = [row for row in ledger.trade_events() if row.get("event") == "PAPER_CLOSE"]
+    pnls = [float(row.get("position_margin_realized_pnl") or row.get("position_realized_pnl") or row.get("net_pnl") or 0.0) for row in closed]
+    wins = [item for item in pnls if item > 0.0]
+    losses = [item for item in pnls if item < 0.0]
+    gross_profit = sum(wins)
+    gross_loss = abs(sum(losses))
+    avg_win = gross_profit / len(wins) if wins else 0.0
+    avg_loss = gross_loss / len(losses) if losses else 0.0
+    return {
+        "closed_trades": len(pnls),
+        "realized_margin_pnl": sum(pnls),
+        "win_rate": len(wins) / len(pnls) if pnls else 0.0,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "actual_payoff_ratio": avg_win / avg_loss if avg_loss > 0.0 else (avg_win if avg_win > 0.0 else 0.0),
+        "profit_factor": gross_profit / gross_loss if gross_loss > 0.0 else (gross_profit if gross_profit > 0.0 else 0.0),
+    }
+
+
+def maybe_write_paper_ab_auto_report(
+    *,
+    output_dir: Path,
+    state_dir: Path,
+    config: EntryChainConfig,
+    ab_ledgers: Mapping[str, PaperTradingLedger],
+    timestamp: int,
+) -> dict[str, Any] | None:
+    if not config.paper_ab_auto_report_enabled:
+        return None
+    if "legacy" not in ab_ledgers or "trend_capture" not in ab_ledgers:
+        return None
+    interval = max(1, int(config.paper_ab_report_closed_trade_interval))
+    stats = {name: paper_ab_closed_stats(ledger) for name, ledger in sorted(ab_ledgers.items())}
+    closed_count = min(int(item["closed_trades"]) for item in stats.values())
+    batch = closed_count // interval
+    report_state_path = paper_ab_report_state_path(state_dir)
+    report_state = load_paper_ab_state(report_state_path)
+    last_batch = int(report_state.get("last_report_batch") or 0)
+    if batch <= 0 or batch <= last_batch:
+        return None
+
+    report = {
+        "timestamp": timestamp,
+        "batch": batch,
+        "closed_trade_interval": interval,
+        "closed_trade_count": closed_count,
+        "ledgers": stats,
+        "assumptions": {
+            "auto_report_enabled": config.paper_ab_auto_report_enabled,
+            "auto_switch_enabled": config.paper_ab_auto_switch_enabled,
+            "auto_switch_min_reports": config.paper_ab_auto_switch_min_reports,
+            "auto_switch_min_closed_trades": config.paper_ab_auto_switch_min_closed_trades,
+            "auto_switch_payoff_mult": config.paper_ab_auto_switch_payoff_mult,
+        },
+    }
+    trend = stats["trend_capture"]
+    legacy = stats["legacy"]
+    qualifies = _paper_ab_trend_capture_qualifies(trend, legacy, config)
+    report_state["last_report_batch"] = batch
+    report_state["report_count"] = int(report_state.get("report_count") or 0) + 1
+    report_state["qualifying_streak"] = int(report_state.get("qualifying_streak") or 0) + 1 if qualifies else 0
+    report_state["last_report"] = {
+        "timestamp": timestamp,
+        "batch": batch,
+        "closed_trade_count": closed_count,
+        "trend_capture_qualified": qualifies,
+    }
+    switch_payload = maybe_update_paper_ab_auto_switch(
+        state_dir=state_dir,
+        config=config,
+        report_state=report_state,
+        report=report,
+        timestamp=timestamp,
+    )
+    if switch_payload:
+        report["auto_switch"] = switch_payload
+    write_paper_ab_state(report_state_path, report_state)
+    report_dir = output_dir / "paper_ab" / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"ab_report_batch_{batch:04d}"
+    (report_dir / f"{stem}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    (report_dir / f"{stem}.md").write_text(render_paper_ab_report_markdown(report), encoding="utf-8")
+    return report
+
+
+def maybe_update_paper_ab_auto_switch(
+    *,
+    state_dir: Path,
+    config: EntryChainConfig,
+    report_state: Mapping[str, Any],
+    report: Mapping[str, Any],
+    timestamp: int,
+) -> dict[str, Any] | None:
+    if not config.paper_ab_auto_switch_enabled:
+        return None
+    closed_trade_count = int(report.get("closed_trade_count") or 0)
+    if closed_trade_count < int(config.paper_ab_auto_switch_min_closed_trades):
+        return None
+    if int(report_state.get("qualifying_streak") or 0) < int(config.paper_ab_auto_switch_min_reports):
+        return None
+    switch_path = paper_ab_switch_state_path(state_dir)
+    switch_state = load_paper_ab_state(switch_path)
+    if str(switch_state.get("paper_exit_mode_override") or "").lower() == "trend_capture":
+        return switch_state
+    switch_state = {
+        "paper_exit_mode_override": "trend_capture",
+        "triggered_at": timestamp,
+        "trigger_report_batch": report.get("batch"),
+        "trigger_closed_trade_count": closed_trade_count,
+        "trigger_reason": "trend_capture_payoff_ratio_advantage",
+        "auto_switch_min_reports": config.paper_ab_auto_switch_min_reports,
+        "auto_switch_payoff_mult": config.paper_ab_auto_switch_payoff_mult,
+    }
+    write_paper_ab_state(switch_path, switch_state)
+    return switch_state
+
+
+def _paper_ab_trend_capture_qualifies(
+    trend: Mapping[str, Any],
+    legacy: Mapping[str, Any],
+    config: EntryChainConfig,
+) -> bool:
+    trend_payoff = float(trend.get("actual_payoff_ratio") or 0.0)
+    legacy_payoff = float(legacy.get("actual_payoff_ratio") or 0.0)
+    if trend_payoff <= 0.0:
+        return False
+    if legacy_payoff <= 0.0:
+        return True
+    return trend_payoff >= legacy_payoff * float(config.paper_ab_auto_switch_payoff_mult)
+
+
+def render_paper_ab_report_markdown(report: Mapping[str, Any]) -> str:
+    ledgers = report.get("ledgers", {})
+    lines = [
+        "# Paper Exit A/B Auto Report",
+        "",
+        f"- batch: {report.get('batch')}",
+        f"- closed_trade_count: {report.get('closed_trade_count')}",
+        "",
+        "| ledger | closed_trades | pnl | win_rate | payoff_ratio | profit_factor |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    if isinstance(ledgers, Mapping):
+        for name, stats in sorted(ledgers.items()):
+            if not isinstance(stats, Mapping):
+                continue
+            lines.append(
+                "| "
+                f"{name} | {stats.get('closed_trades')} | {float(stats.get('realized_margin_pnl') or 0.0):.4f} | "
+                f"{float(stats.get('win_rate') or 0.0):.4f} | {float(stats.get('actual_payoff_ratio') or 0.0):.4f} | "
+                f"{float(stats.get('profit_factor') or 0.0):.4f} |"
+            )
+    if report.get("auto_switch"):
+        lines.extend(["", "## Auto Switch", "", "triggered: true"])
+    return "\n".join(lines) + "\n"
+
+
+def write_paper_summary_with_ab(
+    output_dir: Path,
+    paper: PaperTradingLedger,
+    ab_ledgers: Mapping[str, PaperTradingLedger],
+    timestamp: int,
+) -> None:
+    payload = paper.summary(timestamp)
+    payload["ab_ledger"] = paper_exit_ab_summary(ab_ledgers, timestamp)
+    (output_dir / "paper_summary.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def portfolio_exposure_snapshot(
+    snapshot: PortfolioStateSnapshot,
+    config: EntryChainConfig,
+    positions: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     net_side_exposure_pct = snapshot.same_direction_long_pct - snapshot.same_direction_short_pct
+    net_beta_exposure_pct = compute_net_beta_exposure(positions or {})
     return {
         "active_symbols": sorted(snapshot.active_symbols),
         "open_position_count": snapshot.open_position_count,
@@ -290,9 +765,9 @@ def portfolio_exposure_snapshot(snapshot: PortfolioStateSnapshot, config: EntryC
         "portfolio_trades_today": snapshot.portfolio_trades_today,
         "daily_profit_pct": snapshot.daily_profit_pct,
         "symbol_exposure_pct": dict(sorted(snapshot.symbol_exposure_pct.items())),
-        "net_beta_exposure_pct": None,
-        "net_beta_exposure_cap_pct": None,
-        "net_beta_exposure_model": "not_configured",
+        "net_beta_exposure_pct": net_beta_exposure_pct,
+        "net_beta_exposure_cap_pct": NET_BETA_EXPOSURE_CAP_PCT,
+        "net_beta_exposure_model": NET_BETA_EXPOSURE_MODEL_NAME,
     }
 
 
@@ -332,6 +807,157 @@ def build_near_miss_payload(decision_payload: Mapping[str, Any], *, min_score: f
     return payload
 
 
+def build_q1_green_channel_decision(
+    *,
+    base_decision: EntryChainDecision,
+    near_miss: Mapping[str, Any] | None,
+    config: EntryChainConfig,
+    data_health: str,
+    paper: PaperTradingLedger,
+) -> EntryChainDecision | None:
+    if not _q1_trend_launch_eligible(near_miss, config, data_health):
+        return None
+    assert near_miss is not None
+    side = str(near_miss.get("intended_side") or "").upper()
+    rr_points = _component_point(near_miss, "risk_reward_geometry")
+    rr_factor = max(0.25, min(1.0, rr_points / 8.0))
+    exposure_pct = float(config.dry_run_q1_trend_launch_base_exposure_pct) * rr_factor
+    notional = round(max(0.0, paper.initial_equity * exposure_pct), 4)
+    reasons = tuple(
+        dict.fromkeys(
+            [
+                *base_decision.reasons,
+                "DRY_RUN_Q1_TREND_LAUNCH",
+                f"EXPERIMENT_{FOUR_QUADRANT_EXPERIMENT_ID}",
+                *[str(item) for item in near_miss.get("reasons", [])],
+            ]
+        )
+    )
+    metadata = dict(base_decision.metadata)
+    metadata.update(
+        {
+            "symbol": str(near_miss.get("symbol") or metadata.get("symbol") or "").strip().upper(),
+            "experiment_id": FOUR_QUADRANT_EXPERIMENT_ID,
+            "entry_channel": "q1_trend_launch",
+            "source_quadrant": "Q1",
+            "exit_mode": config.dry_run_q1_trend_launch_exit_mode,
+            "q1_trend_launch_rr_factor": rr_factor,
+            "q1_trend_launch_source": near_miss.get("q2_pending_source") or near_miss.get("q3_pending_source"),
+        }
+    )
+    return replace(
+        base_decision,
+        action="PROBE",
+        side=side,
+        reasons=reasons,
+        risk_allowed=True,
+        leverage=1,
+        notional_hint=notional,
+        max_symbol_exposure_pct=exposure_pct,
+        metadata=metadata,
+    )
+
+
+def _q1_green_channel_eligible(
+    near_miss: Mapping[str, Any] | None,
+    config: EntryChainConfig,
+    data_health: str,
+) -> bool:
+    return _q1_trend_launch_eligible(near_miss, config, data_health)
+
+
+def _q1_trend_launch_eligible(
+    near_miss: Mapping[str, Any] | None,
+    config: EntryChainConfig,
+    data_health: str,
+) -> bool:
+    if not config.dry_run_q1_trend_launch_enabled:
+        return False
+    if near_miss is None:
+        return False
+    if str(data_health).upper() != "OK" and not config.dry_run_q1_trend_launch_allow_degraded_data:
+        return False
+    symbol = str(near_miss.get("symbol") or "").strip().upper()
+    if not symbol or symbol in config.blacklist_symbols:
+        return False
+    if decision_quadrant(near_miss, config) != "Q1":
+        return False
+    if str(near_miss.get("intended_side") or "").upper() not in {"LONG", "SHORT"}:
+        return False
+    if float(near_miss.get("entry_price") or 0.0) <= 0.0:
+        return False
+    side = str(near_miss.get("intended_side") or "").upper()
+    # 非极值追单检查(08-02 报告 Task A 量化定义: close 不在近8根极值区间最外20%)
+    # 极值位置比例由 build_context 基于近 8 根 15m K 线计算, 经 entry_context 传入
+    entry_ctx = near_miss.get("entry_context")
+    entry_ctx = dict(entry_ctx) if isinstance(entry_ctx, Mapping) else {}
+    raw_extreme = entry_ctx.get("extreme_position_ratio")
+    # 保留合法测量值 0.0(close 恰为窗口最低价时会被极值下限检查拒绝);
+    # 仅当字段缺失/为 None 时才回退中性值 0.5。
+    extreme_ratio = float(raw_extreme) if raw_extreme is not None else 0.5
+    if not (
+        float(config.dry_run_q1_trend_launch_extreme_ratio_min)
+        <= extreme_ratio
+        <= float(config.dry_run_q1_trend_launch_extreme_ratio_max)
+    ):
+        return False
+    # LONG 方向防反转/追单(复用已有 entry_context 标志; SHORT 方向由通用极值检查覆盖)
+    if side == "LONG" and (
+        entry_ctx.get("long_overextension_active")
+        or entry_ctx.get("long_upper_wick_risk_active")
+        or entry_ctx.get("long_chase_risk_active")
+    ):
+        return False
+    return (
+        float(near_miss.get("score") or 0.0) >= float(config.dry_run_q1_trend_launch_min_score)
+        and _component_point(near_miss, "price_action_structure") >= float(config.dry_run_q1_trend_launch_min_pa_score)
+        and _component_point(near_miss, "fibonacci_location") >= float(config.dry_run_q1_trend_launch_min_fib_score)
+        and _component_point(near_miss, "flow_cvd_confirmation") >= float(config.dry_run_q1_trend_launch_min_cvd_score)
+        and _component_point(near_miss, "risk_reward_geometry") >= float(config.dry_run_q1_trend_launch_min_rr_score)
+    )
+
+
+def apply_experimental_quadrant_entry_rules(
+    *,
+    decision: EntryChainDecision,
+    decision_payload: Mapping[str, Any],
+    paper: PaperTradingLedger,
+) -> tuple[EntryChainDecision, dict[str, Any]]:
+    payload = dict(decision_payload)
+    if decision.action not in {"PROBE", "DIRECT"}:
+        return decision, payload
+    symbol = str(payload.get("symbol") or decision.metadata.get("symbol") or "").strip().upper()
+    position = paper.positions.get(symbol)
+    quadrant = str(payload.get("quadrant") or "").upper()
+    if position is None or not position.experiment_id or quadrant not in {"Q2", "Q3"}:
+        return decision, payload
+    reasons = list(dict.fromkeys([*decision.reasons, "Q2_Q3_EXPERIMENT_ADD_BLOCK"]))
+    metadata = dict(decision.metadata)
+    metadata["q2_q3_add_blocked"] = True
+    blocked = replace(
+        decision,
+        action="WATCH",
+        reasons=tuple(reasons),
+        risk_allowed=False,
+        leverage=0,
+        max_symbol_exposure_pct=0.0,
+        notional_hint=0.0,
+        metadata=metadata,
+    )
+    payload.update(
+        {
+            "action": "WATCH",
+            "risk_allowed": False,
+            "leverage": 0,
+            "max_symbol_exposure_pct": 0.0,
+            "notional_hint": 0.0,
+            "reasons": reasons,
+            "q2_q3_experiment_add_blocked": True,
+        }
+    )
+    return blocked, payload
+
+
 def _is_targeted_long_offset_near_miss(payload: Mapping[str, Any]) -> bool:
     reasons = payload.get("reasons", [])
     reason_list = [str(item) for item in reasons] if isinstance(reasons, list) else [str(reasons)]
@@ -356,44 +982,180 @@ def should_open_scout_micro(
     scout_paper: PaperTradingLedger,
     timestamp: int | None = None,
 ) -> bool:
+    return (
+        scout_micro_open_reject_reason(
+            symbol=symbol,
+            near_miss=near_miss,
+            config=config,
+            data_health=data_health,
+            scout_paper=scout_paper,
+            timestamp=timestamp,
+        )
+        is None
+    )
+
+
+def scout_micro_open_reject_reason(
+    *,
+    symbol: str,
+    near_miss: Mapping[str, Any] | None,
+    config: EntryChainConfig,
+    data_health: str,
+    scout_paper: PaperTradingLedger,
+    timestamp: int | None = None,
+) -> str | None:
     normalized_symbol = symbol.strip().upper()
     if normalized_symbol not in config.scout_micro_symbols:
-        return False
-    if str(data_health).upper() != "OK":
-        return False
+        return "SCOUT_SYMBOL_NOT_ENABLED"
+    if str(data_health).upper() != "OK" and not config.scout_micro_allow_degraded_data:
+        return "SCOUT_DATA_HEALTH_DEGRADED"
     if normalized_symbol in scout_paper.positions:
-        return False
+        return "SCOUT_POSITION_ALREADY_OPEN"
     if near_miss is None:
-        return False
+        return "SCOUT_NO_NEAR_MISS"
     if str(near_miss.get("symbol") or "").strip().upper() != normalized_symbol:
-        return False
-    if float(near_miss.get("score") or 0.0) < float(config.scout_micro_min_score):
-        return False
-    side = str(near_miss.get("intended_side") or "").upper()
+        return "SCOUT_SYMBOL_MISMATCH"
+    mission = scout_micro_mission(normalized_symbol, near_miss, config)
+    if mission is None:
+        return "SCOUT_NO_MISSION"
+    if mission != "REVERSAL_PIVOT_SCOUT" and float(near_miss.get("score") or 0.0) < float(config.scout_micro_min_score):
+        return "SCOUT_BELOW_MIN_SCORE"
+    side = scout_micro_entry_side(near_miss, mission)
     if side not in {"LONG", "SHORT"}:
-        return False
+        return "SCOUT_INVALID_SIDE"
     if float(near_miss.get("entry_price") or 0.0) <= 0.0:
-        return False
-    if scout_micro_mission(normalized_symbol, near_miss, config) is None:
-        return False
-    return _scout_micro_cooldown_reason(normalized_symbol, side, config, scout_paper, timestamp) is None
+        return "SCOUT_INVALID_ENTRY_PRICE"
+    mission_reason = _scout_micro_mission_stop_cooldown_reason(mission, config, scout_paper, timestamp)
+    if mission_reason is not None:
+        return mission_reason
+    return _scout_micro_cooldown_reason(normalized_symbol, side, config, scout_paper, timestamp)
+
+
+def build_scout_decision_audit(
+    *,
+    symbol: str,
+    near_miss: Mapping[str, Any],
+    config: EntryChainConfig,
+    data_health: str,
+    scout_paper: PaperTradingLedger,
+    timestamp: int,
+    experiment_circuit_active: bool,
+    accepted: bool,
+) -> dict[str, Any]:
+    normalized_symbol = symbol.strip().upper()
+    mission = scout_micro_mission(normalized_symbol, near_miss, config)
+    if experiment_circuit_active:
+        reject_reason = "EXPERIMENT_ENTRY_CIRCUIT_ACTIVE"
+    else:
+        reject_reason = scout_micro_open_reject_reason(
+            symbol=normalized_symbol,
+            near_miss=near_miss,
+            config=config,
+            data_health=data_health,
+            scout_paper=scout_paper,
+            timestamp=timestamp,
+        )
+    side = scout_micro_entry_side(near_miss, mission)
+    return {
+        "timestamp": timestamp,
+        "symbol": normalized_symbol,
+        "candidate": True,
+        "accepted": bool(accepted),
+        "mission": mission,
+        "side": side,
+        "source_side": str(near_miss.get("intended_side") or "").upper(),
+        "reject_reason": None if accepted else reject_reason,
+        "score": float(near_miss.get("score") or 0.0),
+        "primary_reason": near_miss.get("primary_reason"),
+        "quadrant": str(near_miss.get("quadrant") or decision_quadrant(near_miss, config)),
+        "budget_state": {
+            "experiment_circuit_active": bool(experiment_circuit_active),
+        },
+        "mission_stop_circuit_state": {
+            "enabled": config.scout_micro_mission_stop_circuit_enabled,
+            "reject_reason": _scout_micro_mission_stop_cooldown_reason(mission, config, scout_paper, timestamp) if mission else None,
+        },
+        "cooldown_state": {
+            "reject_reason": _scout_micro_cooldown_reason(normalized_symbol, side, config, scout_paper, timestamp)
+            if side in {"LONG", "SHORT"}
+            else None,
+        },
+        "position_conflict_state": {
+            "symbol_open": normalized_symbol in scout_paper.positions,
+        },
+        "war_fund_state": {
+            "limit": config.experiment_war_fund_loss_limit,
+        },
+    }
 
 
 def scout_micro_mission(symbol: str, near_miss: Mapping[str, Any], config: EntryChainConfig) -> str | None:
     normalized_symbol = symbol.strip().upper()
-    if _targeted_long_offset_scout_eligible(normalized_symbol, near_miss, config):
-        return "TARGETED_LONG_OFFSET"
+    if _reversal_pivot_scout_eligible(near_miss, config):
+        return "REVERSAL_PIVOT_SCOUT"
+    if _q2_pending_momentum_eligible(near_miss, config):
+        return "Q2_PENDING_MOMENTUM"
+    if _q3_to_q1_confirmation_eligible(near_miss, config):
+        return "Q3_TO_Q1_CONFIRMATION"
+    if _q1_rr_gap_scout_eligible(near_miss, config):
+        return "Q1_RR_GAP_SCOUT"
+    if _high_score_long_offset_probe_eligible(normalized_symbol, near_miss, config):
+        return "HIGH_SCORE_LONG_OFFSET_PROBE"
+    if _fib_continuation_scout_eligible(near_miss, config):
+        return "FIB_CONTINUATION_SCOUT"
+    if _watch_only_symbol_promotion_eligible(normalized_symbol, near_miss, config):
+        return "WATCH_ONLY_SYMBOL_PROMOTION_TEST"
     if _scout_only_high_score_eligible(normalized_symbol, near_miss, config):
         return "SCOUT_ONLY_HIGH_SCORE"
     if normalized_symbol in config.scout_micro_rr_gap_block_symbols and _has_rr_gap_reason(near_miss):
         return None
-    if float(near_miss.get("score") or 0.0) >= float(config.scout_micro_non_rr_min_score) and not _has_rr_gap_reason(near_miss):
-        return "NON_RR_HIGH_SCORE"
     return None
 
 
-def _targeted_long_offset_scout_eligible(symbol: str, near_miss: Mapping[str, Any], config: EntryChainConfig) -> bool:
+def scout_micro_entry_side(near_miss: Mapping[str, Any], mission: str | None) -> str:
+    side = str(near_miss.get("intended_side") or "").upper()
+    if mission == "REVERSAL_PIVOT_SCOUT":
+        if side == "LONG":
+            return "SHORT"
+        if side == "SHORT":
+            return "LONG"
+    return side
+
+
+def _reversal_pivot_scout_eligible(near_miss: Mapping[str, Any], config: EntryChainConfig) -> bool:
+    if not config.scout_micro_reversal_pivot_enabled:
+        return False
+    side = str(near_miss.get("intended_side") or "").upper()
+    if side not in {"LONG", "SHORT"}:
+        return False
+    if float(near_miss.get("score") or 0.0) < float(config.scout_micro_reversal_pivot_min_score):
+        return False
+    if decision_quadrant(near_miss, config) not in {"Q1", "Q2", "Q3"}:
+        return False
+    if not _has_exhaustion_or_opposition_warning(near_miss):
+        return False
+    return (
+        _component_point(near_miss, "flow_cvd_confirmation") <= float(config.scout_micro_reversal_pivot_max_cvd_score)
+        or _component_point(near_miss, "cci_momentum_quality") <= float(config.scout_micro_reversal_pivot_max_cci_score)
+    )
+
+
+def _has_exhaustion_or_opposition_warning(near_miss: Mapping[str, Any]) -> bool:
+    if "FIB_EXTENSION_EXHAUSTION_BLOCK" in _near_miss_reasons(near_miss):
+        return True
+    diagnostics = near_miss.get("diagnostics", {})
+    if not isinstance(diagnostics, Mapping):
+        return False
+    rr = diagnostics.get("risk_reward_geometry", {})
+    if not isinstance(rr, Mapping):
+        return False
+    return str(rr.get("rr_zero_reason") or "").upper() == "OPPOSITION_STRUCTURE_TOO_CLOSE"
+
+
+def _high_score_long_offset_probe_eligible(symbol: str, near_miss: Mapping[str, Any], config: EntryChainConfig) -> bool:
     if symbol not in config.scout_micro_targeted_long_symbols:
+        return False
+    if decision_quadrant(near_miss, config) not in (config.scout_micro_high_score_long_offset_quadrants or ("Q1",)):
         return False
     if str(near_miss.get("intended_side") or "").upper() != "LONG":
         return False
@@ -403,9 +1165,39 @@ def _targeted_long_offset_scout_eligible(symbol: str, near_miss: Mapping[str, An
     if "SIDE_THRESHOLD_OFFSET_LONG_10.00" not in reasons and "TARGETED_LONG_OFFSET" not in tag_list:
         return False
     return (
-        float(near_miss.get("score") or 0.0) >= float(config.scout_micro_targeted_long_min_score)
-        and _component_point(near_miss, "price_action_structure") >= float(config.scout_micro_targeted_long_min_pa_score)
-        and _component_point(near_miss, "risk_reward_geometry") >= float(config.scout_micro_targeted_long_min_rr_score)
+        float(near_miss.get("score") or 0.0) >= float(config.scout_micro_high_score_long_offset_min_score)
+        and _component_point(near_miss, "price_action_structure") >= float(config.scout_micro_high_score_long_offset_min_pa_score)
+        and _component_point(near_miss, "fibonacci_location") >= float(config.scout_micro_high_score_long_offset_min_fib_score)
+        and _component_point(near_miss, "flow_cvd_confirmation") >= float(config.scout_micro_high_score_long_offset_min_cvd_score)
+        and _component_point(near_miss, "risk_reward_geometry") >= float(config.scout_micro_high_score_long_offset_min_rr_score)
+    )
+
+
+def _fib_continuation_scout_eligible(near_miss: Mapping[str, Any], config: EntryChainConfig) -> bool:
+    if "FIB_EXTENSION_EXHAUSTION_BLOCK" not in _near_miss_reasons(near_miss):
+        return False
+    if str(near_miss.get("intended_side") or "").upper() not in {"LONG", "SHORT"}:
+        return False
+    return (
+        float(near_miss.get("score") or 0.0) >= float(config.scout_micro_fib_continuation_min_score)
+        and _component_point(near_miss, "trend_ema_context") >= float(config.scout_micro_fib_continuation_min_ema_score)
+        and _component_point(near_miss, "flow_cvd_confirmation") >= float(config.scout_micro_fib_continuation_min_cvd_score)
+        and _component_point(near_miss, "price_action_structure") >= float(config.scout_micro_fib_continuation_min_pa_score)
+    )
+
+
+def _watch_only_symbol_promotion_eligible(symbol: str, near_miss: Mapping[str, Any], config: EntryChainConfig) -> bool:
+    if symbol not in config.watch_only_symbols:
+        return False
+    if "SYMBOL_WATCH_ONLY" not in _near_miss_reasons(near_miss):
+        return False
+    if float(near_miss.get("score") or 0.0) < float(config.scout_micro_watch_only_promotion_min_score):
+        return False
+    probe_conditions = config.probe_conditions if isinstance(config.probe_conditions, Mapping) else {}
+    return (
+        _component_point(near_miss, "fibonacci_location") >= float(probe_conditions.get("min_fib_score", config.scout_micro_scout_only_min_fib_score))
+        and _component_point(near_miss, "price_action_structure") >= float(probe_conditions.get("min_pa_score", config.scout_micro_scout_only_min_pa_score))
+        and _component_point(near_miss, "risk_reward_geometry") >= float(probe_conditions.get("min_rr_score", config.scout_micro_scout_only_min_rr_score))
     )
 
 
@@ -443,6 +1235,30 @@ def _scout_micro_cooldown_reason(
     return None
 
 
+def _scout_micro_mission_stop_cooldown_reason(
+    mission: str,
+    config: EntryChainConfig,
+    scout_paper: PaperTradingLedger,
+    timestamp: int | None,
+) -> str | None:
+    if not config.scout_micro_mission_stop_circuit_enabled or timestamp is None:
+        return None
+    required = max(1, int(config.scout_micro_mission_stop_circuit_count))
+    since_ts = int(timestamp) - max(1, int(config.scout_micro_mission_stop_circuit_hours)) * 3600
+    rows = [
+        row
+        for row in scout_paper.recent_closed_trades_all(since_ts=since_ts, until_ts=int(timestamp))
+        if str(row.get("scout_mission") or "") == mission
+    ]
+    rows.sort(key=lambda row: int(row.get("timestamp") or 0), reverse=True)
+    recent = rows[:required]
+    if len(recent) < required:
+        return None
+    if all(row.get("reason") == "INITIAL_STOP_HIT" for row in recent):
+        return f"SCOUT_MICRO_MISSION_INITIAL_STOP_CIRCUIT_{mission}"
+    return None
+
+
 def _has_rr_gap_reason(near_miss: Mapping[str, Any]) -> bool:
     return any("_BELOW_RISK_REWARD_GEOMETRY" in reason for reason in _near_miss_reasons(near_miss))
 
@@ -459,6 +1275,235 @@ def _component_point(near_miss: Mapping[str, Any], component: str) -> float:
     return float(points.get(component) or 0.0)
 
 
+def quadrant_axes(payload: Mapping[str, Any], config: EntryChainConfig) -> tuple[bool, bool]:
+    trend_structure_ok = (
+        _component_point(payload, "trend_ema_context") >= float(config.quadrant_trend_ema_min)
+        and _component_point(payload, "price_action_structure") >= float(config.quadrant_price_action_min)
+    )
+    flow_momentum_ok = (
+        _component_point(payload, "flow_cvd_confirmation") >= float(config.quadrant_flow_cvd_min)
+        and _component_point(payload, "cci_momentum_quality") >= float(config.quadrant_cci_min)
+    )
+    return trend_structure_ok, flow_momentum_ok
+
+
+def decision_quadrant(payload: Mapping[str, Any], config: EntryChainConfig) -> str:
+    trend_structure_ok, flow_momentum_ok = quadrant_axes(payload, config)
+    if trend_structure_ok and flow_momentum_ok:
+        return "Q1"
+    if trend_structure_ok:
+        return "Q2"
+    if flow_momentum_ok:
+        return "Q3"
+    return "Q4"
+
+
+def annotate_quadrant(payload: Mapping[str, Any], config: EntryChainConfig) -> dict[str, Any]:
+    enriched = dict(payload)
+    trend_structure_ok, flow_momentum_ok = quadrant_axes(enriched, config)
+    enriched["trend_structure_axis_ok"] = trend_structure_ok
+    enriched["flow_momentum_axis_ok"] = flow_momentum_ok
+    enriched["quadrant"] = decision_quadrant(enriched, config)
+    return enriched
+
+
+def _q1_rr_gap_scout_eligible(near_miss: Mapping[str, Any], config: EntryChainConfig) -> bool:
+    if not config.scout_micro_q1_rr_gap_enabled:
+        return False
+    if decision_quadrant(near_miss, config) != "Q1":
+        return False
+    side = str(near_miss.get("intended_side") or "").upper()
+    return (
+        side in {"LONG", "SHORT"}
+        and float(near_miss.get("score") or 0.0) >= float(config.scout_micro_q1_rr_gap_min_score)
+        and _component_point(near_miss, "flow_cvd_confirmation") >= float(config.scout_micro_q1_rr_gap_min_cvd_score)
+        and _has_rr_gap_reason(near_miss)
+    )
+
+
+def _q3_to_q1_confirmation_eligible(near_miss: Mapping[str, Any], config: EntryChainConfig) -> bool:
+    if not config.scout_micro_q3_to_q1_enabled:
+        return False
+    tags = near_miss.get("scout_tags", [])
+    tag_list = [str(item) for item in tags] if isinstance(tags, list) else [str(tags)]
+    return "Q3_TO_Q1_CONFIRMED" in tag_list
+
+
+def _q2_pending_momentum_eligible(near_miss: Mapping[str, Any], config: EntryChainConfig) -> bool:
+    if not config.scout_micro_q2_pending_enabled:
+        return False
+    tags = near_miss.get("scout_tags", [])
+    tag_list = [str(item) for item in tags] if isinstance(tags, list) else [str(tags)]
+    return "Q2_PENDING_MOMENTUM_CONFIRMED" in tag_list
+
+
+def build_q3_pending_candidate(near_miss: Mapping[str, Any], config: EntryChainConfig, timestamp: int) -> dict[str, Any] | None:
+    if not config.scout_micro_q3_to_q1_enabled:
+        return None
+    if decision_quadrant(near_miss, config) != "Q3":
+        return None
+    side = str(near_miss.get("intended_side") or "").upper()
+    if side not in {"LONG", "SHORT"}:
+        return None
+    if float(near_miss.get("score") or 0.0) < float(config.scout_micro_q3_to_q1_min_score):
+        return None
+    if _component_point(near_miss, "flow_cvd_confirmation") < float(config.scout_micro_q3_to_q1_min_cvd_score):
+        return None
+    expires_at = int(timestamp) + max(1, int(config.scout_micro_q3_to_q1_confirm_bars)) * 900
+    return {
+        "symbol": str(near_miss.get("symbol") or "").strip().upper(),
+        "side": side,
+        "created_at": int(timestamp),
+        "expires_at": expires_at,
+        "source_score": float(near_miss.get("score") or 0.0),
+        "source_quadrant": "Q3",
+    }
+
+
+def build_q2_pending_candidate(near_miss: Mapping[str, Any], config: EntryChainConfig, timestamp: int) -> dict[str, Any] | None:
+    if not config.scout_micro_q2_pending_enabled:
+        return None
+    if decision_quadrant(near_miss, config) != "Q2":
+        return None
+    side = str(near_miss.get("intended_side") or "").upper()
+    if side not in {"LONG", "SHORT"}:
+        return None
+    if float(near_miss.get("score") or 0.0) < float(config.scout_micro_q2_pending_min_score):
+        return None
+    if _component_point(near_miss, "price_action_structure") < float(config.scout_micro_q2_pending_min_pa_score):
+        return None
+    expires_at = int(timestamp) + max(1, int(config.scout_micro_q2_pending_confirm_bars)) * 900
+    return {
+        "symbol": str(near_miss.get("symbol") or "").strip().upper(),
+        "side": side,
+        "created_at": int(timestamp),
+        "expires_at": expires_at,
+        "source_score": float(near_miss.get("score") or 0.0),
+        "source_quadrant": "Q2",
+    }
+
+
+def confirm_q3_to_q1_pending(
+    symbol: str,
+    near_miss: Mapping[str, Any],
+    config: EntryChainConfig,
+    pending: Mapping[str, Any] | None,
+    timestamp: int,
+) -> dict[str, Any] | None:
+    if not config.scout_micro_q3_to_q1_enabled or pending is None:
+        return None
+    if str(pending.get("source_quadrant") or "") != "Q3":
+        return None
+    if int(timestamp) > int(pending.get("expires_at") or 0):
+        return None
+    normalized_symbol = symbol.strip().upper()
+    if normalized_symbol != str(pending.get("symbol") or "").strip().upper():
+        return None
+    side = str(near_miss.get("intended_side") or "").upper()
+    if side != str(pending.get("side") or "").upper():
+        return None
+    if decision_quadrant(near_miss, config) != "Q1":
+        return None
+    if _component_point(near_miss, "price_action_structure") < float(config.scout_micro_q3_to_q1_confirm_pa_score):
+        return None
+    confirmed = dict(near_miss)
+    tags = confirmed.get("scout_tags", [])
+    tag_list = [str(item) for item in tags] if isinstance(tags, list) else [str(tags)]
+    confirmed["scout_tags"] = list(dict.fromkeys([*tag_list, "Q3_TO_Q1_CONFIRMED"]))
+    confirmed["q3_pending_source"] = dict(pending)
+    return confirmed
+
+
+def confirm_q2_to_q1_pending(
+    symbol: str,
+    near_miss: Mapping[str, Any],
+    config: EntryChainConfig,
+    pending: Mapping[str, Any] | None,
+    timestamp: int,
+) -> dict[str, Any] | None:
+    if not config.scout_micro_q2_pending_enabled or pending is None:
+        return None
+    if str(pending.get("source_quadrant") or "") != "Q2":
+        return None
+    if int(timestamp) > int(pending.get("expires_at") or 0):
+        return None
+    normalized_symbol = symbol.strip().upper()
+    if normalized_symbol != str(pending.get("symbol") or "").strip().upper():
+        return None
+    side = str(near_miss.get("intended_side") or "").upper()
+    if side != str(pending.get("side") or "").upper():
+        return None
+    if decision_quadrant(near_miss, config) != "Q1":
+        return None
+    if _component_point(near_miss, "cci_momentum_quality") < float(config.scout_micro_q2_pending_confirm_cci_score):
+        return None
+    confirmed = dict(near_miss)
+    tags = confirmed.get("scout_tags", [])
+    tag_list = [str(item) for item in tags] if isinstance(tags, list) else [str(tags)]
+    confirmed["scout_tags"] = list(dict.fromkeys([*tag_list, "Q2_PENDING_MOMENTUM_CONFIRMED"]))
+    confirmed["q2_pending_source"] = dict(pending)
+    return confirmed
+
+
+def load_quadrant_pending_state(path: Path) -> dict[str, dict[str, Any]]:
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, Mapping):
+        return {}
+    pending: dict[str, dict[str, Any]] = {}
+    for symbol, payload in data.items():
+        if isinstance(payload, Mapping):
+            pending[str(symbol).strip().upper()] = dict(payload)
+    return pending
+
+
+def write_quadrant_pending_state(path: Path, pending: Mapping[str, Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {str(symbol).strip().upper(): dict(value) for symbol, value in pending.items()}
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def experiment_entry_circuit_active(
+    *,
+    config: EntryChainConfig,
+    timestamp: int,
+    experiment_ledgers: Sequence[PaperTradingLedger],
+    daily_ledgers: Sequence[PaperTradingLedger],
+) -> bool:
+    war_fund_limit = float(config.experiment_war_fund_loss_limit)
+    daily_limit = float(config.experiment_daily_loss_limit)
+    if war_fund_limit < 0 and _experiment_pnl(experiment_ledgers) <= war_fund_limit:
+        return True
+    if daily_limit < 0 and _experiment_pnl(daily_ledgers, since_ts=_day_start(timestamp), until_ts=timestamp) <= daily_limit:
+        return True
+    return False
+
+
+def _experiment_pnl(
+    ledgers: Sequence[PaperTradingLedger],
+    *,
+    since_ts: int | None = None,
+    until_ts: int | None = None,
+) -> float:
+    total = 0.0
+    for ledger in ledgers:
+        for row in ledger.trade_events():
+            if row.get("experiment_id") != FOUR_QUADRANT_EXPERIMENT_ID:
+                continue
+            ts = int(row.get("timestamp") or 0)
+            if since_ts is not None and ts < since_ts:
+                continue
+            if until_ts is not None and ts > until_ts:
+                continue
+            total += float(row.get("margin_pnl") or row.get("net_pnl") or 0.0)
+    return total
+
+
+def _day_start(timestamp: int) -> int:
+    return int(timestamp) - (int(timestamp) % 86400)
+
+
 def build_scout_micro_payloads(
     *,
     symbol: str,
@@ -468,8 +1513,10 @@ def build_scout_micro_payloads(
     timestamp: int,
     mission: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    side = str(near_miss.get("intended_side") or "").upper()
-    notional = float(config.scout_micro_notional)
+    side = scout_micro_entry_side(near_miss, mission)
+    notional = float(config.scout_micro_reversal_pivot_notional if mission == "REVERSAL_PIVOT_SCOUT" else config.scout_micro_notional)
+    if mission == "HIGH_SCORE_LONG_OFFSET_PROBE" and symbol.strip().upper() in HIGH_BETA_SYMBOLS:
+        notional *= 0.5
     quantity = notional / float(price)
     entry_context = near_miss.get("entry_context", {})
     entry_context_payload = dict(entry_context) if isinstance(entry_context, Mapping) else {}
@@ -477,6 +1524,11 @@ def build_scout_micro_payloads(
     reasons = near_miss.get("reasons", [])
     reason_list = [str(item) for item in reasons] if isinstance(reasons, list) else [str(reasons)]
     mission_reason = f"SCOUT_MISSION_{mission}" if mission else "SCOUT_MISSION_UNCLASSIFIED"
+    audit_reasons = ["SCOUT_MICRO", mission_reason, *reason_list]
+    if mission == "HIGH_SCORE_LONG_OFFSET_PROBE":
+        audit_reasons.append("LONG_OFFSET_Q1_PROBE")
+    if mission == "REVERSAL_PIVOT_SCOUT":
+        audit_reasons.append("REVERSAL_PIVOT_SIDE_FLIP")
     decision_payload = {
         "timestamp": timestamp,
         "symbol": symbol,
@@ -487,10 +1539,14 @@ def build_scout_micro_payloads(
         "notional_hint": notional,
         "max_symbol_exposure_pct": 0.0,
         "risk_allowed": True,
-        "reasons": ["SCOUT_MICRO", mission_reason, *reason_list],
+        "reasons": list(dict.fromkeys(audit_reasons)),
         "entry_context": entry_context_payload,
         "scout_micro": True,
         "scout_mission": mission,
+        "scout_tags": _scout_payload_tags(mission),
+        "experiment_id": FOUR_QUADRANT_EXPERIMENT_ID,
+        "entry_channel": f"scout_{str(mission or 'unknown').lower()}",
+        "source_quadrant": str(near_miss.get("quadrant") or decision_quadrant(near_miss, config)),
     }
     draft_payload = {
         "approved": True,
@@ -502,6 +1558,125 @@ def build_scout_micro_payloads(
         },
     }
     return decision_payload, draft_payload
+
+
+def _scout_payload_tags(mission: str | None) -> list[str]:
+    if mission == "HIGH_SCORE_LONG_OFFSET_PROBE":
+        return ["LONG_OFFSET_Q1_PROBE"]
+    if mission == "REVERSAL_PIVOT_SCOUT":
+        return ["REVERSAL_PIVOT_SIDE_FLIP"]
+    return []
+
+
+def should_open_mirror_ab_sample(
+    near_miss: Mapping[str, Any] | None,
+    config: EntryChainConfig,
+    ab_ledgers: Mapping[str, PaperTradingLedger],
+) -> bool:
+    if not config.mirror_ab_enabled or near_miss is None:
+        return False
+    if float(near_miss.get("score") or 0.0) < float(config.mirror_ab_min_score):
+        return False
+    side = str(near_miss.get("intended_side") or "").upper()
+    if side not in {"LONG", "SHORT"}:
+        return False
+    if float(near_miss.get("entry_price") or 0.0) <= 0.0:
+        return False
+    reasons = _near_miss_reasons(near_miss)
+    allowed = tuple(str(item).upper() for item in config.mirror_ab_allowed_reasons)
+    reason_allowed = bool(allowed) and any(any(pattern in reason.upper() for pattern in allowed) for reason in reasons)
+    q1_watch_allowed = (
+        config.mirror_ab_include_q1_watch
+        and str(near_miss.get("action") or "").upper() == "WATCH"
+        and decision_quadrant(near_miss, config) == "Q1"
+    )
+    if not reason_allowed and not q1_watch_allowed:
+        return False
+    symbol = str(near_miss.get("symbol") or "").strip().upper()
+    return bool(symbol) and all(symbol not in ledger.positions for ledger in ab_ledgers.values())
+
+
+def build_mirror_ab_payloads(
+    *,
+    symbol: str,
+    near_miss: Mapping[str, Any],
+    price: float,
+    config: EntryChainConfig,
+    timestamp: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    side = str(near_miss.get("intended_side") or "").upper()
+    notional = float(config.mirror_ab_notional)
+    quantity = notional / float(price)
+    entry_context = near_miss.get("entry_context", {})
+    entry_context_payload = dict(entry_context) if isinstance(entry_context, Mapping) else {}
+    entry_context_payload["side"] = side
+    reasons = _near_miss_reasons(near_miss)
+    source_reason = str(near_miss.get("primary_reason") or next((reason for reason in reasons if reason != "FIB_PA_ARCHITECTURE_WEIGHTS"), "UNKNOWN"))
+    source_quadrant = str(near_miss.get("quadrant") or decision_quadrant(near_miss, config))
+    decision_payload = {
+        "timestamp": timestamp,
+        "symbol": symbol,
+        "action": "PROBE",
+        "side": side,
+        "score": float(near_miss.get("score") or 0.0),
+        "leverage": 1,
+        "notional_hint": notional,
+        "max_symbol_exposure_pct": 0.0,
+        "risk_allowed": True,
+        "reasons": ["MIRROR_AB_SAMPLE", f"MIRROR_AB_SOURCE_{source_reason}", *reasons],
+        "entry_context": entry_context_payload,
+        "mirror_ab_sample": True,
+        "scout_mission": "MIRROR_AB_SAMPLE",
+        "experiment_id": FOUR_QUADRANT_EXPERIMENT_ID,
+        "entry_channel": "mirror_ab_sample",
+        "source_quadrant": source_quadrant,
+    }
+    draft_payload = {
+        "approved": True,
+        "reason": "MIRROR_AB_SAMPLE",
+        "request": {
+            "position_side": side,
+            "quantity": quantity,
+            "price": float(price),
+        },
+    }
+    return decision_payload, draft_payload
+
+
+def update_mirror_ab_ledgers(
+    *,
+    ab_ledgers: Mapping[str, PaperTradingLedger],
+    symbol: str,
+    near_miss: Mapping[str, Any] | None,
+    config: EntryChainConfig,
+    kline: Mapping[str, Any],
+    timestamp: int,
+) -> list[str]:
+    normalized_symbol = symbol.strip().upper()
+    if not should_open_mirror_ab_sample(near_miss, config, ab_ledgers):
+        return []
+    near_miss_price = near_miss.get("entry_price") if near_miss is not None else None
+    price = float(kline.get("close") or near_miss_price or 0.0)
+    if price <= 0.0:
+        return []
+    decision_payload, draft_payload = build_mirror_ab_payloads(
+        symbol=normalized_symbol,
+        near_miss=near_miss or {},
+        price=price,
+        config=config,
+        timestamp=timestamp,
+    )
+    events: list[str] = []
+    for name, ledger in sorted(ab_ledgers.items()):
+        ledger_events = ledger.on_decision(
+            symbol=normalized_symbol,
+            decision_payload=decision_payload,
+            draft_payload=draft_payload,
+            kline=kline,
+            timestamp=timestamp,
+        )
+        events.extend(f"{name}:{event}" for event in ledger_events)
+    return events
 
 
 def update_scout_micro_ledger(
@@ -1094,6 +2269,7 @@ def public_market_context(
         long_chase_risk_active=long_chase_risk_active(bars_15m, atr_pct_value),
         long_low_liquidity_session_active=long_low_liquidity_session_active(current_bar.timestamp, bars_15m),
         long_cvd_weak_active=scores.get("cvd_flow", 0.0) < config.long_cvd_weak_threshold,
+        extreme_position_ratio=extreme_position_ratio(bars_15m),
         current_volatility_scale=max(0.1, atr_pct_value / 0.01),
         normal_volatility_scale=1.0,
     )
@@ -1210,6 +2386,7 @@ def context_snapshot(context: EntryChainContext) -> dict[str, Any]:
         "long_chase_risk_active": context.long_chase_risk_active,
         "long_low_liquidity_session_active": context.long_low_liquidity_session_active,
         "long_cvd_weak_active": context.long_cvd_weak_active,
+        "extreme_position_ratio": context.extreme_position_ratio,
     }
 
 
@@ -1525,6 +2702,12 @@ def render_scout_micro_log(symbol: str, events: Sequence[str]) -> list[str]:
     if not events:
         return []
     return [f"   SCOUT_MICRO账本: symbol={symbol}, event={event}" for event in events]
+
+
+def render_mirror_ab_log(symbol: str, events: Sequence[str]) -> list[str]:
+    if not events:
+        return []
+    return [f"   MIRROR_AB账本: symbol={symbol}, event={event}" for event in events]
 
 
 def warmup_summary(

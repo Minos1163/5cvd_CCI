@@ -17,6 +17,7 @@ class DecisionAuditWriter:
         self._drafts = (self.output_dir / "order_drafts.jsonl").open("a", encoding="utf-8")
         self._attribution = (self.output_dir / "attribution.jsonl").open("a", encoding="utf-8")
         self._near_misses = (self.output_dir / "near_misses.jsonl").open("a", encoding="utf-8")
+        self._scout_decisions = (self.output_dir / "scout_decisions.jsonl").open("a", encoding="utf-8")
         self._gate_rejections = (self.output_dir / "gate_rejections.jsonl").open("a", encoding="utf-8")
         gate_csv_path = self.output_dir / "gate_rejections.csv"
         needs_header = not gate_csv_path.exists() or gate_csv_path.stat().st_size == 0
@@ -59,11 +60,16 @@ class DecisionAuditWriter:
         self._near_misses.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
         self._near_misses.flush()
 
+    def write_scout_decision(self, row: Mapping[str, object]) -> None:
+        self._scout_decisions.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
+        self._scout_decisions.flush()
+
     def close(self) -> None:
         self._decisions.close()
         self._drafts.close()
         self._attribution.close()
         self._near_misses.close()
+        self._scout_decisions.close()
         self._gate_rejections.close()
         self._gate_csv.close()
 

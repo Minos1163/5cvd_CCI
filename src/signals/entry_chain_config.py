@@ -65,10 +65,88 @@ class EntryChainConfig:
     scout_micro_scout_only_min_fib_score: float = 12.0
     scout_micro_scout_only_min_pa_score: float = 10.0
     scout_micro_scout_only_min_rr_score: float = 4.0
+    scout_micro_high_score_long_offset_min_score: float = 85.0
+    scout_micro_high_score_long_offset_min_pa_score: float = 18.0
+    scout_micro_high_score_long_offset_min_fib_score: float = 15.0
+    scout_micro_high_score_long_offset_min_cvd_score: float = 14.0
+    scout_micro_high_score_long_offset_min_rr_score: float = 2.0
+    scout_micro_high_score_long_offset_quadrants: tuple[str, ...] = ("Q1", "Q3")
+    scout_micro_fib_continuation_min_score: float = 82.0
+    scout_micro_fib_continuation_min_ema_score: float = 16.0
+    scout_micro_fib_continuation_min_cvd_score: float = 14.0
+    scout_micro_fib_continuation_min_pa_score: float = 18.0
+    scout_micro_watch_only_promotion_min_score: float = 85.0
+    quadrant_trend_ema_min: float = 15.0
+    quadrant_price_action_min: float = 10.0
+    quadrant_flow_cvd_min: float = 14.0
+    quadrant_cci_min: float = 7.0
+    scout_micro_q1_rr_gap_enabled: bool = False
+    scout_micro_q1_rr_gap_min_score: float = 82.0
+    scout_micro_q1_rr_gap_min_cvd_score: float = 0.0
+    scout_micro_q3_to_q1_enabled: bool = False
+    scout_micro_q3_to_q1_min_score: float = 85.0
+    scout_micro_q3_to_q1_min_cvd_score: float = 16.0
+    scout_micro_q3_to_q1_confirm_bars: int = 3
+    scout_micro_q3_to_q1_confirm_pa_score: float = 15.0
+    scout_micro_q2_pending_enabled: bool = False
+    scout_micro_q2_pending_min_score: float = 70.0
+    scout_micro_q2_pending_min_pa_score: float = 18.0
+    scout_micro_q2_pending_confirm_bars: int = 6
+    scout_micro_q2_pending_confirm_cci_score: float = 9.0
+    quadrant_pending_state_enabled: bool = True
+    dry_run_q1_trend_launch_enabled: bool = False
+    dry_run_q1_trend_launch_min_score: float = 82.0
+    dry_run_q1_trend_launch_min_pa_score: float = 18.0
+    dry_run_q1_trend_launch_min_fib_score: float = 15.0
+    dry_run_q1_trend_launch_min_cvd_score: float = 16.0
+    dry_run_q1_trend_launch_min_rr_score: float = 0.5
+    dry_run_q1_trend_launch_extreme_ratio_min: float = 0.20
+    dry_run_q1_trend_launch_extreme_ratio_max: float = 0.80
+    dry_run_q1_trend_launch_base_exposure_pct: float = 0.025
+    dry_run_q1_trend_launch_exit_mode: str = "trend_capture"
+    dry_run_q1_trend_launch_allow_degraded_data: bool = False
+    mirror_ab_enabled: bool = False
+    mirror_ab_payoff_pilot_enabled: bool = False
+    mirror_ab_payoff_early_breakeven_trigger_r: float = 1.0
+    mirror_ab_payoff_trend_trigger_r: float = 1.2
+    mirror_ab_min_score: float = 85.0
+    mirror_ab_notional: float = 50.0
+    mirror_ab_allowed_reasons: tuple[str, ...] = ()
+    mirror_ab_include_q1_watch: bool = False
+    paper_ab_auto_report_enabled: bool = False
+    paper_ab_report_closed_trade_interval: int = 20
+    paper_ab_auto_switch_enabled: bool = False
+    paper_ab_auto_switch_min_reports: int = 2
+    paper_ab_auto_switch_min_closed_trades: int = 40
+    paper_ab_auto_switch_payoff_mult: float = 1.3
+    dry_run_q1_green_channel_enabled: bool = False
+    dry_run_q1_green_channel_notional_mult: float = 0.5
+    dry_run_q1_green_channel_min_score: float = 85.0
+    dry_run_q1_green_channel_min_pa_score: float = 18.0
+    dry_run_q1_green_channel_min_cvd_score: float = 16.0
+    dry_run_q1_green_channel_base_exposure_pct: float = 0.05
+    dry_run_q1_green_channel_exit_mode: str = "trend_capture"
+    experiment_war_fund_loss_limit: float = -150.0
+    experiment_daily_loss_limit: float = -200.0
     scout_micro_same_side_cooldown_hours: int = 2
     scout_micro_initial_stop_cooldown_hours: int = 6
+    scout_micro_mission_stop_circuit_enabled: bool = False
+    scout_micro_mission_stop_circuit_count: int = 3
+    scout_micro_mission_stop_circuit_hours: int = 12
+    scout_micro_allow_degraded_data: bool = False
+    scout_micro_reversal_pivot_enabled: bool = False
+    scout_micro_reversal_pivot_min_score: float = 70.0
+    scout_micro_reversal_pivot_max_cvd_score: float = 16.0
+    scout_micro_reversal_pivot_max_cci_score: float = 10.0
+    scout_micro_reversal_pivot_notional: float = 25.0
     scout_micro_notional: float = 50.0
     scout_micro_leverage: int = 1
+    paper_exit_mode: str = "legacy"
+    paper_exit_trend_trigger_r: float = 1.5
+    paper_exit_trailing_r_mult: float = 1.0
+    scout_micro_exit_mode: str = "legacy"
+    scout_micro_exit_trend_trigger_r: float = 1.5
+    scout_micro_exit_trailing_r_mult: float = 1.0
     dry_run_symbols: tuple[str, ...] = ()
     dry_run_symbol_source: str = "configured"
     dry_run_rank_start: int = 3
@@ -144,6 +222,8 @@ class EntryChainConfig:
             values["scout_micro_targeted_long_symbols"] = _normalize_symbols(values["scout_micro_targeted_long_symbols"])
         if "scout_micro_scout_only_symbols" in values:
             values["scout_micro_scout_only_symbols"] = _normalize_symbols(values["scout_micro_scout_only_symbols"])
+        if "mirror_ab_allowed_reasons" in values:
+            values["mirror_ab_allowed_reasons"] = _normalize_strings(values["mirror_ab_allowed_reasons"])
         if "dry_run_symbols" in values:
             values["dry_run_symbols"] = _normalize_symbols(values["dry_run_symbols"])
         return cls(**values)
@@ -158,3 +238,7 @@ def load_entry_chain_config(path: str | Path) -> EntryChainConfig:
 
 def _normalize_symbols(values: Any) -> tuple[str, ...]:
     return tuple(symbol for item in values if (symbol := str(item).strip().upper()))
+
+
+def _normalize_strings(values: Any) -> tuple[str, ...]:
+    return tuple(value for item in values if (value := str(item).strip().upper()))

@@ -53,6 +53,7 @@ class EntryChainContext:
     long_chase_risk_active: bool = False
     long_low_liquidity_session_active: bool = False
     long_cvd_weak_active: bool = False
+    extreme_position_ratio: float = 0.5
 
     def with_updates(self, **updates: Any) -> "EntryChainContext":
         return replace(self, **updates)
