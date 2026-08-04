@@ -1,9 +1,9 @@
 # AI300 2026-07-20 日内日志复盘与四象限分区策略建议
 
-**提交对象:** DeepSeek 评审  
-**分析窗口:** 2026-07-20 00:00:00 至 18:45:05，北京时间。  
-**运行模式:** VPS dry-run，`target_tier=aggressive`。  
-**数据来源:** `logs/2026-07/2026-07-20/decisions.jsonl`、`near_misses.jsonl`、`order_drafts.jsonl`、`paper_trades.jsonl`、`scout_micro/paper_trades.jsonl`、`paper_ab/*`、`summary.json`、`paper_summary.json`。  
+**提交对象:** DeepSeek 评审
+**分析窗口:** 2026-07-20 00:00:00 至 18:45:05，北京时间。
+**运行模式:** VPS dry-run，`target_tier=aggressive`。
+**数据来源:** `logs/2026-07/2026-07-20/decisions.jsonl`、`near_misses.jsonl`、`order_drafts.jsonl`、`paper_trades.jsonl`、`scout_micro/paper_trades.jsonl`、`paper_ab/*`、`summary.json`、`paper_summary.json`。
 **重要口径:** 本报告只分析 dry-run/paper ledger，不构成投资建议；今日主账本、SCOUT 与 A/B paper ledger 均无成交样本，因此不能用今天数据判断出场模式优劣。
 
 ---

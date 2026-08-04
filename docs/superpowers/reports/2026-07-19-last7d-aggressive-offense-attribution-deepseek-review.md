@@ -1,10 +1,10 @@
 # AI300 近 7 天 Aggressive Dry-Run 进攻态势归因报告
 
-**提交对象:** DeepSeek 评审  
-**分析窗口:** 2026-07-13 11:00:00 至 2026-07-19 当前日志，北京时间。  
-**核心问题:** Claude 上轮 Task A-E 是否完全执行到位；开启 aggressive / 扩大盈利点后，为什么 dry-run 仍没有积极结果；下一轮应往什么方向优化，才能在受控风险下增加可开仓、可盈利样本。  
-**数据来源:** `logs/2026-07/2026-07-13` 至 `logs/2026-07/2026-07-19` 下 `decisions.jsonl`、`near_misses.jsonl`、`paper_trades.jsonl`、`scout_micro/paper_trades.jsonl`、`summary.json`、`paper_summary.json`。  
-**辅助产物:** `reports/structured_offense/2026-07-19-*`。  
+**提交对象:** DeepSeek 评审
+**分析窗口:** 2026-07-13 11:00:00 至 2026-07-19 当前日志，北京时间。
+**核心问题:** Claude 上轮 Task A-E 是否完全执行到位；开启 aggressive / 扩大盈利点后，为什么 dry-run 仍没有积极结果；下一轮应往什么方向优化，才能在受控风险下增加可开仓、可盈利样本。
+**数据来源:** `logs/2026-07/2026-07-13` 至 `logs/2026-07/2026-07-19` 下 `decisions.jsonl`、`near_misses.jsonl`、`paper_trades.jsonl`、`scout_micro/paper_trades.jsonl`、`summary.json`、`paper_summary.json`。
+**辅助产物:** `reports/structured_offense/2026-07-19-*`。
 **重要口径:** 本报告只分析 dry-run / paper ledger，不构成投资建议；现有回放脚本 CLI 只支持日期级窗口，因此 7-13 11:00 的严格统计以本次直接解析日志为准，回放报告作为辅助证据。
 
 ---
@@ -247,8 +247,8 @@ aggressive 模式没有把系统变成“能积极开仓的策略”，只是让
 
 ### 方向一：建立 High-Score LONG Micro-Probe
 
-**假设:** `score>=85` 且被 `SIDE_THRESHOLD_OFFSET_LONG_10.00` 拦截的 LONG 样本，比全量 LONG offset 样本质量显著更高。  
-**证据:** 高分 LONG offset 10 条 `avg_blended_final_r=0.8622`、TP2 触达率 60%；全量 LONG offset 2,502 条 `avg_blended_final_r=-0.0647`。  
+**假设:** `score>=85` 且被 `SIDE_THRESHOLD_OFFSET_LONG_10.00` 拦截的 LONG 样本，比全量 LONG offset 样本质量显著更高。
+**证据:** 高分 LONG offset 10 条 `avg_blended_final_r=0.8622`、TP2 触达率 60%；全量 LONG offset 2,502 条 `avg_blended_final_r=-0.0647`。
 **建议:** 不下调全局 LONG offset。新增一个只走 50-100 USDT paper / micro 的 `HIGH_SCORE_LONG_OFFSET_PROBE` mission。
 
 准入建议：
@@ -270,8 +270,8 @@ high beta symbol: notional 乘以 0.5
 
 ### 方向二：拆分 Fib exhaustion 为“硬拦截”和“顺势延续降级”
 
-**假设:** `FIB_EXTENSION_EXHAUSTION_BLOCK` 中混有趋势延续机会。  
-**证据:** 718 条日期级回放 `avg_blended_final_r=0.2211`，TP2 触达率 36.07%。  
+**假设:** `FIB_EXTENSION_EXHAUSTION_BLOCK` 中混有趋势延续机会。
+**证据:** 718 条日期级回放 `avg_blended_final_r=0.2211`，TP2 触达率 36.07%。
 **建议:** 不再一律 hard block。拆成两类：
 
 ```text
@@ -285,8 +285,8 @@ high beta symbol: notional 乘以 0.5
 
 ### 方向三：停止泛化 NON_RR_HIGH_SCORE，改成子任务白名单
 
-**假设:** 当前 `NON_RR_HIGH_SCORE` 太宽，导致 SCOUT 仍在消耗负期望样本。  
-**证据:** 近 7 天 SCOUT 11 笔全部为 `NON_RR_HIGH_SCORE`，PF 0.3009；ADA 4 笔最大 favorable R 只有 0.8389R。  
+**假设:** 当前 `NON_RR_HIGH_SCORE` 太宽，导致 SCOUT 仍在消耗负期望样本。
+**证据:** 近 7 天 SCOUT 11 笔全部为 `NON_RR_HIGH_SCORE`，PF 0.3009；ADA 4 笔最大 favorable R 只有 0.8389R。
 **建议:** `NON_RR_HIGH_SCORE` 不应作为泛化 mission 继续开仓，只保留三个明确子任务：
 
 ```text
@@ -301,7 +301,7 @@ WATCH_ONLY_SYMBOL_PROMOTION_TEST
 
 ### 方向四：补齐 Paper Exit A/B，主账本不要直接切 trend_capture
 
-**假设:** 当前无法证明 trend_capture 对主账本有效，因为主账本仍是 legacy，且近 7 天只有 1 笔样本。  
+**假设:** 当前无法证明 trend_capture 对主账本有效，因为主账本仍是 legacy，且近 7 天只有 1 笔样本。
 **建议:** 优先实现 Task E：对同一批入场并行维护 legacy / trend_capture 两套 paper 状态机。不要用 SCOUT 的负样本直接否定 trend_capture，因为 SCOUT 的入场池和主账本不同。
 
 验收标准：
@@ -317,8 +317,8 @@ trend_capture max drawdown 不显著劣化
 
 ### 方向五：补齐 net beta 后再谈仓位
 
-**假设:** 当前组合级低敞口来自低开仓率，不代表高仓位安全。  
-**证据:** 最新 summary 仍为 `net_beta_exposure_model=not_configured`，open positions 多数时候为 0。  
+**假设:** 当前组合级低敞口来自低开仓率，不代表高仓位安全。
+**证据:** 最新 summary 仍为 `net_beta_exposure_model=not_configured`，open positions 多数时候为 0。
 **建议:** 完成 Task C，但只作为观测模型接入 summary，不直接进入 live hard block。等模型输出稳定后，再评审是否进入 `hard_block_reason`。
 
 ---

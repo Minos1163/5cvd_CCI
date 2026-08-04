@@ -1,9 +1,9 @@
 # AI300 07-27 15:00 后四象限进攻失效归因报告
 
-**提交对象:** Claude 复核  
-**分析窗口:** 2026-07-27 15:00 至 2026-08-02 20:30 左右，北京时间。  
-**运行模式:** dry-run / paper ledger / SCOUT micro / paper A-B mirror。  
-**数据来源:** `logs/2026-07/2026-07-27` 至 `logs/2026-08/2026-08-02` 下的 `decisions.jsonl`、`near_misses.jsonl`、`scout_decisions.jsonl`、`paper_trades.jsonl`、`scout_micro/paper_trades.jsonl`、`paper_ab/*/paper_trades.jsonl`、`paper_ab/reports/*`、`summary.json`、`paper_summary.json`。  
+**提交对象:** Claude 复核
+**分析窗口:** 2026-07-27 15:00 至 2026-08-02 20:30 左右，北京时间。
+**运行模式:** dry-run / paper ledger / SCOUT micro / paper A-B mirror。
+**数据来源:** `logs/2026-07/2026-07-27` 至 `logs/2026-08/2026-08-02` 下的 `decisions.jsonl`、`near_misses.jsonl`、`scout_decisions.jsonl`、`paper_trades.jsonl`、`scout_micro/paper_trades.jsonl`、`paper_ab/*/paper_trades.jsonl`、`paper_ab/reports/*`、`summary.json`、`paper_summary.json`。
 **重要口径:** 本报告中的“拐点”和 near-miss 后验收益均为事后复盘，不能直接作为 live 可见信号。任何进攻策略修改仍必须先在 dry-run / paper / SCOUT 层验证，禁止引入未来函数、同根 K 线乐观成交或实盘配置越级变更。
 
 ---

@@ -545,4 +545,3 @@ Expected: both `Test-Path` calls print `True`; `rg` finds the addendum.
 - Main-account `trend_capture` A/B: requires behavior/config change and should be reviewed before deployment.
 - Dynamic symbol pool mutation: requires explicit promotion/demotion policy approval.
 - `net_beta_exposure_model`: should be a separate risk-model implementation plan with tests and stress fixtures.
-

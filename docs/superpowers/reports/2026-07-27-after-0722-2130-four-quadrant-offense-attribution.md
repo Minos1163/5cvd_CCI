@@ -1,9 +1,9 @@
 # AI300 07-22 21:30 后四象限进攻失效归因报告
 
-**提交对象:** DeepSeek / Claude 复核  
-**分析窗口:** 2026-07-22 21:30 至 2026-07-27 约 11:15，北京时间。  
-**运行模式:** dry-run / paper ledger。  
-**数据来源:** `logs/2026-07/2026-07-22` 至 `logs/2026-07/2026-07-27` 下的 `decisions.jsonl`、`near_misses.jsonl`、`paper_trades.jsonl`、`scout_micro/paper_trades.jsonl`、`paper_ab/*/paper_trades.jsonl`、`summary.json`、`paper_summary.json`。  
+**提交对象:** DeepSeek / Claude 复核
+**分析窗口:** 2026-07-22 21:30 至 2026-07-27 约 11:15，北京时间。
+**运行模式:** dry-run / paper ledger。
+**数据来源:** `logs/2026-07/2026-07-22` 至 `logs/2026-07/2026-07-27` 下的 `decisions.jsonl`、`near_misses.jsonl`、`paper_trades.jsonl`、`scout_micro/paper_trades.jsonl`、`paper_ab/*/paper_trades.jsonl`、`summary.json`、`paper_summary.json`。
 **重要口径:** 本报告中的 near-miss 未来收益与拐点统计均为事后归因，不可直接作为 live 信号；策略修改仍应先在 dry-run / paper / scout 层验证。
 
 ---
@@ -202,7 +202,7 @@ near-miss 仅出现在 Q1 与 Q3：
 
 ### 5.2 SCOUT
 
-窗口内 SCOUT 微仓为 0 开 / 0 平。  
+窗口内 SCOUT 微仓为 0 开 / 0 平。
 
 这是重要缺口：日志中 near-miss 已有 `scout_candidate=true` 与 `scout_tags=["TARGETED_LONG_OFFSET"]` 等字段，但 `scout_micro/paper_trades.jsonl` 没有新增事件。当前缺少“候选 -> mission 入场 -> 被拒绝原因”的完整链路日志，因此无法判断是任务门槛过窄、预算/熔断阻断，还是代码路径没有调用 SCOUT ledger。
 

@@ -1,10 +1,10 @@
 # AI300 四象限进攻策略 7/20 19:30 后 Dry-Run 执行效果归因报告
 
-**提交对象:** Claude 评审  
-**分析窗口:** 2026-07-20 19:30:00 至 2026-07-21 18:45:07，北京时间。  
-**运行模式:** `DRY-RUN`，`target_tier=aggressive`，`exchange_mutation_enabled=False`。  
-**运行配置:** `configs/entry_chain.dry_run_fib_pa_v1.json`。  
-**数据来源:** `logs/2026-07/2026-07-20`、`logs/2026-07/2026-07-21` 下的 `decisions.jsonl`、`near_misses.jsonl`、`paper_trades.jsonl`、`scout_micro/paper_trades.jsonl`、`paper_ab/*/paper_trades.jsonl`、`summary.json`、`paper_summary.json`。  
+**提交对象:** Claude 评审
+**分析窗口:** 2026-07-20 19:30:00 至 2026-07-21 18:45:07，北京时间。
+**运行模式:** `DRY-RUN`，`target_tier=aggressive`，`exchange_mutation_enabled=False`。
+**运行配置:** `configs/entry_chain.dry_run_fib_pa_v1.json`。
+**数据来源:** `logs/2026-07/2026-07-20`、`logs/2026-07/2026-07-21` 下的 `decisions.jsonl`、`near_misses.jsonl`、`paper_trades.jsonl`、`scout_micro/paper_trades.jsonl`、`paper_ab/*/paper_trades.jsonl`、`summary.json`、`paper_summary.json`。
 **重要口径:** 本报告仅基于 dry-run/paper ledger，不构成投资建议；日志按事件 Unix timestamp 过滤，不按目录名简单切分。
 
 ---
@@ -73,10 +73,10 @@
 
 主账本实际链路为：
 
-`evaluate_entry_chain(context, config)`  
-→ `apply_dry_run_decision_controls(...)`  
-→ `decision_payload = annotate_quadrant(decision_payload, config)`  
-→ `build_live_entry_order_draft(decision, ...)`  
+`evaluate_entry_chain(context, config)`
+→ `apply_dry_run_decision_controls(...)`
+→ `decision_payload = annotate_quadrant(decision_payload, config)`
+→ `build_live_entry_order_draft(decision, ...)`
 → `paper.on_decision(...)`
 
 关键点：
@@ -393,13 +393,13 @@ trend_capture 相对 legacy 改善了 `+0.139654 USDT`，但两个账本仍为�
 
 建议不要直接放开主账本全局开仓，而是执行三步：
 
-1. **Q1 reduced-notional 主账本 paper 绿色通道，仅 dry-run。**  
+1. **Q1 reduced-notional 主账本 paper 绿色通道，仅 dry-run。**
    条件建议：`quadrant=Q1`、`score>=85`、非黑名单、非 observation-only、`risk_reward_geometry>=1.0/8`、`price_action_structure>=18/22`、`flow_cvd_confirmation=18/18`。仓位为普通 PROBE 的 25%-50%。
 
-2. **A/B 样本按象限分桶。**  
+2. **A/B 样本按象限分桶。**
    每笔 mirror A/B 写入 `source_quadrant`，报告按 Q1/Q2/Q3/Q4 输出 win rate、PF、平均 R、MFE/MAE。
 
-3. **Q4 出场保护先只做观察报告。**  
+3. **Q4 出场保护先只做观察报告。**
    对历史持仓回放：如果持仓后连续 2-3 根进入 Q4，比较“原出场”与“Q4 收紧/退出”的 PnL，确认无误后再接入纸面出场。
 
 ---

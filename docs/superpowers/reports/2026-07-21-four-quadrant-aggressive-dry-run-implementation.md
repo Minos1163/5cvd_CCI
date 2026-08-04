@@ -1,7 +1,7 @@
 # AI300 四象限激进 Dry-Run 实验框架实施报告
 
-**实施日期:** 2026-07-21  
-**范围:** 仅 dry-run / paper ledger / SCOUT / mirror A-B；未修改交易所 mutation 路径。  
+**实施日期:** 2026-07-21
+**范围:** 仅 dry-run / paper ledger / SCOUT / mirror A-B；未修改交易所 mutation 路径。
 **配置:** `configs/entry_chain.dry_run_fib_pa_v1.json`
 
 ---

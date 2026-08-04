@@ -29,9 +29,9 @@ Review window:
 
 Top 3 rejection reasons:
 
-1. 
-2. 
-3. 
+1.
+2.
+3.
 
 ## Abnormal Decisions
 

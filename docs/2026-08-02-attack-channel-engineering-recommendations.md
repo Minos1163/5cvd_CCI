@@ -588,7 +588,7 @@ def build_historical_reversal_pattern_db(scout_decisions_log: str) -> dict:
   当前 183/301 = 60.8% 匹配率
   需要验证：这个比例是否显著高于"随机游走下的理论匹配率"
   简化方法：对无信息的随机方向分配（50%基准）做二项检验
-  
+
   from scipy import stats
   n, k = 301, 183
   p_value = stats.binomtest(k, n, p=0.5, alternative='greater').pvalue

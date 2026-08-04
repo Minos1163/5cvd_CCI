@@ -1,9 +1,9 @@
 # AI300 当前四象限策略链路、门槛、仓位与风控说明
 
-**提交对象:** DeepSeek 评审  
-**分析时间:** 2026-07-21，北京时间  
-**日志口径:** 本地 `logs/2026-07/2026-07-21` 当前可读原始日志覆盖约北京时间 08:00:05 至 10:30:05；`runtime.out.00.log` 首行显示 UTC 00:00:05，即北京时间 08:00:05。若 VPS 上存在 00:00-07:59 北京时间日志但尚未同步到本机，本报告未包含该段原始决策。  
-**运行口径:** 今日 runtime header 显示 `config=configs/entry_chain.dry_run_fib_pa_v1.json`、`target_tier=aggressive`、`market_data_source=public-binance`、`exchange_mutation_enabled=False`。  
+**提交对象:** DeepSeek 评审
+**分析时间:** 2026-07-21，北京时间
+**日志口径:** 本地 `logs/2026-07/2026-07-21` 当前可读原始日志覆盖约北京时间 08:00:05 至 10:30:05；`runtime.out.00.log` 首行显示 UTC 00:00:05，即北京时间 08:00:05。若 VPS 上存在 00:00-07:59 北京时间日志但尚未同步到本机，本报告未包含该段原始决策。
+**运行口径:** 今日 runtime header 显示 `config=configs/entry_chain.dry_run_fib_pa_v1.json`、`target_tier=aggressive`、`market_data_source=public-binance`、`exchange_mutation_enabled=False`。
 **重要发现:** `deploy/systemd/ai300-dry-run.service` 与 `deploy/systemd/aibot.service` 仍写着 `configs/entry_chain.dry_run_highest_win.json`，但今日日志实际显示使用 `entry_chain.dry_run_fib_pa_v1.json`。请优先核对 VPS 服务文件与启动命令，避免本地部署文件、VPS 实际运行参数和日志口径不一致。
 
 ---

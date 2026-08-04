@@ -85,7 +85,7 @@ def test_paper_trading_ledger_trend_capture_trails_after_trigger_r(tmp_path):
 
 - [x] **Step 2: Run failing tests**
 
-Run: `pytest tests/test_paper_trading.py::test_paper_trading_ledger_trend_capture_trails_after_trigger_r -q`  
+Run: `pytest tests/test_paper_trading.py::test_paper_trading_ledger_trend_capture_trails_after_trigger_r -q`
 Expected: FAIL because `PaperExitConfig` does not exist.
 
 - [x] **Step 3: Implement minimal paper exit config**
@@ -125,7 +125,7 @@ else:
 
 - [x] **Step 4: Verify paper tests**
 
-Run: `pytest tests/test_paper_trading.py -q`  
+Run: `pytest tests/test_paper_trading.py -q`
 Expected: PASS.
 
 ---
@@ -189,7 +189,7 @@ scout_paper = PaperTradingLedger(output_dir / "scout_micro", state_dir=paper_sta
 
 - [x] **Step 5: Verify config and runner tests**
 
-Run: `pytest tests/test_entry_chain_config.py tests/test_dry_run_configs.py tests/test_live_dry_run.py -q`  
+Run: `pytest tests/test_entry_chain_config.py tests/test_dry_run_configs.py tests/test_live_dry_run.py -q`
 Expected: PASS.
 
 ---
@@ -241,7 +241,7 @@ Add the six exit config fields to `dry_run_assumptions(config)`.
 
 - [x] **Step 4: Verify**
 
-Run: `pytest tests/test_paper_trading.py tests/test_dry_run_summary.py tests/test_live_dry_run.py -q`  
+Run: `pytest tests/test_paper_trading.py tests/test_dry_run_summary.py tests/test_live_dry_run.py -q`
 Expected: PASS.
 
 ---

@@ -1,8 +1,8 @@
 # AI300 四象限 Dry-Run 缺口复核与落盘报告
 
-**分析窗口:** 2026-07-21 19:45:00 至 2026-07-22 当前日志，北京时间。  
-**运行模式:** dry-run / paper ledger。  
-**目标:** 复核昨日指出的 4 类缺口是否影响运行，并将 `A/B 自动报告`、`自动切换`、`mission 级三连止损熔断`、`显式策略规则`落盘。  
+**分析窗口:** 2026-07-21 19:45:00 至 2026-07-22 当前日志，北京时间。
+**运行模式:** dry-run / paper ledger。
+**目标:** 复核昨日指出的 4 类缺口是否影响运行，并将 `A/B 自动报告`、`自动切换`、`mission 级三连止损熔断`、`显式策略规则`落盘。
 
 ---
 
@@ -23,8 +23,8 @@
 | A/B legacy 平仓 | 7 |
 | A/B trend_capture 平仓 | 7 |
 
-主账本唯一平仓为 `INITIAL_STOP_HIT`，事件 PnL 合计约 `-0.8744`。  
-SCOUT 3 笔已平：`COST_BREAKEVEN_TIMEOUT=2`、`INITIAL_STOP_HIT=1`，事件 PnL 合计约 `-0.7153`。  
+主账本唯一平仓为 `INITIAL_STOP_HIT`，事件 PnL 合计约 `-0.8744`。
+SCOUT 3 笔已平：`COST_BREAKEVEN_TIMEOUT=2`、`INITIAL_STOP_HIT=1`，事件 PnL 合计约 `-0.7153`。
 A/B legacy 与 trend_capture 各 7 笔已平，trend_capture 略好但两者仍为负：legacy 约 `-1.6956`，trend_capture 约 `-1.5020`。
 
 主要拦截原因仍集中在：
@@ -39,16 +39,16 @@ A/B legacy 与 trend_capture 各 7 笔已平，trend_capture 略好但两者仍�
 
 ## 2. 缺陷归因
 
-1. **A/B 有样本，但旧代码没有自动报告。**  
+1. **A/B 有样本，但旧代码没有自动报告。**
    日志目录下没有 `paper_ab/reports/`，`summary.json` 中也没有 `paper_ab_auto_report_enabled`、`paper_ab_auto_switch_enabled`、`effective_paper_exit_mode` 字段。结果是 A/B 账本虽然在运行，但不会在满 20 笔后生成可审阅报告。
 
-2. **自动切换未落盘，主 paper ledger 仍固定 `legacy`。**  
+2. **自动切换未落盘，主 paper ledger 仍固定 `legacy`。**
    `logs/2026-07/2026-07-22/summary.json` 显示 `paper_exit_mode=legacy`。即使 trend_capture 在 A/B 中优于 legacy，旧运行也没有状态文件或逻辑把 dry-run 主账本切到 trend_capture。
 
-3. **SCOUT 只有 symbol 级初始止损冷却，没有 mission 级三连止损熔断。**  
+3. **SCOUT 只有 symbol 级初始止损冷却，没有 mission 级三连止损熔断。**
    旧逻辑只能按 symbol 查近期 `INITIAL_STOP_HIT`，无法识别同一 mission 在不同 symbol 上连续失败。
 
-4. **部分策略规则仍是隐式或未限定。**  
+4. **部分策略规则仍是隐式或未限定。**
    `HIGH_SCORE_LONG_OFFSET_PROBE` 过去依赖 LONG offset、分数、PA/Fib/CVD/RR，但未显式要求 Q1。Q2/Q3 禁止实验加仓过去也主要依赖 ledger 同 symbol 不重复开仓，审计上不够明确。
 
 ## 3. 本次落盘内容
@@ -104,8 +104,8 @@ A/B legacy 与 trend_capture 各 7 笔已平，trend_capture 略好但两者仍�
 
 ### 3.4 显式策略规则
 
-1. `HIGH_SCORE_LONG_OFFSET_PROBE` 现在显式要求 `decision_quadrant == Q1`。  
-2. LONG offset SCOUT 订单审计新增 `LONG_OFFSET_Q1_PROBE` reason/tag，保留原 mission 名以兼容旧账本。  
+1. `HIGH_SCORE_LONG_OFFSET_PROBE` 现在显式要求 `decision_quadrant == Q1`。
+2. LONG offset SCOUT 订单审计新增 `LONG_OFFSET_Q1_PROBE` reason/tag，保留原 mission 名以兼容旧账本。
 3. 已有实验仓位时，同 symbol 若处于 Q2/Q3 且产生新的 `PROBE`/`DIRECT`，会显式降级为 `WATCH`，并写入 `Q2_Q3_EXPERIMENT_ADD_BLOCK`。
 
 ## 4. 验证
