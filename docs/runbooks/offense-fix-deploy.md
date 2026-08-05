@@ -47,11 +47,11 @@ ssh user@vps "sudo systemctl status ai300-dry-run.service --no-pager"
 ```bash
 # 4.1 重启后 15 分钟内: 确认新配置被加载(summary.json 中 dry_run_assumptions 含新字段)
 # 4.2 运行 24h 后:
-python scripts/verify_q1_trend_launch_fix.py --mode online --log-root logs --hours 24
+cd /root/AIBOT && python scripts/verify_q1_trend_launch_fix.py --mode online --log-root logs --hours 24
 #   预期: q1_trend_launch 相关决策数 > 0 且废弃标签残留 = 0(退出码 0)
 
 # 4.3 运行综合评估(样本积累后, 建议每 2-3 天):
-python scripts/evaluate_offense_fixes.py --log-root logs --days 3
+cd /root/AIBOT && python scripts/evaluate_offense_fixes.py --log-root logs --days 3
 #   预期: q1_trend_launch 有转化; probe 平仓 20 笔后 PF>1; payoff A/B 30 笔后 trend 优于 legacy
 ```
 
