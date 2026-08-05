@@ -29,6 +29,35 @@ MIN_PROBE_SAMPLES = 20
 MIN_PAYOFF_SAMPLES = 30
 
 
+def _resolve_path(raw: str, *, kind: str = "any") -> Path:
+    """CLI 路径解析:绝对路径原样;相对路径优先按 CWD,不存在(或类型不匹配)时回退项目根。
+
+    与 verify_q1_trend_launch_fix.py 同款修复:从任意目录运行不报 FileNotFoundError。
+    kind: "file"(--config)校验 is_file,"dir"(--log-root)校验 is_dir,
+    避免 CWD 下同名空目录/同名文件静默遮蔽项目根真实路径。
+    """
+    p = Path(raw)
+    if p.is_absolute():
+        return p
+    if kind == "file":
+        hit = p.is_file()
+    elif kind == "dir":
+        hit = p.is_dir() and any(p.iterdir())
+    else:
+        hit = p.exists()
+    if not hit:
+        alt = _PROJECT_ROOT / raw
+        if kind == "file":
+            alt_hit = alt.is_file()
+        elif kind == "dir":
+            alt_hit = alt.is_dir() and any(alt.iterdir())
+        else:
+            alt_hit = alt.exists()
+        if alt_hit:
+            return alt
+    return p
+
+
 def load_window(log_root: Path, relpaths: list[str], start_day: str, end_day: str) -> dict[str, list[dict]]:
     import datetime as dt
 
@@ -83,7 +112,7 @@ def main() -> int:
 
     import datetime as dt
 
-    log_root = Path(args.log_root)
+    log_root = _resolve_path(args.log_root, kind="dir")
     end_day = dt.date.today()
     start_day = end_day - dt.timedelta(days=args.days)
     rels = [

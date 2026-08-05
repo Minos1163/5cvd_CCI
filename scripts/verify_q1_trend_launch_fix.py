@@ -39,6 +39,36 @@ DEPRECATED_TAGS = ("Q2_PENDING_MOMENTUM_CONFIRMED", "Q3_TO_Q1_CONFIRMED")
 TREND_LAUNCH_MARKERS = ("DRY_RUN_Q1_TREND_LAUNCH",)
 
 
+def _resolve_path(raw: str, *, kind: str = "any") -> Path:
+    """CLI 路径解析:绝对路径原样;相对路径优先按 CWD,不存在(或类型不匹配)时回退项目根。
+
+    修复:从任意目录运行(如 VPS 上未 cd /root/AIBOT)时,
+    --config configs/... 与 --log-root logs 按 CWD 解析会 FileNotFoundError。
+    kind: "file"(--config)校验 is_file,"dir"(--log-root)校验 is_dir,
+    避免 CWD 下同名空目录/同名文件静默遮蔽项目根真实路径。
+    """
+    p = Path(raw)
+    if p.is_absolute():
+        return p
+    if kind == "file":
+        hit = p.is_file()
+    elif kind == "dir":
+        hit = p.is_dir() and any(p.iterdir())
+    else:
+        hit = p.exists()
+    if not hit:
+        alt = _PROJECT_ROOT / raw
+        if kind == "file":
+            alt_hit = alt.is_file()
+        elif kind == "dir":
+            alt_hit = alt.is_dir() and any(alt.iterdir())
+        else:
+            alt_hit = alt.exists()
+        if alt_hit:
+            return alt
+    return p
+
+
 def load_jsonl_window(log_root: Path, name: str, start: str, end: str) -> list[dict[str, Any]]:
     rows = []
     day = start
@@ -200,8 +230,8 @@ def main() -> int:
     parser.add_argument("--hours", type=int, default=24)
     args = parser.parse_args()
 
-    log_root = Path(args.log_root)
-    config_path = Path(args.config)
+    log_root = _resolve_path(args.log_root, kind="dir")
+    config_path = _resolve_path(args.config, kind="file")
     if args.mode == "historical":
         return historical_check(log_root, args.start, args.end, config_path)
     return online_check(log_root, args.hours, config_path)
