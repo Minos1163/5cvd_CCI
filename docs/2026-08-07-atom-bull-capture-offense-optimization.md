@@ -3,6 +3,21 @@
 **提交对象:** Claude 评审
 **分析窗口:** 2026-08-02 04:00 ~ 2026-08-05 11:00(北京时间,ATOM 牛市段);基线统计覆盖 08-02~08-07。
 **目标:** 为什么开仓这么少、为什么没选出 ATOM 这段牛市;优化到能选出并盈利。
+**版本:** v2(2026-08-07)—— 已按 Claude 评审意见修订:三项改动全部回滚,ATOM 改走完整链验证后**不予准入**。
+
+---
+
+## 0. v2 修订摘要(响应 Claude 评审)
+
+评审结论:诊断部分(符号层/分数层/闸门层逐层定位)认可;方案部分批评三点——①`long_threshold_offset` 归零与 HIGH_SCORE_LONG_OFFSET_PROBE 探针 3 笔 PF=0 直接矛盾(决策没等数据);②rank_end 90 用大炮打蚊子(13→83 币);③N=1 回放证据不足且为简化闸门链。
+
+v2 修订(全部落实):
+1. **回滚三项改动**:`dry_run_rank_end` 90→**25**、顶层 `long_threshold_offset` 0→**10.0**、`scout_micro_targeted_long_symbols` 移除 ATOMUSDT;
+2. **完整链重放(评审 8.2)**:用 `run_offline_backtest --strategy entry-chain`(完整闸门链)重放 ATOM 08-02~08-05——**那笔 PROBE_OPEN 不成立**:引擎方向判定用 1h 序列(`direction_from_history(completed["1h"])`),08-02 09:45 北京 1h 方向 NONE → 引擎输出 NO_TRADE(score 17.6)。简化回放用 15m 方向,高估了信号确定性——**评审的担忧被证实**;
+3. **90 天扩大回放**:ATOM 回滚后配置下 LONG 0 可开、仅 1 笔 SHORT PROBE_OPEN(07-31),候选数远低于准入最小样本 20;
+4. **显式白名单机制(评审 7.2)已代码实现**:`explicit_watchlist` 配置结构 + 校验 + `evaluate_watchlist_candidate.py`(样本≥20 且 PF≥1.0 → scout_only 准入);
+5. **ATOM 准入决策:REJECT**(完整链不成立 + 候选 1 笔 + 无 PF 证据)——不添加白名单、不扩 rank;
+6. **TONUSDT 零行排查**:数据完整(384 根无缺口),根因是窗口内价格波动近零(1 根变化率 p90=0.0)→ 方向判定 100% NONE → rows=0 是**正确行为**,非缺陷。
 
 ---
 
@@ -68,20 +83,28 @@ ATOM 离线回放(旧配置)牛市段 LONG 96 个周期:
 
 ## 5. 优化改动与验证
 
-### 5.1 配置改动(3 项,`configs/entry_chain.dry_run_fib_pa_v1.json`)
-| 键 | 旧值 | 新值 | 理由 |
-|---|---|---|---|
-| `dry_run_rank_end` | 25 | **90** | 覆盖 ATOM(83);用户选择"扩大 rank 范围" |
-| 顶层 `long_threshold_offset` | 10.0 | **0.0** | LONG direct 门槛 92→82,消除结构性不可达(probe 层 7.0 保留,不动) |
-| `scout_micro_targeted_long_symbols` | (9 币) | **+ATOMUSDT** | 让 HIGH_SCORE_LONG_OFFSET_PROBE 通道覆盖 ATOM(rr 2.0 ≥ 通道 rr 门槛 2.0) |
+> **v2 状态:本节描述的改动(5.1)已全部回滚**(评审 7.1),保留历史记录供对照;5.2-5.4 的验证证据更新为完整链结论。
 
-### 5.2 ATOM 验证
-- 优化后回放:08-02 09:45 LONG 87.3 分 Q3 → **PROBE_OPEN**(rr 2.0<4.0 从 DIRECT 降级,probe 门槛全过);
-- 单笔模拟(系统出场规则:stop=ATR×1.5 clamp[0.5%,3%]、TP 1.2/2/3R 分批 40/35/25%、32 根强平、8 根移成本):
-  - 入场 1.232 → 4 根内 **ALL_TP_HIT, +1.44R / +0.93%**(参考:持有到 08-05 11:00 为 +10.88%,但系统风格是快进快出);
-- 该笔走 PROBE(小仓)而非主账本 DIRECT——**符合"先小仓验证"护栏**,不放松 RR 几何门槛。
+### 5.1 配置改动(3 项,`configs/entry_chain.dry_run_fib_pa_v1.json`)— 已回滚
+| 键 | 原值 | 曾改为 | 回滚至 | 评审理由 |
+|---|---|---|---|---|
+| `dry_run_rank_end` | 25 | 90 | **25** | 13→83 币影响面过大,唯一价值点是 ATOM 单符号 → 改显式白名单 |
+| 顶层 `long_threshold_offset` | 10.0 | 0.0 | **10.0** | 与探针 3 笔 PF=0 矛盾,决策没等数据 → 恢复,等 probe 20 笔 |
+| `scout_micro_targeted_long_symbols` | (9 币) | +ATOMUSDT | **(9 币)** | ATOM 完整链验证不成立 → 移除 |
 
-### 5.3 全宇宙对比(08-02~08-05,新配置回放)
+### 5.2 ATOM 完整链验证(评审 8.2,取代简化回放)
+- **简化回放结论(已作废)**:08-02 09:45 LONG 87.3 → PROBE_OPEN,模拟 +1.44R;
+- **完整链重放(`run_offline_backtest --strategy entry-chain`)**:同一时刻引擎输出 `NO_TRADE`(side=NONE, score=17.6)——差异根源:引擎方向判定用 **1h 序列**(`direction_from_history(completed["1h"])`),08-02 09:45 北京 1h 方向未确认;简化回放用 15m 方向,高估了信号确定性;
+- **结论:该笔在真实链路下不成立**,+1.44R 属简化回放的方向误判(评审:"简化版和完整版之间的差异可能恰好决定这笔交易能否真正触发"——已被证实)。
+- 完整链 8 天回放(signal_events.csv 633 条)全部 SIGNAL_REJECTED,trade_count=0。
+
+### 5.3 90 天扩大回放(回滚后配置,数据覆盖 07-08~08-05)
+- LONG 侧:**0 笔可开**(92 门槛结构性不可达,与回滚一致);
+- SHORT 侧:1 笔 PROBE_OPEN(07-31 04:30,86.7 分);
+- 候选数 1 ≪ 20(准入最小样本),无 PF 证据——**非牛市段无机会,牛市段样本又不成立**。
+
+### 5.4 全宇宙对比(历史记录,新配置回放)
+<!-- 保留 v1 回放表供评审对照,结论已被 5.2/5.3 取代 -->
 | symbol | rows | DIRECT_OPEN | PROBE_OPEN | WATCH | NO_TRADE |
 |---|---:|---:|---:|---:|---:|
 | ADAUSDT | 236 | 0 | 3 | 75 | 158 |
@@ -107,16 +130,18 @@ ATOM 离线回放(旧配置)牛市段 LONG 96 个周期:
 - TONUSDT 窗口内 rows=0(方向长期 NONE 或数据边界,待查);
 - **口径声明**:回放为"候选数"(分数+关键闸门),未模拟 symbol policy/SCOUT 路由/max_active_probes 等完整链,实际成交会小于候选数。
 
-## 6. 残留风险与待评审问题
+## 6. 残留风险与待评审问题(v2 已更新)
 
-1. **rank_end 90 影响面**:扩围将引入 ~70 个新币(rank 3-90),多数为小市值高波动币。当前 `max_active_symbols=8`、黑名单、滚动 cooldown、SCOUT 白名单会兜底,但交易宇宙显著扩大,**建议评审是否改为"rank 3-40 + ATOM 显式加入"的混合方案**。
-2. **LONG offset 归零**:取消 LONG 侧 +10 偏移后,LONG direct 门槛与 SHORT 对称(82)。此前 +10 是有意两层偏移(probe 7.0 / 顶层 10.0)的一部分——**本轮仅动顶层,probe 层保留**;需观察 LONG 侧开仓质量(PF)是否劣化。
-3. **87.3 样本是 Q3 而非 Q1**:趋势轴差 0.7 分(trend_ema 14.3 < 15)。Q3 高分样本走 probe 小仓(现有通道),主账本 Q1 通道仍不覆盖该样本——**这是护栏而非缺陷**,但评审可讨论 Q3→Q1 晋级条件是否应放宽。
+1. ~~**rank_end 90 影响面**~~ **已解决**:回滚至 25;新增 `explicit_watchlist` 显式白名单机制(评审 7.2 规格,代码已实现:配置结构 + 校验 + `evaluate_watchlist_candidate.py`),未来错失案例逐一走"样本≥20 且 PF≥1.0 → scout_only 准入"流程,不再批量扩 rank。
+2. ~~**LONG offset 归零**~~ **已解决**:恢复 10.0(probe 层 7.0 保留);按评审 8.1 决策树,继续 HIGH_SCORE_LONG_OFFSET_PROBE 至 20 笔后(PF>1.0 且 blended_R>0.3 → 考虑校准;PF<0.8 → 维持 10.0;中间 → 观察至 30 笔)。
+3. **87.3 样本方向可靠性(新)**:完整链验证显示该样本在 1h 方向确认下不成立——**15m 方向的高分信号不可直接信任**,后续分析统一用完整链口径(方向=1h 确认);这是本次评审最重要的方法学收获。
 4. **fib 启动段 0 分**:不改(防追高设计;08-02 13:00 fib=0 后确实先回调),避免过拟合单段。
-5. **样本量**:全窗口仅 1 笔可开(ATOM)+ 13 币对比,统计显著性低;优化结论用于实验设计,不直接上实盘。
+5. **样本量**:ATOM 完整链 90 天候选仅 1 笔,统计显著性不足;白名单机制以 min_samples=20 强制样本门槛,不达标一律 REJECT。
+6. **TONUSDT**:排查结论为非缺陷(窗口内价格波动近零 → 方向 NONE → 0 决策),维持 observation_only 观察。
 
-## 7. 数据口径与局限
-- 时间:北京=UTC+8;ATOM K 线 30d 15m 由 Binance fapi 拉取(2026-08-07 本地,2880 根);
-- 回放用系统真实组件(entry_chain_features + scoring + 配置阈值),但**未跑完整 run_live_dry_run 闸门链**(近失/侦察/SCOUT 路由简化),DIRECT/PROBE 判定为关键闸门近似;
-- 出场模拟为 paper_trading 默认参数的简化版(未含部分平仓后的 trailing 精细化);
-- 全宇宙对比窗口 08-02~08-05 仅为单段样本,不代表长期绩效。
+## 7. 数据口径与局限(v2 更新)
+- 时间:北京=UTC+8;ATOM K 线 30d/90d 由 Binance fapi 拉取(2026-08-07 本地);
+- **完整链重放**:`run_offline_backtest --strategy entry-chain`(真实 evaluate_entry_chain + 闸门链),方向判定为 1h 确认(与线上一致);
+- **简化回放(replay_symbol_chain.py)仅作候选筛选上限参考**:其 15m 方向判定高估信号确定性,凡与完整链冲突处以完整链为准;
+- 完整链 8 天 ATOM 回放 633 条信号全 REJECTED、trade_count=0(该窗口 ATOM 在真实链路下无可执行信号);
+- 90 天回放数据源为最近 30 天 K 线(07-08~08-05 有效窗口),结论不构成长期统计。

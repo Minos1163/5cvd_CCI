@@ -1,9 +1,25 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Mapping
+
+
+@dataclass(frozen=True)
+class ExplicitWatchlistEntry:
+    """显式白名单条目(评审 7.2 规格):新增符号一律先 scout_only,达标后 promotion。"""
+
+    symbol: str
+    added_date: str = ""
+    rationale: str = ""
+    scan_scope: str = "scout_only"  # scout_only | full_pipeline
+    review_period_days: int = 14
+    promotion_criteria: Mapping[str, Any] = field(default_factory=lambda: {"min_samples": 15, "pf_min": 1.0})
+
+    @property
+    def normalized_symbol(self) -> str:
+        return self.symbol.strip().upper()
 
 
 @dataclass(frozen=True)
@@ -148,6 +164,7 @@ class EntryChainConfig:
     scout_micro_exit_trend_trigger_r: float = 1.5
     scout_micro_exit_trailing_r_mult: float = 1.0
     dry_run_symbols: tuple[str, ...] = ()
+    explicit_watchlist: tuple[ExplicitWatchlistEntry, ...] = ()
     dry_run_symbol_source: str = "configured"
     dry_run_rank_start: int = 3
     dry_run_rank_end: int = 25
@@ -226,6 +243,8 @@ class EntryChainConfig:
             values["mirror_ab_allowed_reasons"] = _normalize_strings(values["mirror_ab_allowed_reasons"])
         if "dry_run_symbols" in values:
             values["dry_run_symbols"] = _normalize_symbols(values["dry_run_symbols"])
+        if "explicit_watchlist" in values:
+            values["explicit_watchlist"] = _parse_explicit_watchlist(values["explicit_watchlist"], data.get("blacklist_symbols", ()))
         return cls(**values)
 
 
@@ -242,3 +261,47 @@ def _normalize_symbols(values: Any) -> tuple[str, ...]:
 
 def _normalize_strings(values: Any) -> tuple[str, ...]:
     return tuple(value for item in values if (value := str(item).strip().upper()))
+
+
+_ALLOWED_SCOPES = ("scout_only", "full_pipeline")
+
+
+def _parse_explicit_watchlist(values: Any, blacklist: Any) -> tuple[ExplicitWatchlistEntry, ...]:
+    """解析 explicit_watchlist 配置,校验:重复符号、非法 scan_scope、与黑名单冲突。"""
+    if not isinstance(values, list):
+        raise ValueError("explicit_watchlist must be a list")
+    blacklist_set = {str(s).strip().upper() for s in (blacklist or ())}
+    seen: set[str] = set()
+    entries: list[ExplicitWatchlistEntry] = []
+    for item in values:
+        if not isinstance(item, dict):
+            raise ValueError("each explicit_watchlist entry must be an object")
+        symbol = str(item.get("symbol") or "").strip().upper()
+        if not symbol:
+            raise ValueError("explicit_watchlist entry missing symbol")
+        if symbol in seen:
+            raise ValueError(f"duplicate explicit_watchlist symbol: {symbol}")
+        if symbol in blacklist_set:
+            raise ValueError(f"explicit_watchlist symbol conflicts with blacklist: {symbol}")
+        raw_scope = item.get("scan_scope")
+        if raw_scope is None:
+            scope = "scout_only"  # 缺失 → 首次添加默认 scout_only(评审规格)
+        else:
+            scope = str(raw_scope).strip().lower()
+            if scope not in _ALLOWED_SCOPES:
+                raise ValueError(f"invalid scan_scope '{scope}' for {symbol} (allowed: {_ALLOWED_SCOPES})")
+        promotion = item.get("promotion_criteria")
+        if promotion is not None and not isinstance(promotion, dict):
+            raise ValueError(f"promotion_criteria for {symbol} must be an object")
+        seen.add(symbol)
+        entries.append(
+            ExplicitWatchlistEntry(
+                symbol=symbol,
+                added_date=str(item.get("added_date") or ""),
+                rationale=str(item.get("rationale") or ""),
+                scan_scope=scope,
+                review_period_days=int(item.get("review_period_days") or 14),
+                promotion_criteria=dict(promotion) if promotion else {"min_samples": 15, "pf_min": 1.0},
+            )
+        )
+    return tuple(entries)

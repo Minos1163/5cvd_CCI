@@ -83,11 +83,15 @@ def main() -> int:
     parser.add_argument("--symbol", default="ATOMUSDT")
     parser.add_argument("--interval", default="15m")
     parser.add_argument("--days", type=int, default=30)
+    parser.add_argument("--out-dir", default="")
     args = parser.parse_args()
 
     now_ms = int(time.time() * 1000)
     start_ms = now_ms - args.days * 24 * 60 * 60 * 1000
-    out_dir = PROJECT_ROOT / "data" / "raw" / "binance_futures" / "latest_30d" / args.symbol
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+    else:
+        out_dir = PROJECT_ROOT / "data" / "raw" / "binance_futures" / "latest_30d" / args.symbol
     out_path = out_dir / f"{args.interval}.csv"
 
     rows = fetch_klines(args.symbol, args.interval, start_ms, now_ms)
