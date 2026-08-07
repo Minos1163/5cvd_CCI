@@ -148,7 +148,7 @@ def test_fib_pa_dry_run_config_loads_and_is_dry_run_safe():
     assert config.portfolio_daily_loss_limit == -30.0
     assert config.long_overextension_watch_enabled is True
     assert config.long_chase_watch_enabled is True
-    assert config.long_threshold_offset == 10.0
+    assert config.long_threshold_offset == 0.0
     assert config.blacklist_symbols == ("XRPUSDT", "ZECUSDT")
     assert "XLMUSDT" in config.observation_only_symbols
     assert "TONUSDT" in config.observation_only_symbols
@@ -176,6 +176,7 @@ def test_fib_pa_dry_run_config_loads_and_is_dry_run_safe():
         "SOLUSDT",
         "BNBUSDT",
         "BCHUSDT",
+        "ATOMUSDT",
     )
     assert config.scout_micro_scout_only_symbols == ("XMRUSDT", "ADAUSDT")
     assert config.scout_micro_min_score == 82.0
