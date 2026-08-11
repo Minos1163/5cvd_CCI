@@ -297,7 +297,7 @@ Task A（Q2/Q3 pending上游截断修复）
 Task B（LONG offset continuation分桶 + 路由优先级调整）
   ↓ 可与Task C并行
 Task C（REVERSAL_PIVOT_SCOUT暂停/降级）
-  ↓ 
+  ↓
 S2（q1_trend_launch_v2，依赖Task A产生的"活"标签）
   ↓
 Task D（分桶A/B报告，需要前面所有分桶都已独立运行产生数据）
@@ -526,4 +526,3 @@ decision_log_entry = {
 
 *报告结束 | 管道一致性修复与分桶验证建议 v1.0 — 2026-08-11*
 *最高优先行动：运行全量管道一致性审计（第3.2节），在修复Q2 pending这一个已知实例的同时，排查是否有其他mission存在同样的"上游未同步"问题——这类缺陷已经连续两轮出现，值得一次性系统性解决而非逐个修补。*
-

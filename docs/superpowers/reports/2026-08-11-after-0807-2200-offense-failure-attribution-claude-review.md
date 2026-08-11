@@ -1,9 +1,9 @@
 # AI300 08-07 22:00 后进攻策略复盘与下一轮盈利进攻点建议
 
-**提交对象:** Claude 评审  
-**分析窗口:** 2026-08-07 22:00 至 2026-08-11 18:45 左右,北京时间(UTC+8)。  
-**运行模式:** VPS dry-run / paper ledger / SCOUT micro / paper A-B mirror。  
-**数据来源:** `logs/2026-08/2026-08-07` 至 `logs/2026-08/2026-08-11` 下 `decisions.jsonl`、`near_misses.jsonl`、`scout_decisions.jsonl`、`gate_rejections.jsonl`、`paper_trades.jsonl`、`scout_micro/paper_trades.jsonl`、`paper_ab/{legacy,trend_capture}/paper_trades.jsonl`;并复核 `scripts/evaluate_offense_fixes.py --log-root logs --days 3` 输出。  
+**提交对象:** Claude 评审
+**分析窗口:** 2026-08-07 22:00 至 2026-08-11 18:45 左右,北京时间(UTC+8)。
+**运行模式:** VPS dry-run / paper ledger / SCOUT micro / paper A-B mirror。
+**数据来源:** `logs/2026-08/2026-08-07` 至 `logs/2026-08/2026-08-11` 下 `decisions.jsonl`、`near_misses.jsonl`、`scout_decisions.jsonl`、`gate_rejections.jsonl`、`paper_trades.jsonl`、`scout_micro/paper_trades.jsonl`、`paper_ab/{legacy,trend_capture}/paper_trades.jsonl`;并复核 `scripts/evaluate_offense_fixes.py --log-root logs --days 3` 输出。
 **口径说明:** `evaluate_offense_fixes.py --days 3` 按日志日期目录加载,本文主体按 JSONL 内 timestamp 过滤。因此本文窗口会包含 08-07 目录中 timestamp 已进入 08-08 北京时间的样本,主账本 q1_trend_launch 统计为 4 笔;用户贴出的验收脚本三日口径为 3 笔。两者结论一致:通道有转化,但负期望。
 
 ---
@@ -274,7 +274,7 @@ q1_trend_launch_v2:
   direct_q1_without_pending: false
 ```
 
-**为什么不是简单关闭 q1_trend_launch:**  
+**为什么不是简单关闭 q1_trend_launch:**
 Q1 本身仍有价值,但不能把“当前就在 Q1”当作开仓理由。需要从状态转换中找进攻点:Q2/Q3 回调/蓄势后重新进入 Q1,比静态 Q1 更接近“趋势启航”。
 
 ### S3 P0: LONG offset continuation 独立分桶,并调整路由优先级
@@ -364,26 +364,26 @@ reversal_pivot_require:
 
 ### Task A: Pending 输入链路修复
 
-**Files:** `scripts/run_live_dry_run.py`, `tests/test_live_dry_run.py`  
-**改动:** Q2/Q3 pending 创建不再依赖 `near_miss_min_score=82`。  
+**Files:** `scripts/run_live_dry_run.py`, `tests/test_live_dry_run.py`
+**改动:** Q2/Q3 pending 创建不再依赖 `near_miss_min_score=82`。
 **验证:** 构造 Q2 score=70.5/PA=18 的 decision,证明会创建 pending;构造后续 Q1/CCI>=9,证明会确认为 `Q2_PENDING_MOMENTUM_CONFIRMED`。
 
 ### Task B: LONG offset continuation 分桶
 
-**Files:** `scripts/run_live_dry_run.py`, `src/signals/entry_chain_config.py`, `configs/entry_chain.dry_run_fib_pa_v1.json`, tests  
-**改动:** 新增 `LONG_OFFSET_CONTINUATION_SCOUT/SHADOW`,路由优先级高于 reversal pivot。  
+**Files:** `scripts/run_live_dry_run.py`, `src/signals/entry_chain_config.py`, `configs/entry_chain.dry_run_fib_pa_v1.json`, tests
+**改动:** 新增 `LONG_OFFSET_CONTINUATION_SCOUT/SHADOW`,路由优先级高于 reversal pivot。
 **验证:** 构造 `SIDE_THRESHOLD_OFFSET_LONG_10.00` + Q1 + LONG + PA/Fib/CVD 强样本,证明不会被 reversal pivot 抢占。
 
 ### Task C: 暂停 reversal pivot 或改 shadow-only
 
-**Files:** config first,必要时 run_live_dry_run。  
-**改动:** `scout_micro_reversal_pivot_enabled=false`,或改为 shadow-only。  
+**Files:** config first,必要时 run_live_dry_run。
+**改动:** `scout_micro_reversal_pivot_enabled=false`,或改为 shadow-only。
 **验证:** 下一窗口 `REVERSAL_PIVOT_SCOUT` real opens=0;shadow 仍记录。
 
 ### Task D: 分桶 A/B 报告
 
-**Files:** `scripts/evaluate_offense_fixes.py` 或新增 `scripts/evaluate_offense_buckets.py`。  
-**改动:** 按 `source_reason/source_quadrant/side/symbol/entry_channel` 输出独立 PF/MFE/MAE。  
+**Files:** `scripts/evaluate_offense_fixes.py` 或新增 `scripts/evaluate_offense_buckets.py`。
+**改动:** 按 `source_reason/source_quadrant/side/symbol/entry_channel` 输出独立 PF/MFE/MAE。
 **验证:** 能单独看到 LONG offset、Q2 pending、RR gap、watch-only 的表现,不再只看总账本。
 
 ---
@@ -401,4 +401,3 @@ reversal_pivot_require:
 ## 8. 一句话结论
 
 本轮策略不是“没有生效”,而是**生效后证明当前打开的入口不是盈利入口**。下一轮进攻不应继续扩大泛 Q1 或泛 mirror,而应集中修复两条可验证链路: **Q2 pending 的上游截断** 和 **LONG offset continuation 的独立采样**;同时暂停负期望的 reversal pivot,把 A/B 从混合账本改成按原因分桶的因果评估。
-

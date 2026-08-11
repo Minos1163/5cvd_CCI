@@ -404,7 +404,7 @@ def evaluate_watchlist_candidate_for_addition(
 恢复long_threshold_offset至10.0（或中间校准值）后：
   继续运行HIGH_SCORE_LONG_OFFSET_PROBE
   目标：累计20笔样本
-  
+
   20笔后决策树：
     PF > 1.0 且 blended_R > 0.3 → 可以考虑正式校准offset（而非直接归零）
     PF < 0.8 → 维持offset=10.0，本次改动的假设不成立
