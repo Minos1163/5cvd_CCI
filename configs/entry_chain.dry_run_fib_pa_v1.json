@@ -141,7 +141,7 @@
   "scout_micro_mission_stop_circuit_count": 3,
   "scout_micro_mission_stop_circuit_hours": 12,
   "scout_micro_allow_degraded_data": true,
-  "scout_micro_reversal_pivot_enabled": true,
+  "scout_micro_reversal_pivot_enabled": false,
   "scout_micro_reversal_pivot_min_score": 70.0,
   "scout_micro_reversal_pivot_max_cvd_score": 16.0,
   "scout_micro_reversal_pivot_max_cci_score": 10.0,

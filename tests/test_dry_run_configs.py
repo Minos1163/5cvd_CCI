@@ -233,7 +233,7 @@ def test_fib_pa_dry_run_config_loads_and_is_dry_run_safe():
     assert config.scout_micro_mission_stop_circuit_count == 3
     assert config.scout_micro_mission_stop_circuit_hours == 12
     assert config.scout_micro_allow_degraded_data is True
-    assert config.scout_micro_reversal_pivot_enabled is True
+    assert config.scout_micro_reversal_pivot_enabled is False
     assert config.scout_micro_reversal_pivot_notional == 25.0
     assert config.scout_micro_notional == 50.0
     assert config.scout_micro_leverage == 1

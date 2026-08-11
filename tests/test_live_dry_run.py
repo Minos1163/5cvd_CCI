@@ -516,6 +516,69 @@ def test_build_near_miss_payload_tags_targeted_long_offset_candidate():
     assert payload["scout_tags"] == ["TARGETED_LONG_OFFSET"]
 
 
+def test_build_near_miss_payload_q2_below_global_not_truncated_by_quadrant_override():
+    # Task A:Q2 72.3 分样本 + per-quadrant 覆盖(70) → 生成 near_miss(不被全局 82 截断)
+    payload = build_near_miss_payload(
+        {
+            "timestamp": 1782992705,
+            "symbol": "BNBUSDT",
+            "action": "WATCH",
+            "side": "NONE",
+            "quadrant": "Q2",
+            "score": 72.3,
+            "reasons": ["FIB_PA_ARCHITECTURE_WEIGHTS"],
+            "component_points": {"price_action_structure": 18.0},
+            "entry_context": {"atr_pct": 0.01, "side": "LONG"},
+            "kline": {"close": 100.0, "timestamp": 1782991800},
+        },
+        min_score=82.0,
+        min_score_by_quadrant={"Q2": 70.0},
+    )
+    assert payload is not None
+    assert payload["score"] == 72.3
+
+
+def test_build_near_miss_payload_q2_below_global_without_override_still_truncated():
+    # 无 per-quadrant 覆盖时,Q2 72.3 分仍被全局 82 截断(修复前行为)
+    payload = build_near_miss_payload(
+        {
+            "timestamp": 1782992705,
+            "symbol": "BNBUSDT",
+            "action": "WATCH",
+            "side": "NONE",
+            "quadrant": "Q2",
+            "score": 72.3,
+            "reasons": ["FIB_PA_ARCHITECTURE_WEIGHTS"],
+            "component_points": {"price_action_structure": 18.0},
+            "entry_context": {"atr_pct": 0.01, "side": "LONG"},
+            "kline": {"close": 100.0, "timestamp": 1782991800},
+        },
+        min_score=82.0,
+    )
+    assert payload is None
+
+
+def test_build_near_miss_payload_quadrant_override_does_not_leak_to_q1():
+    # per-quadrant 覆盖只作用于 Q2:Q1 72.3 分样本不受影响(仍被 82 截断)
+    payload = build_near_miss_payload(
+        {
+            "timestamp": 1782992705,
+            "symbol": "BNBUSDT",
+            "action": "WATCH",
+            "side": "NONE",
+            "quadrant": "Q1",
+            "score": 72.3,
+            "reasons": ["FIB_PA_ARCHITECTURE_WEIGHTS"],
+            "component_points": {"price_action_structure": 18.0},
+            "entry_context": {"atr_pct": 0.01, "side": "LONG"},
+            "kline": {"close": 100.0, "timestamp": 1782991800},
+        },
+        min_score=82.0,
+        min_score_by_quadrant={"Q2": 70.0},
+    )
+    assert payload is None
+
+
 def test_build_near_miss_payload_records_targeted_long_below_global_min_score():
     payload = build_near_miss_payload(
         {

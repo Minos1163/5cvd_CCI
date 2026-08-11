@@ -189,7 +189,12 @@ def run(args: argparse.Namespace) -> None:
                 }
                 decision_payload["entry_context"] = debug.get("entry_context", {})
                 decision_payload = annotate_quadrant(decision_payload, config)
-                near_miss = build_near_miss_payload(decision_payload, min_score=args.near_miss_min_score)
+                near_miss = build_near_miss_payload(
+                    decision_payload,
+                    min_score=args.near_miss_min_score,
+                    # Task A:Q2 pending 候选不被全局 82 截断(08-11 报告管道未对齐修复)
+                    min_score_by_quadrant={"Q2": float(config.scout_micro_q2_pending_min_score)},
+                )
                 kline_timestamp = int(debug.get("kline", {}).get("timestamp") or now)
                 if near_miss is not None:
                     confirmed = confirm_q3_to_q1_pending(symbol, near_miss, config, quadrant_pending_by_symbol.get(symbol), kline_timestamp)
@@ -771,7 +776,12 @@ def portfolio_exposure_snapshot(
     }
 
 
-def build_near_miss_payload(decision_payload: Mapping[str, Any], *, min_score: float) -> dict[str, Any] | None:
+def build_near_miss_payload(
+    decision_payload: Mapping[str, Any],
+    *,
+    min_score: float,
+    min_score_by_quadrant: Mapping[str, float] | None = None,
+) -> dict[str, Any] | None:
     action = str(decision_payload.get("action") or "").upper()
     if action in {"PROBE", "DIRECT"}:
         return None
@@ -802,8 +812,13 @@ def build_near_miss_payload(decision_payload: Mapping[str, Any], *, min_score: f
     if _is_targeted_long_offset_near_miss(payload):
         payload["targeted_long_offset"] = True
         payload["scout_tags"] = ["TARGETED_LONG_OFFSET"]
-    elif score < min_score:
-        return None
+    else:
+        # per-quadrant 采样覆盖(Task A 修复):Q2/Q3 等象限特定 mission 的候选
+        # 不被全局 near_miss_min_score 截断;其余象限用全局门槛。
+        quadrant = str(decision_payload.get("quadrant") or "").upper()
+        effective_min = float((min_score_by_quadrant or {}).get(quadrant, min_score))
+        if score < effective_min:
+            return None
     return payload
 
 
