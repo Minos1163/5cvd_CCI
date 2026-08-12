@@ -23,6 +23,24 @@
 
 **结论:08-07 审查 4 项建议全部落实(其中 ATOM 按验证 REJECT);08-04 追踪项中 TaskB/TaskC 为"建议写了但上游未同步"的典型案例,本轮 Task A 系统性修复。**
 
+### 1.1 08-11 报告累计问题清单核对(第 11 节 8 条 + 10.2/10.3 + 5.1)
+
+| 建议来源 | 优先级 | 内容摘要 | 状态 | 核实证据/阻塞原因 |
+|---|---|---|---|---|
+| 08-11-TaskA | P0 | Q2/Q3 pending 上游截断修复 | ✅ DEPLOYED | per-quadrant 采样(Q2=70)已实施(74cba24);反事实 108 候选(对照预测 36);待部署在线验证转 VERIFIED |
+| 08-11-TaskB | P0 | LONG offset continuation 双层分桶(shadow/SCOUT,RR≥2 进真实 SCOUT) | ❌ 未实施 | 配置无 continuation 字段;窗口 LONG offset 事件 0(probe 通道仍未触发);P0-2 仅完成 probe 校准(quadrants/min_score/RR 2.0) |
+| 08-11-TaskC | P1 | REVERSAL_PIVOT_SCOUT 停用/降级 | ✅ 已实施 | `scout_micro_reversal_pivot_enabled=false`(74cba24);实际累计 21 笔 margin_pnl -1.29;DEPRECATED 记录 |
+| 08-11-S2 | P0(依赖TaskA) | q1_trend_launch_v2(重新要求"活"确认标签) | ❌ 未实施 | 强依赖 TaskA 部署后活标签(Q2/Q3 pending 确认开始生成);按 08-11 报告 4.2 节时序约束,不得早于 TaskA 部署验证 |
+| 08-11-TaskD | P1 | 分桶 A/B 报告(按 source_reason/quadrant/side/symbol 独立 PF/MFE/MAE) | ❌ 未实施 | `evaluate_offense_buckets.py` 不存在;依赖各分桶(TaskB/S2 等)实际运行数据 |
+| 08-07 审查 | P0 | rank_end 回滚 + 显式白名单 | ✅ VERIFIED | `dry_run_rank_end: 25`;explicit_watchlist 机制就绪;ATOM 完整链验证 REJECT 未添加 |
+| 08-07 审查 | P0 | long_threshold_offset 回滚观察 | ✅ 已回滚 | 顶层 `long_threshold_offset: 10.0`;08-11 数据(7 样本 +0.101R 弱正)支持继续 shadow 观察,按 8.1 决策树等 20 笔 |
+| pipeline_coherence 审计 | P0(新增) | 全量排查其他 mission 上游截断 | ✅ DEPLOYED | `audit_pipeline_coherence.py` 8 mission 排查:唯一 BLOCKING=Q2,已随 TaskA 修复;REVERSAL WARNING(冗余),其余 6 OK |
+
+**08-11 报告附加要求核对:**
+- **10.2 节(LONG offset 跨报告累计口径)**:08-04 2 笔 → 08-07 3 笔 → 08-11 7 笔,累计 **9 笔**(报告口径);`cumulative_sample_tracker`(加权 terminal 均值、去重累计)**未实现**——各报告数字关系仍有歧义,待 TaskD 或 tracker 补建;
+- **10.3 节(rank_end/ATOM 现状)**:`rank_end=25` ✓;ATOM 未产生任何 SCOUT 候选(REJECT,90 天 LONG 0 可开)✓——08-07 审查意见确认被采纳;
+- **5.1 节(部署后验证脚本)**:`verify_task_a_pending_pipeline_fix` / `verify_task_b_long_offset_routing_fix` / `verify_task_c_reversal_pivot_disabled` **均未实现**——TaskA 部署后核对 Q2 pending 创建的手段缺失,待补(与 TaskA 部署配套)。
+
 ## 2. 基线数据(本轮核对)
 
 | 指标 | 值 | 来源 |

@@ -23,6 +23,9 @@
 | 2026-08-04-P0-4 | 2026-08-04 | P0 | 配置"重复键"核实与审计:long_threshold_offset 7.0/10.0 位于不同对象(probe_conditions vs 顶层),系设计意图非重复键,删除任一将改变行为 | scripts/audit_duplicate_json_keys.py | VERIFIED | 审计脚本确认全部 15 个配置无同一对象内重复键;对 08-02 报告的"重复键"诊断予以修正(不同对象同名键仅 info) |
 | 2026-08-04-S1 | 2026-08-04 | P1 | SCOUT 任务多样化:mission 可达性诊断与门槛校准 | scripts/run_live_dry_run.py L1071 `scout_micro_mission` + scripts/diagnose_scout_mission_reachability.py | DEPLOYED | 诊断完成:probe 校准后恢复可达(BCH 87.3),watch_only min_score 87→85(分布依据),RR 护栏保留;标签依赖/FIB 入口不重叠记录为结构性低触发,不强行触发 |
 | 2026-08-04-S2 | 2026-08-04 | P1 | Payoff 改善:early breakeven(+1R 移成本)+ trailing 1.2 试点(trend_capture_mirror only) | src/observability/paper_trading.py + scripts/run_live_dry_run.py build_paper_exit_ab_ledgers | IN_PROGRESS | 代码已落地(4 单测通过,试点受 mirror_ab_payoff_pilot_enabled 控制,legacy 纯净对照);待部署后 30 笔 A/B 评估(evaluate_offense_fixes.py) |
+| 2026-08-11-TaskB | 2026-08-11 | P0 | LONG offset continuation 双层分桶(shadow/SCOUT,RR≥2 进真实 SCOUT) | 配置 + scripts/run_live_dry_run.py(未实施) | PENDING | 未实施:配置无 continuation 字段,窗口 LONG offset 事件 0;阻塞原因=依赖 LONG probe 样本积累(P0-2 仅完成 probe 校准,quadrants/min_score/RR 2.0);08-11 报告 6.2 节预期:即使验证通过也只是小幅正期望 |
+| 2026-08-11-S2 | 2026-08-11 | P0 | q1_trend_launch_v2(重新要求"活"确认标签,Q2/Q3 pending + LONG offset continuation) | scripts/run_live_dry_run.py(未实施) | PENDING | 未实施:强依赖 TaskA 部署后活标签(Q2/Q3 pending 确认开始生成);按 08-11 报告 4.2 节时序约束不得早于 TaskA 部署验证,否则重现"标签永远不生成" |
+| 2026-08-11-TaskD | 2026-08-11 | P1 | 分桶 A/B 报告(按 source_reason/quadrant/side/symbol 独立 PF/MFE/MAE) | scripts/evaluate_offense_buckets.py(未实现) | PENDING | 未实现:脚本不存在;阻塞原因=依赖各分桶(TaskB/S2 等)实际运行数据;10.2 节 cumulative_sample_tracker 同批补建 |
 
 ---
 
