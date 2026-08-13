@@ -26,6 +26,8 @@
 | 2026-08-11-TaskB | 2026-08-11 | P0 | LONG offset continuation 双层分桶(shadow/SCOUT,RR≥2 进真实 SCOUT) | 配置 + scripts/run_live_dry_run.py(未实施) | PENDING | 未实施:配置无 continuation 字段,窗口 LONG offset 事件 0;阻塞原因=依赖 LONG probe 样本积累(P0-2 仅完成 probe 校准,quadrants/min_score/RR 2.0);08-11 报告 6.2 节预期:即使验证通过也只是小幅正期望 |
 | 2026-08-11-S2 | 2026-08-11 | P0 | q1_trend_launch_v2(重新要求"活"确认标签,Q2/Q3 pending + LONG offset continuation) | scripts/run_live_dry_run.py(未实施) | PENDING | 未实施:强依赖 TaskA 部署后活标签(Q2/Q3 pending 确认开始生成);按 08-11 报告 4.2 节时序约束不得早于 TaskA 部署验证,否则重现"标签永远不生成" |
 | 2026-08-11-TaskD | 2026-08-11 | P1 | 分桶 A/B 报告(按 source_reason/quadrant/side/symbol 独立 PF/MFE/MAE) | scripts/evaluate_offense_buckets.py(未实现) | PENDING | 未实现:脚本不存在;阻塞原因=依赖各分桶(TaskB/S2 等)实际运行数据;10.2 节 cumulative_sample_tracker 同批补建 |
+| 2026-08-13-审计 | 2026-08-13 | P0 | q1_trend_launch 0 转化根因审计(08-13 审查:直接代码审查) | scripts/run_live_dry_run.py data_health 生命周期 | VERIFIED | 根因=data_health 粘滞降级(一次 Binance 拉取抖动→永久 DEGRADED)+allow_degraded=false 锁死 eligible;已修复(周期级重置,allow_degraded 保持 false);22 单测+615 全量;反事实:OK 周期候选>0(48H LINK 88.7 ALL_PASS);待部署后 48-72h 观察窗验证 |
+| 2026-08-13-BNB | 2026-08-13 | P1 | BNB 漏多根因(主账本无 source-confirmed 入口)+ REVERSAL 抢占(08-13 BNB 分析报告) | scripts/run_live_dry_run.py scout_micro_mission | PENDING | 根因与本轮审计一致(主账本转化链路);REVERSAL 已停用(08-11 Task C)解决抢占;BNB_TREND_CONTINUATION_AFTER_PULLBACK 按 08-13 审查优先级降级,待 q1_trend_launch 通道验证通过后实施 |
 
 ---
 

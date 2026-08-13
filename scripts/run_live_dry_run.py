@@ -101,7 +101,7 @@ def run(args: argparse.Namespace) -> None:
     warmup_state = warmup_symbols(symbols, args, config) if args.market_data_source == "public-binance" else synthetic_warmup_state(symbols, config)
     orders_submitted = 0
     summary = DryRunSummary(target_tier=args.target_tier, assumptions=dry_run_assumptions(config))
-    data_health = "OK"
+    data_health = "OK"  # 启动默认;每 cycle 重置见 while 循环内(粘滞降级修复 08-13)
     cycle = 0
     output_dir: Path | None = None
     audit: DecisionAuditWriter | None = None
@@ -119,6 +119,10 @@ def run(args: argparse.Namespace) -> None:
     )
     try:
         while True:
+            # 周期级 data_health 重置(08-13 修复):一次 Binance 拉取抖动不再
+            # 永久置 DEGRADED 锁死 q1_trend_launch(allow_degraded_data=false 时);
+            # 降级仍只影响降级发生的当周期,下周期恢复评估。
+            data_health = "OK"
             alignment_lines = wait_for_kline_alignment(args)
             cycle += 1
             cycle_started = time.perf_counter()

@@ -239,3 +239,17 @@ def test_disabled_channel_rejected():
 
 def test_none_near_miss_rejected():
     assert _q1_trend_launch_eligible(None, BASE_CONFIG, "OK") is False
+
+
+def test_eligible_degraded_data_blocks_when_allow_false():
+    # 08-13 修复语义:allow_degraded_data=false 时,DEGRADED 数据健康闸门拒绝;
+    # 周期级重置(data_health="OK")后即可评估——一次抖动不永久锁死。
+    nm = _make_near_miss()
+    cfg_allow_false = replace(BASE_CONFIG, dry_run_q1_trend_launch_allow_degraded_data=False)
+    assert _q1_trend_launch_eligible(nm, cfg_allow_false, "DEGRADED") is False
+    assert _q1_trend_launch_eligible(nm, cfg_allow_false, "OK") is True
+
+
+def test_eligible_degraded_data_allowed_when_allow_true():
+    cfg_allow_true = replace(BASE_CONFIG, dry_run_q1_trend_launch_allow_degraded_data=True)
+    assert _q1_trend_launch_eligible(_make_near_miss(), cfg_allow_true, "DEGRADED") is True
