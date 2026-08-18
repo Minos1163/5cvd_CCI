@@ -108,6 +108,7 @@
   "dry_run_q1_trend_launch_exit_mode": "trend_capture",
   "dry_run_q1_trend_launch_allow_degraded_data": false,
   "mirror_ab_enabled": true,
+  "mirror_ab_mode": "shadow_only",
   "mirror_ab_payoff_pilot_enabled": true,
   "mirror_ab_payoff_early_breakeven_trigger_r": 1.0,
   "mirror_ab_payoff_trend_trigger_r": 1.2,

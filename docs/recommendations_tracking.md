@@ -28,9 +28,10 @@
 | 2026-08-11-TaskD | 2026-08-11 | P1 | 分桶 A/B 报告(按 source_reason/quadrant/side/symbol 独立 PF/MFE/MAE) | scripts/evaluate_offense_buckets.py(未实现) | PENDING | 未实现:脚本不存在;阻塞原因=依赖各分桶(TaskB/S2 等)实际运行数据;10.2 节 cumulative_sample_tracker 同批补建 |
 | 2026-08-13-审计 | 2026-08-13 | P0 | q1_trend_launch 0 转化根因审计(08-13 审查:直接代码审查) | scripts/run_live_dry_run.py data_health 生命周期 | VERIFIED | 根因=data_health 粘滞降级(一次 Binance 拉取抖动→永久 DEGRADED)+allow_degraded=false 锁死 eligible;已修复(周期级重置,allow_degraded 保持 false);22 单测+615 全量;反事实:OK 周期候选>0(48H LINK 88.7 ALL_PASS);待部署后 48-72h 观察窗验证 |
 | 2026-08-13-BNB | 2026-08-13 | P1 | BNB 漏多根因(主账本无 source-confirmed 入口)+ REVERSAL 抢占(08-13 BNB 分析报告) | scripts/run_live_dry_run.py scout_micro_mission | PENDING | 根因与本轮审计一致(主账本转化链路);REVERSAL 已停用(08-11 Task C)解决抢占;BNB_TREND_CONTINUATION_AFTER_PULLBACK 按 08-13 审查优先级降级,待 q1_trend_launch 通道验证通过后实施 |
-| 2026-08-18-MIRROR | 2026-08-18 | P0 | mirror A/B 停用/降级(98 笔 -9.99,连续三轮负期望) | configs/entry_chain.dry_run_fib_pa_v1.json `paper_ab_*` | PENDING | 08-12~18 窗口 mirror 98 笔 margin_pnl -9.99(占实验亏损 88%);08-04(PF 0.345/0.370)+08-11(0.2266/0.0397)+本轮三轮一致;建议降级 shadow-only 或批次熔断,待评审 |
-| 2026-08-18-Q1TL | 2026-08-18 | P0 | q1_trend_launch 盈利化:SOL SHORT +6.25 样本特征提炼与规模化 | 分析(评审后实施) | PENDING | 08-14/16 修复后 2 笔开仓,SOL +6.25(+10%)证明通道可盈利;BNB -0.155 对比;样本 2 笔不足,提炼"可盈利子集"假设待评审 |
-| 2026-08-18-Q3Q1 | 2026-08-18 | P1 | Q3→Q1 pending 通道验证(唯一正 +0.39) | scout_q3_to_q1_confirmation | IN_PROGRESS | 3 笔 +0.39(唯一正通道);继续积累至 20 笔按 TaskD 分桶评估 |
+| 2026-08-18-MIRROR | 2026-08-18 | P0 | mirror A/B 停用/降级(98 笔 -9.99,连续三轮负期望) | configs/entry_chain.dry_run_fib_pa_v1.json `mirror_ab_mode` | DEPLOYED | 已降级 shadow_only(08-18 评审 2.3 规格):mirror 账本继续记录假设成交(诊断),但不计入实验熔断统计/敞口(L223 排除);累计 290 笔 -32.1(08-02~18);reactivation 需连续 3 batch 转正(待配置化);5 单测+620 全量 |
+| 2026-08-18-Q1TL | 2026-08-18 | P0 | q1_trend_launch 盈利化:SOL SHORT +6.25 样本(SOL +6.25/BNB -0.155,N=2 窗口) | 分析(评审后实施) | IN_PROGRESS | 按 08-18 小样本纪律:累计 7 笔 <10,仅记录不提炼特征/不资源倾斜;距 20 笔差 13;持续观察(每轮报告更新累计表) |
+| 2026-08-18-纪律 | 2026-08-18 | P0 | 小样本决策规则固化(SAMPLE_SIZE_DECISION_RULES:10/20/20/2窗口) | scripts/channel_cumulative_tracker.py | DEPLOYED | 规则固化为脚本常量:<10 不"证明有效/提炼特征"、<20 不调参数/不资源倾斜、负信号 2 窗口一致可停用;tracker 输出四通道平等表 |
+| 2026-08-18-Q3Q1 | 2026-08-18 | P1 | Q3→Q1 pending 通道验证(唯一正 +0.39) | scout_q3_to_q1_confirmation | IN_PROGRESS | 累计 3 笔 +0.389(<10 仅记录,不因符号正优先);与 Q2 pending(3 笔 -0.14)平等对待;距 20 笔差 17 |
 
 ---
 

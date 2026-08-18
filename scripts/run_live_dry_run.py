@@ -217,10 +217,13 @@ def run(args: argparse.Namespace) -> None:
                             quadrant_pending_by_symbol.pop(symbol, None)
                 if near_miss is not None:
                     near_miss = annotate_quadrant(near_miss, config)
+                # mirror_ab_mode=shadow_only(08-18 评审):mirror 账本继续记录假设成交(诊断),
+                # 但不计入实验熔断统计/敞口——停止实质亏损,保留 reactivation 观察。
+                _mirror_ledgers = [] if str(config.mirror_ab_mode).lower() == "shadow_only" else list(paper_exit_ab_ledgers.values())
                 experiment_circuit_active = experiment_entry_circuit_active(
                     config=config,
                     timestamp=now,
-                    experiment_ledgers=[paper, scout_paper, *paper_exit_ab_ledgers.values()],
+                    experiment_ledgers=[paper, scout_paper, *_mirror_ledgers],
                     daily_ledgers=[paper, scout_paper],
                 )
                 entry_near_miss = None if experiment_circuit_active else near_miss

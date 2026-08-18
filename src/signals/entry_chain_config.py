@@ -122,6 +122,7 @@ class EntryChainConfig:
     dry_run_q1_trend_launch_exit_mode: str = "trend_capture"
     dry_run_q1_trend_launch_allow_degraded_data: bool = False
     mirror_ab_enabled: bool = False
+    mirror_ab_mode: str = "active"  # active | shadow_only(08-18 评审:mirror 降级 shadow,记录不计敞口/熔断)
     mirror_ab_payoff_pilot_enabled: bool = False
     mirror_ab_payoff_early_breakeven_trigger_r: float = 1.0
     mirror_ab_payoff_trend_trigger_r: float = 1.2
@@ -241,6 +242,11 @@ class EntryChainConfig:
             values["scout_micro_scout_only_symbols"] = _normalize_symbols(values["scout_micro_scout_only_symbols"])
         if "mirror_ab_allowed_reasons" in values:
             values["mirror_ab_allowed_reasons"] = _normalize_strings(values["mirror_ab_allowed_reasons"])
+        if "mirror_ab_mode" in values:
+            mode = str(values["mirror_ab_mode"]).strip().lower()
+            if mode not in {"active", "shadow_only"}:
+                raise ValueError(f"invalid mirror_ab_mode '{mode}' (allowed: active, shadow_only)")
+            values["mirror_ab_mode"] = mode
         if "dry_run_symbols" in values:
             values["dry_run_symbols"] = _normalize_symbols(values["dry_run_symbols"])
         if "explicit_watchlist" in values:
