@@ -34,6 +34,8 @@ TRACKED_CHANNELS = (
     "scout_q2_pending_momentum",
     "scout_q3_to_q1_confirmation",
     "scout_high_score_long_offset_probe",
+    "scout_bnb_trend_continuation_after_pullback",
+    "scout_bull_regime_breakout_v1",
     "mirror_ab_sample",
 )
 
@@ -50,6 +52,8 @@ CHANNEL_LEDGER_SCOPE = {
     "scout_q2_pending_momentum": ("scout_micro/paper_trades.jsonl",),
     "scout_q3_to_q1_confirmation": ("scout_micro/paper_trades.jsonl",),
     "scout_high_score_long_offset_probe": ("scout_micro/paper_trades.jsonl",),
+    "scout_bnb_trend_continuation_after_pullback": ("scout_micro/paper_trades.jsonl",),
+    "scout_bull_regime_breakout_v1": ("scout_micro/paper_trades.jsonl",),
     "mirror_ab_sample": ("paper_ab/legacy/paper_trades.jsonl", "paper_ab/trend_capture/paper_trades.jsonl"),
 }
 
