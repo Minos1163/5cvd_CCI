@@ -95,6 +95,8 @@ def open_and_stop(
     opened_at: int,
     stopped_at: int,
     side: str = "LONG",
+    quantity: float = 10,
+    price: float = 100,
 ) -> None:
     decision_payload = {
         "action": "PROBE",
@@ -106,16 +108,20 @@ def open_and_stop(
     }
     draft_payload = {
         "approved": True,
-        "request": {"position_side": side, "quantity": 10, "price": 100},
+        "request": {"position_side": side, "quantity": quantity, "price": price},
     }
     ledger.on_decision(
         symbol=symbol,
         decision_payload=decision_payload,
         draft_payload=draft_payload,
-        kline={"close": 100, "high": 100, "low": 100},
+        kline={"close": price, "high": price, "low": price},
         timestamp=opened_at,
     )
-    stop_kline = {"close": 99, "high": 100, "low": 98} if side == "LONG" else {"close": 101, "high": 102, "low": 100}
+    stop_kline = (
+        {"close": price * 0.99, "high": price, "low": price * 0.98}
+        if side == "LONG"
+        else {"close": price * 1.01, "high": price * 1.02, "low": price}
+    )
     ledger.on_decision(
         symbol=symbol,
         decision_payload={"action": "NO_TRADE"},
@@ -2161,6 +2167,54 @@ def test_live_dry_run_injects_paper_state_before_duplicate_symbol_approval(tmp_p
     assert hydrated.symbol_exposure_pct > 0
     assert decision.action == "NO_TRADE"
     assert "SYMBOL_POSITION_ALREADY_OPEN" in decision.reasons
+
+
+def test_paper_drawdown_normalizes_exposure_before_same_direction_cap(tmp_path):
+    ledger = PaperTradingLedger(tmp_path)
+    open_and_stop(ledger, "LOSSUSDT", opened_at=1000, stopped_at=1900, side="LONG", quantity=1200)
+    ledger.on_decision(
+        symbol="OPENUSDT",
+        decision_payload={"action": "PROBE", "side": "LONG", "score": 80, "leverage": 1, "entry_context": {"atr_pct": 0.01}},
+        draft_payload={"approved": True, "request": {"position_side": "LONG", "quantity": 180, "price": 10}},
+        kline={"close": 10, "high": 10, "low": 10},
+        timestamp=2000,
+    )
+    context = EntryChainContext(
+        symbol="NEWUSDT",
+        timestamp=2000,
+        side="LONG",
+        component_scores={
+            "background_4h": 1.0,
+            "direction_1h": 1.0,
+            "quality_30m": 1.0,
+            "trigger_15m": 1.0,
+            "cvd_flow": 1.0,
+            "volatility_stop": 1.0,
+            "liquidity_execution": 1.0,
+            "market_regime": 1.0,
+        },
+        quote_volume_24h=200_000_000.0,
+        atr_pct=0.018,
+        expected_order_size=1_000.0,
+        account_equity=10_000.0,
+        available_margin=8_000.0,
+    )
+
+    snapshot = ledger.get_portfolio_state_snapshot(2000)
+    hydrated = apply_paper_state_to_context(context, ledger, 2000)
+    hydrated_existing = apply_paper_state_to_context(context.with_updates(symbol="OPENUSDT"), ledger, 2000)
+    decision = evaluate_entry_chain(
+        hydrated,
+        EntryChainConfig(max_total_exposure_pct=0.3, max_same_direction_exposure_pct=0.2),
+    )
+
+    assert snapshot.total_exposure_pct == 0.18
+    assert hydrated.account_equity < ledger.initial_equity
+    assert hydrated.total_exposure_pct > 0.2
+    assert hydrated.same_direction_exposure_pct > 0.2
+    assert hydrated_existing.symbol_exposure_pct > 0.2
+    assert decision.action == "NO_TRADE"
+    assert "SAME_DIRECTION_EXPOSURE_CAP" in decision.reasons
 
 
 def test_dry_run_decision_controls_cap_observation_only_symbol_to_watch(tmp_path):

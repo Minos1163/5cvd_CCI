@@ -10,6 +10,7 @@ from scripts.regime_conditional_short_offset_shadow import (  # noqa: E402
     regime_evidence,
     reversal_confirmation_score,
     shadow_blocked,
+    shadow_blocked_by_action,
     shadow_rows,
 )
 
@@ -32,6 +33,18 @@ def test_shadow_blocked_none_when_all_above():
 def test_shadow_blocked_all_when_threshold_high():
     rows = [_short(84.75), _short(90.1)]
     assert len(shadow_blocked(rows, 92.0)) == 2
+
+
+def test_action_aware_shadow_uses_probe_threshold_for_probe():
+    blocked = shadow_blocked_by_action([_short(85.0)], direct_threshold=92.0, probe_threshold=80.0)
+
+    assert blocked == []
+
+
+def test_action_aware_shadow_uses_direct_threshold_for_direct():
+    direct = {**_short(90.0), "action": "DIRECT"}
+
+    assert shadow_blocked_by_action([direct], direct_threshold=92.0, probe_threshold=80.0) == [direct]
 
 
 def _decision(*, score=90.0, breadth=None, decision_ts=1900, candle_ts=1000):

@@ -51,6 +51,20 @@ def shadow_blocked(short_exec_before: list[dict], shadow_direct_threshold: float
     return [r for r in short_exec_before if r["score"] < shadow_direct_threshold]
 
 
+def shadow_blocked_by_action(
+    short_exec_before: list[dict],
+    direct_threshold: float,
+    probe_threshold: float,
+) -> list[dict]:
+    """Apply the entry-chain base threshold that matches each executable action."""
+    thresholds = {"DIRECT": direct_threshold, "PROBE": probe_threshold}
+    return [
+        row
+        for row in short_exec_before
+        if row.get("action") in thresholds and row["score"] < thresholds[row["action"]]
+    ]
+
+
 def completed_15m_candle_timestamp(payload: dict) -> int | None:
     """Return a candle timestamp only when the decision was logged after close."""
     kline = payload.get("kline") if isinstance(payload.get("kline"), dict) else {}
@@ -200,15 +214,18 @@ def main() -> int:
 
     candidates, regime_counts = shadow_rows(rows, regime_ts, args.min_score, args.breadth_min)
 
-    # shadow 反事实:SHORT direct 门槛升到 82 + shadow_short_offset(对称 LONG)
+    # shadow 反事实:SHORT thresholds rise by offset while retaining action semantics.
     shadow_direct_threshold = 82.0 + args.shadow_short_offset
-    blocked = shadow_blocked(candidates, shadow_direct_threshold)
+    shadow_probe_threshold = 70.0 + args.shadow_short_offset
+    blocked = shadow_blocked_by_action(candidates, shadow_direct_threshold, shadow_probe_threshold)
     shadow_offsets = {}
     for offset in (5.0, 10.0):
-        threshold = 82.0 + offset
-        blocked_at_offset = shadow_blocked(candidates, threshold)
+        direct_threshold = 82.0 + offset
+        probe_threshold = 70.0 + offset
+        blocked_at_offset = shadow_blocked_by_action(candidates, direct_threshold, probe_threshold)
         shadow_offsets[str(int(offset))] = {
-            "direct_threshold": threshold,
+            "direct_threshold": direct_threshold,
+            "probe_threshold": probe_threshold,
             "evaluated_q1_short_executable": len(candidates),
             "blocked_count": len(blocked_at_offset),
             "blocked_samples": blocked_at_offset[:10],
@@ -221,6 +238,7 @@ def main() -> int:
             "min_score": args.min_score,
             "shadow_short_offset": args.shadow_short_offset,
             "shadow_direct_threshold": shadow_direct_threshold,
+            "shadow_probe_threshold": shadow_probe_threshold,
             "breadth_min": args.breadth_min,
             "candle_rule": "15m candle timestamp is eligible only when decision timestamp is at least 900 seconds later",
             "scope": "SHADOW ONLY - no live logic change",

@@ -1993,15 +1993,16 @@ def apply_paper_snapshot_to_context(
         else 0.0
     )
     equity = max(0.0, initial_equity * (1.0 + snapshot.daily_profit_pct))
+    exposure_scale = initial_equity / equity if initial_equity > 0.0 and equity > 0.0 else 1.0
     return context.with_updates(
         active_symbols=snapshot.open_position_count,
         active_symbol_names=frozenset(snapshot.active_symbols),
         portfolio_trades_today=snapshot.portfolio_trades_today,
         symbol_trades_today=snapshot.daily_trades_by_symbol.get(symbol, 0),
         daily_profit_pct=snapshot.daily_profit_pct,
-        symbol_exposure_pct=snapshot.symbol_exposure_pct.get(symbol, 0.0),
-        total_exposure_pct=snapshot.total_exposure_pct,
-        same_direction_exposure_pct=same_direction_exposure,
+        symbol_exposure_pct=snapshot.symbol_exposure_pct.get(symbol, 0.0) * exposure_scale,
+        total_exposure_pct=snapshot.total_exposure_pct * exposure_scale,
+        same_direction_exposure_pct=same_direction_exposure * exposure_scale,
         account_equity=equity if equity > 0 else context.account_equity,
     )
 
