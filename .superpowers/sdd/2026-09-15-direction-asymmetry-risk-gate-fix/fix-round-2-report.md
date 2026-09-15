@@ -11,7 +11,14 @@
 
 - `tests/test_live_dry_run.py` now proves a realized drawdown scales a remaining 18% initial-equity LONG position above a 20% current-equity cap and rejects a new same-side entry.
 - `tests/test_regime_short_offset_shadow.py` now proves PROBE and DIRECT candidates are each compared with their corresponding threshold.
+- Command: `pytest -q tests/test_live_dry_run.py tests/test_regime_short_offset_shadow.py`
+- Result: `98 passed`
+- Commit: `0d0b0f162bd9a03e90f7eeadce310fc116ee7b4c`
 
 ## Scope
 
 - No changes to `src/observability/paper_trading.py`, scout/mirror eligibility policy, live order behavior, leverage-tier selection, or shadow-only status.
+
+## Concerns
+
+- Existing user modified/untracked workspace files were preserved and are outside this fix.
