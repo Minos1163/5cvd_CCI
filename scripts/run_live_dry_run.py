@@ -32,6 +32,7 @@ from src.risk.net_beta_exposure_model import (
 from src.risk.stress_simulator import stress_decision
 from src.signals.entry_chain import EntryChainContext, EntryChainDecision, _notional_cap_diagnostics, evaluate_entry_chain
 from src.signals.entry_chain_config import EntryChainConfig, load_entry_chain_config
+from src.signals.entry_chain_gates import symbol_exposure_cap
 from src.signals.entry_chain_features import (
     atr_pct,
     component_scores,
@@ -1628,6 +1629,38 @@ def _day_start(timestamp: int) -> int:
     return int(timestamp) - (int(timestamp) % 86400)
 
 
+def _experimental_risk_context(
+    *,
+    symbol: str,
+    side: str,
+    near_miss: Mapping[str, Any],
+    ledger: PaperTradingLedger,
+    timestamp: int,
+) -> EntryChainContext:
+    entry_context = near_miss.get("entry_context", {})
+    entry_context = entry_context if isinstance(entry_context, Mapping) else {}
+    normalized_symbol = symbol.strip().upper()
+    portfolio = ledger.get_portfolio_state_snapshot(timestamp)
+    summary = ledger.summary(timestamp)
+    current_equity = _q1_float(summary.get("equity"), ledger.initial_equity)
+    return EntryChainContext(
+        symbol=normalized_symbol,
+        timestamp=timestamp,
+        side=side,
+        component_scores={},
+        quote_volume_24h=_q1_float(entry_context.get("quote_volume_24h"), 1e9),
+        atr_pct=_q1_float(entry_context.get("atr_pct"), 0.01),
+        expected_order_size=_q1_float(entry_context.get("expected_order_size"), 1_000.0),
+        account_equity=current_equity,
+        available_margin=current_equity,
+        stop_pct=entry_context.get("stop_pct"),
+        symbol_exposure_pct=_q1_float(
+            portfolio.symbol_exposure_pct.get(normalized_symbol),
+            _q1_float(entry_context.get("symbol_exposure_pct")),
+        ),
+    )
+
+
 def build_scout_micro_payloads(
     *,
     symbol: str,
@@ -1635,12 +1668,29 @@ def build_scout_micro_payloads(
     price: float,
     config: EntryChainConfig,
     timestamp: int,
+    scout_paper: PaperTradingLedger,
     mission: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     side = scout_micro_entry_side(near_miss, mission)
-    notional = float(config.scout_micro_reversal_pivot_notional if mission == "REVERSAL_PIVOT_SCOUT" else config.scout_micro_notional)
+    configured_notional = float(config.scout_micro_reversal_pivot_notional if mission == "REVERSAL_PIVOT_SCOUT" else config.scout_micro_notional)
     if mission == "HIGH_SCORE_LONG_OFFSET_PROBE" and symbol.strip().upper() in HIGH_BETA_SYMBOLS:
-        notional *= 0.5
+        configured_notional *= 0.5
+    cap_context = _experimental_risk_context(
+        symbol=symbol,
+        side=side,
+        near_miss=near_miss,
+        ledger=scout_paper,
+        timestamp=timestamp,
+    )
+    cap_diagnostics = _notional_cap_diagnostics(
+        "PROBE",
+        _q1_float(near_miss.get("score")),
+        cap_context,
+        config,
+        symbol_exposure_cap(symbol.strip().upper(), config),
+        selected_leverage=int(config.scout_micro_leverage),
+    )
+    notional = round(min(configured_notional, float(cap_diagnostics["final_notional"])), 4)
     quantity = notional / float(price)
     entry_context = near_miss.get("entry_context", {})
     entry_context_payload = dict(entry_context) if isinstance(entry_context, Mapping) else {}
@@ -1661,7 +1711,7 @@ def build_scout_micro_payloads(
         "score": float(near_miss.get("score") or 0.0),
         "leverage": int(config.scout_micro_leverage),
         "notional_hint": notional,
-        "max_symbol_exposure_pct": 0.0,
+        "max_symbol_exposure_pct": symbol_exposure_cap(symbol.strip().upper(), config),
         "risk_allowed": True,
         "reasons": list(dict.fromkeys(audit_reasons)),
         "entry_context": entry_context_payload,
@@ -1671,6 +1721,8 @@ def build_scout_micro_payloads(
         "experiment_id": FOUR_QUADRANT_EXPERIMENT_ID,
         "entry_channel": f"scout_{str(mission or 'unknown').lower()}",
         "source_quadrant": str(near_miss.get("quadrant") or decision_quadrant(near_miss, config)),
+        "risk_budget": cap_diagnostics,
+        "scout_micro_notional_before_cap": configured_notional,
     }
     draft_payload = {
         "approved": True,
@@ -1727,9 +1779,26 @@ def build_mirror_ab_payloads(
     price: float,
     config: EntryChainConfig,
     timestamp: int,
+    mirror_paper: PaperTradingLedger,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     side = str(near_miss.get("intended_side") or "").upper()
-    notional = float(config.mirror_ab_notional)
+    configured_notional = float(config.mirror_ab_notional)
+    cap_context = _experimental_risk_context(
+        symbol=symbol,
+        side=side,
+        near_miss=near_miss,
+        ledger=mirror_paper,
+        timestamp=timestamp,
+    )
+    cap_diagnostics = _notional_cap_diagnostics(
+        "PROBE",
+        _q1_float(near_miss.get("score")),
+        cap_context,
+        config,
+        symbol_exposure_cap(symbol.strip().upper(), config),
+        selected_leverage=1,
+    )
+    notional = round(min(configured_notional, float(cap_diagnostics["final_notional"])), 4)
     quantity = notional / float(price)
     entry_context = near_miss.get("entry_context", {})
     entry_context_payload = dict(entry_context) if isinstance(entry_context, Mapping) else {}
@@ -1745,7 +1814,7 @@ def build_mirror_ab_payloads(
         "score": float(near_miss.get("score") or 0.0),
         "leverage": 1,
         "notional_hint": notional,
-        "max_symbol_exposure_pct": 0.0,
+        "max_symbol_exposure_pct": symbol_exposure_cap(symbol.strip().upper(), config),
         "risk_allowed": True,
         "reasons": ["MIRROR_AB_SAMPLE", f"MIRROR_AB_SOURCE_{source_reason}", *reasons],
         "entry_context": entry_context_payload,
@@ -1754,6 +1823,8 @@ def build_mirror_ab_payloads(
         "experiment_id": FOUR_QUADRANT_EXPERIMENT_ID,
         "entry_channel": "mirror_ab_sample",
         "source_quadrant": source_quadrant,
+        "risk_budget": cap_diagnostics,
+        "mirror_ab_notional_before_cap": configured_notional,
     }
     draft_payload = {
         "approved": True,
@@ -1783,15 +1854,16 @@ def update_mirror_ab_ledgers(
     price = float(kline.get("close") or near_miss_price or 0.0)
     if price <= 0.0:
         return []
-    decision_payload, draft_payload = build_mirror_ab_payloads(
-        symbol=normalized_symbol,
-        near_miss=near_miss or {},
-        price=price,
-        config=config,
-        timestamp=timestamp,
-    )
     events: list[str] = []
     for name, ledger in sorted(ab_ledgers.items()):
+        decision_payload, draft_payload = build_mirror_ab_payloads(
+            symbol=normalized_symbol,
+            near_miss=near_miss or {},
+            price=price,
+            config=config,
+            timestamp=timestamp,
+            mirror_paper=ledger,
+        )
         ledger_events = ledger.on_decision(
             symbol=normalized_symbol,
             decision_payload=decision_payload,
@@ -1833,6 +1905,7 @@ def update_scout_micro_ledger(
             price=price,
             config=config,
             timestamp=timestamp,
+            scout_paper=scout_paper,
             mission=mission,
         )
     else:

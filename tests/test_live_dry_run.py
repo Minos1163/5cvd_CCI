@@ -43,6 +43,7 @@ from scripts.run_live_dry_run import (
     should_open_scout_micro,
     should_open_mirror_ab_sample,
     update_mirror_ab_ledgers,
+    update_scout_micro_ledger,
     write_quadrant_pending_state,
     warmup_summary,
     warmup_symbols,
@@ -1021,7 +1022,7 @@ def test_scout_micro_allows_watch_only_symbol_promotion_mission(tmp_path):
     )
 
 
-def test_high_beta_long_offset_probe_uses_half_scout_notional():
+def test_high_beta_long_offset_probe_uses_half_scout_notional(tmp_path):
     near_miss = {
         "symbol": "HYPEUSDT",
         "score": 88.0,
@@ -1031,6 +1032,7 @@ def test_high_beta_long_offset_probe_uses_half_scout_notional():
         "entry_context": {"atr_pct": 0.01, "side": "LONG"},
     }
     config = EntryChainConfig(scout_micro_notional=50.0, scout_micro_leverage=1)
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
 
     decision_payload, draft_payload = build_scout_micro_payloads(
         symbol="HYPEUSDT",
@@ -1038,6 +1040,7 @@ def test_high_beta_long_offset_probe_uses_half_scout_notional():
         price=10.0,
         config=config,
         timestamp=1782992705,
+        scout_paper=ledger,
         mission="HIGH_SCORE_LONG_OFFSET_PROBE",
     )
 
@@ -1159,7 +1162,7 @@ def test_scout_micro_blocks_symbol_after_initial_stop_cooldown(tmp_path):
     )
 
 
-def test_build_scout_micro_payloads_uses_fixed_notional_and_leverage():
+def test_build_scout_micro_payloads_keeps_small_notional_below_risk_cap(tmp_path):
     near_miss = {
         "timestamp": 1782992705,
         "symbol": "XLMUSDT",
@@ -1174,6 +1177,7 @@ def test_build_scout_micro_payloads_uses_fixed_notional_and_leverage():
         scout_micro_notional=50.0,
         scout_micro_leverage=1,
     )
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
 
     decision_payload, draft_payload = build_scout_micro_payloads(
         symbol="XLMUSDT",
@@ -1181,6 +1185,7 @@ def test_build_scout_micro_payloads_uses_fixed_notional_and_leverage():
         price=0.25,
         config=config,
         timestamp=1782992705,
+        scout_paper=ledger,
     )
 
     assert decision_payload["action"] == "PROBE"
@@ -1356,6 +1361,7 @@ def test_scout_micro_allows_reversal_pivot_with_side_flip(tmp_path):
         price=150.0,
         config=config,
         timestamp=1_000,
+        scout_paper=ledger,
         mission=mission,
     )
     assert decision_payload["side"] == "SHORT"
@@ -1742,6 +1748,7 @@ def test_mirror_ab_sample_opens_only_ab_ledgers(tmp_path):
         price=150.0,
         config=config,
         timestamp=1_000,
+        mirror_paper=ab_ledgers["legacy"],
     )
     assert decision_payload["mirror_ab_sample"] is True
     assert decision_payload["scout_mission"] == "MIRROR_AB_SAMPLE"
@@ -1795,14 +1802,91 @@ def test_mirror_ab_allows_q1_watch_sample_when_enabled(tmp_path):
 
     assert should_open_mirror_ab_sample(near_miss, config, build_paper_exit_ab_ledgers(tmp_path, tmp_path / "state", config)) is True
 
+    ab_ledgers = build_paper_exit_ab_ledgers(tmp_path, tmp_path / "state", config)
     decision_payload, _ = build_mirror_ab_payloads(
         symbol="SOLUSDT",
         near_miss=near_miss,
         price=150.0,
         config=config,
         timestamp=1_000,
+        mirror_paper=ab_ledgers["legacy"],
     )
     assert decision_payload["source_quadrant"] == "Q1"
+
+
+def test_scout_micro_update_uses_current_ledger_equity_and_selected_leverage(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    ledger.realized_pnl = -5_000.0
+    config = EntryChainConfig(
+        scout_micro_symbols=("SOLUSDT",),
+        scout_micro_targeted_long_symbols=("SOLUSDT",),
+        scout_micro_notional=1_000.0,
+        scout_micro_leverage=4,
+    )
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "LONG",
+        "entry_price": 100.0,
+        "score": 90.0,
+        "reasons": ["SIDE_THRESHOLD_OFFSET_LONG_10.00"],
+        "component_points": {
+            "trend_ema_context": 16.0,
+            "price_action_structure": 21.0,
+            "fibonacci_location": 18.0,
+            "flow_cvd_confirmation": 18.0,
+            "cci_momentum_quality": 10.0,
+            "risk_reward_geometry": 4.0,
+        },
+        "entry_context": {"atr_pct": 0.01, "side": "LONG"},
+    }
+
+    events = update_scout_micro_ledger(
+        scout_paper=ledger,
+        symbol="SOLUSDT",
+        near_miss=near_miss,
+        config=config,
+        data_health="OK",
+        kline={"close": 100.0, "high": 101.0, "low": 99.0},
+        timestamp=1_000,
+    )
+
+    position = ledger.positions["SOLUSDT"]
+    assert events == ["PAPER_OPEN:SOLUSDT:LONG@100.00000000"]
+    assert position.notional == 625.0
+    assert position.leverage == 4
+
+
+def test_mirror_ab_update_caps_each_ledger_independently(tmp_path):
+    config = EntryChainConfig(
+        mirror_ab_enabled=True,
+        mirror_ab_min_score=85.0,
+        mirror_ab_notional=1_000.0,
+        mirror_ab_allowed_reasons=("BELOW_RISK_REWARD_GEOMETRY",),
+        max_single_trade_risk_pct=0.001,
+    )
+    ab_ledgers = build_paper_exit_ab_ledgers(tmp_path, tmp_path / "state", config)
+    ab_ledgers["legacy"].realized_pnl = -5_000.0
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "SHORT",
+        "entry_price": 100.0,
+        "score": 88.0,
+        "reasons": ["DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_0.5"],
+        "entry_context": {"atr_pct": 0.01, "side": "SHORT"},
+    }
+
+    events = update_mirror_ab_ledgers(
+        ab_ledgers=ab_ledgers,
+        symbol="SOLUSDT",
+        near_miss=near_miss,
+        config=config,
+        kline={"close": 100.0, "high": 101.0, "low": 99.0},
+        timestamp=1_000,
+    )
+
+    assert len(events) == 2
+    assert ab_ledgers["legacy"].positions["SOLUSDT"].notional == 333.3333
+    assert ab_ledgers["trend_capture"].positions["SOLUSDT"].notional == 666.6667
 
 
 def test_paper_ab_auto_report_writes_report_and_auto_switches_after_two_qualified_batches(tmp_path):
