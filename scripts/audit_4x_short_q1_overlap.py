@@ -53,7 +53,9 @@ def load_trade_closes(log_root: Path, start: str, end: str) -> list[dict[str, An
             continue
         if event != "PAPER_CLOSE" or _safe_float(row.get("remaining_fraction"), 1.0) != 0.0:
             continue
-        opening = open_queues[key].pop(0) if open_queues[key] else {}
+        if not open_queues[key]:
+            continue
+        opening = open_queues[key].pop(0)
         enriched = dict(row)
         enriched["entry_timestamp"] = _safe_int(opening.get("timestamp"))
         enriched["entry_notional"] = _safe_float(opening.get("notional"), 0.0)
