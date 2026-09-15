@@ -233,6 +233,7 @@ def run(args: argparse.Namespace) -> None:
                     config=config,
                     data_health=data_health,
                     paper=paper,
+                    entry_context=context,
                 )
                 if green_channel_decision is not None:
                     decision = apply_dry_run_decision_controls(
@@ -256,7 +257,7 @@ def run(args: argparse.Namespace) -> None:
                 else:
                     q1_policy_reason = q1_symbol_policy_rejection_reason(near_miss, config)
                     if q1_policy_reason is not None and decision_quadrant(near_miss, config) == "Q1":
-                        decision = _cap_decision_to_watch(decision, [q1_policy_reason])
+                        decision = _add_decision_reasons(decision, [q1_policy_reason])
                         decision_payload = annotate_quadrant(
                             enrich_decision_payload(
                                 decision.to_dict(),
@@ -852,6 +853,7 @@ def build_q1_green_channel_decision(
     config: EntryChainConfig,
     data_health: str,
     paper: PaperTradingLedger,
+    entry_context: EntryChainContext | None = None,
 ) -> EntryChainDecision | None:
     if not _q1_trend_launch_eligible(near_miss, config, data_health):
         return None
@@ -860,22 +862,8 @@ def build_q1_green_channel_decision(
     rr_points = _component_point(near_miss, "risk_reward_geometry")
     rr_factor = max(0.25, min(1.0, rr_points / 8.0))
     exposure_pct = float(config.dry_run_q1_trend_launch_base_exposure_pct) * rr_factor
-    notional = round(max(0.0, paper.initial_equity * exposure_pct), 4)
-    entry_ctx = near_miss.get("entry_context", {})
-    entry_ctx = entry_ctx if isinstance(entry_ctx, Mapping) else {}
-    cap_context = EntryChainContext(
-        symbol=str(near_miss.get("symbol") or "").strip().upper(),
-        timestamp=0,
-        side=side,
-        component_scores={},
-        quote_volume_24h=_q1_float(entry_ctx.get("quote_volume_24h")),
-        atr_pct=_q1_float(entry_ctx.get("atr_pct")),
-        expected_order_size=_q1_float(entry_ctx.get("expected_order_size")),
-        account_equity=float(paper.initial_equity),
-        available_margin=float(paper.initial_equity),
-        stop_pct=entry_ctx.get("stop_pct"),
-        symbol_exposure_pct=_q1_float(entry_ctx.get("symbol_exposure_pct")),
-    )
+    cap_context = entry_context or _q1_risk_context_from_near_miss(near_miss, paper, side)
+    notional = round(max(0.0, cap_context.account_equity * exposure_pct), 4)
     cap_diagnostics = _notional_cap_diagnostics(
         "PROBE",
         _q1_float(near_miss.get("score")),
@@ -907,7 +895,7 @@ def build_q1_green_channel_decision(
             "q1_trend_launch_rr_factor": rr_factor,
             "q1_trend_launch_source": near_miss.get("q2_pending_source") or near_miss.get("q3_pending_source"),
             "risk_budget": cap_diagnostics,
-            "q1_custom_notional_before_cap": round(max(0.0, paper.initial_equity * exposure_pct), 4),
+            "q1_custom_notional_before_cap": round(max(0.0, cap_context.account_equity * exposure_pct), 4),
         }
     )
     return replace(
@@ -923,11 +911,41 @@ def build_q1_green_channel_decision(
     )
 
 
+def _q1_risk_context_from_near_miss(
+    near_miss: Mapping[str, Any],
+    paper: PaperTradingLedger,
+    side: str,
+) -> EntryChainContext:
+    entry_ctx = near_miss.get("entry_context", {})
+    entry_ctx = entry_ctx if isinstance(entry_ctx, Mapping) else {}
+    return EntryChainContext(
+        symbol=str(near_miss.get("symbol") or "").strip().upper(),
+        timestamp=int(_q1_float(near_miss.get("timestamp"))),
+        side=side,
+        component_scores={},
+        quote_volume_24h=_q1_float(entry_ctx.get("quote_volume_24h"), 1e9),
+        atr_pct=_q1_float(entry_ctx.get("atr_pct"), 0.01),
+        expected_order_size=_q1_float(entry_ctx.get("expected_order_size"), 1_000.0),
+        account_equity=float(paper.initial_equity),
+        available_margin=float(paper.initial_equity),
+        stop_pct=entry_ctx.get("stop_pct"),
+        symbol_exposure_pct=_q1_float(entry_ctx.get("symbol_exposure_pct")),
+    )
 def _q1_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value) if value is not None else default
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _add_decision_reasons(decision: EntryChainDecision, reasons: Sequence[str]) -> EntryChainDecision:
+    metadata = dict(decision.metadata)
+    metadata["q1_policy_reasons"] = list(dict.fromkeys([*metadata.get("q1_policy_reasons", []), *reasons]))
+    return replace(
+        decision,
+        reasons=tuple(dict.fromkeys([*decision.reasons, *reasons])),
+        metadata=metadata,
+    )
 
 
 def _q1_green_channel_eligible(
@@ -977,7 +995,7 @@ def _q1_trend_launch_eligible(
         return False
     if str(near_miss.get("intended_side") or "").upper() not in {"LONG", "SHORT"}:
         return False
-    if float(near_miss.get("entry_price") or 0.0) <= 0.0:
+    if _q1_float(near_miss.get("entry_price")) <= 0.0:
         return False
     side = str(near_miss.get("intended_side") or "").upper()
     # 非极值追单检查(08-02 报告 Task A 量化定义: close 不在近8根极值区间最外20%)
@@ -1005,7 +1023,7 @@ def _q1_trend_launch_eligible(
     ):
         return False
     return (
-        float(near_miss.get("score") or 0.0) >= float(config.dry_run_q1_trend_launch_min_score)
+        _q1_float(near_miss.get("score")) >= float(config.dry_run_q1_trend_launch_min_score)
         and _component_point(near_miss, "price_action_structure") >= float(config.dry_run_q1_trend_launch_min_pa_score)
         and _component_point(near_miss, "fibonacci_location") >= float(config.dry_run_q1_trend_launch_min_fib_score)
         and _component_point(near_miss, "flow_cvd_confirmation") >= float(config.dry_run_q1_trend_launch_min_cvd_score)
@@ -1368,7 +1386,7 @@ def _component_point(near_miss: Mapping[str, Any], component: str) -> float:
     points = near_miss.get("component_points", {})
     if not isinstance(points, Mapping):
         return 0.0
-    return float(points.get(component) or 0.0)
+    return _q1_float(points.get(component))
 
 
 def quadrant_axes(payload: Mapping[str, Any], config: EntryChainConfig) -> tuple[bool, bool]:

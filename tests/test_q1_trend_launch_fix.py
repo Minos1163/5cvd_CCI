@@ -18,9 +18,10 @@ from src.backtest.engine import BacktestBar
 from src.signals.entry_chain_config import EntryChainConfig
 from src.signals.entry_chain_features import extreme_position_ratio
 from src.observability.paper_trading import PaperTradingLedger
-from src.signals.entry_chain import EntryChainDecision
+from src.signals.entry_chain import EntryChainContext, EntryChainDecision
 
 from scripts.run_live_dry_run import (
+    _add_decision_reasons,
     _q1_trend_launch_eligible,
     build_q1_green_channel_decision,
     q1_symbol_policy_rejection_reason,
@@ -257,6 +258,19 @@ def test_q1_symbol_policy_allows_unlisted_symbol():
     assert q1_symbol_policy_rejection_reason(_make_near_miss(), BASE_CONFIG) is None
 
 
+def test_q1_policy_audit_reason_does_not_change_underlying_action():
+    decision = EntryChainDecision(
+        action="NO_TRADE", side="NONE", score=80.0, weights={}, component_points={},
+        reasons=("SYMBOL_WATCH_ONLY",), risk_allowed=False, leverage=0,
+        max_symbol_exposure_pct=0.2, notional_hint=0.0, liquidity_ratio=100.0,
+        metadata={},
+    )
+    audited = _add_decision_reasons(decision, ["Q1_SYMBOL_WATCH_ONLY"])
+    assert audited.action == "NO_TRADE"
+    assert audited.risk_allowed is False
+    assert "Q1_SYMBOL_WATCH_ONLY" in audited.reasons
+
+
 def test_q1_green_channel_custom_notional_respects_central_risk_cap(tmp_path):
     base = EntryChainDecision(
         action="WATCH", side="NONE", score=90.0, weights={}, component_points={},
@@ -285,6 +299,49 @@ def test_q1_green_channel_custom_notional_respects_central_risk_cap(tmp_path):
 
     assert converted is not None
     assert converted.notional_hint == 500.0
+
+
+def test_q1_green_channel_cap_uses_current_equity_context(tmp_path):
+    base = EntryChainDecision(
+        action="WATCH", side="NONE", score=90.0, weights={}, component_points={},
+        reasons=(), risk_allowed=False, leverage=0, max_symbol_exposure_pct=0.5,
+        notional_hint=0.0, liquidity_ratio=100.0, metadata={"symbol": "SOLUSDT"},
+    )
+    config = replace(
+        BASE_CONFIG,
+        dry_run_q1_trend_launch_base_exposure_pct=0.5,
+        max_single_trade_risk_pct=0.001,
+    )
+    context = EntryChainContext(
+        symbol="SOLUSDT",
+        timestamp=1_000,
+        side="LONG",
+        component_scores={},
+        quote_volume_24h=1e9,
+        atr_pct=0.01,
+        expected_order_size=1_000.0,
+        account_equity=8_000.0,
+        available_margin=8_000.0,
+        stop_pct=0.02,
+    )
+    converted = build_q1_green_channel_decision(
+        base_decision=base,
+        near_miss=_make_near_miss(),
+        config=config,
+        data_health="OK",
+        paper=PaperTradingLedger(tmp_path),
+        entry_context=context,
+    )
+
+    assert converted is not None
+    assert converted.notional_hint == 400.0
+    assert converted.metadata["risk_budget"]["leveraged_cap_notional"] == 400.0
+
+
+@pytest.mark.parametrize("field", ["score", "entry_price"])
+def test_q1_bad_numeric_fields_fail_closed(field):
+    near_miss = _make_near_miss(**{field: "bad"})
+    assert _q1_trend_launch_eligible(near_miss, BASE_CONFIG, "OK") is False
 
 
 def test_disabled_channel_rejected():
