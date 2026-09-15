@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from math import isfinite
 import os
 import sys
 import time
@@ -918,22 +919,31 @@ def _q1_risk_context_from_near_miss(
 ) -> EntryChainContext:
     entry_ctx = near_miss.get("entry_context", {})
     entry_ctx = entry_ctx if isinstance(entry_ctx, Mapping) else {}
+    timestamp = int(_q1_float(near_miss.get("timestamp")))
+    portfolio = paper.get_portfolio_state_snapshot(timestamp)
+    summary = paper.summary(timestamp)
+    current_equity = _q1_float(summary.get("equity"), paper.initial_equity)
+    symbol = str(near_miss.get("symbol") or "").strip().upper()
     return EntryChainContext(
-        symbol=str(near_miss.get("symbol") or "").strip().upper(),
-        timestamp=int(_q1_float(near_miss.get("timestamp"))),
+        symbol=symbol,
+        timestamp=timestamp,
         side=side,
         component_scores={},
         quote_volume_24h=_q1_float(entry_ctx.get("quote_volume_24h"), 1e9),
         atr_pct=_q1_float(entry_ctx.get("atr_pct"), 0.01),
         expected_order_size=_q1_float(entry_ctx.get("expected_order_size"), 1_000.0),
-        account_equity=float(paper.initial_equity),
-        available_margin=float(paper.initial_equity),
+        account_equity=current_equity,
+        available_margin=current_equity,
         stop_pct=entry_ctx.get("stop_pct"),
-        symbol_exposure_pct=_q1_float(entry_ctx.get("symbol_exposure_pct")),
+        symbol_exposure_pct=_q1_float(
+            portfolio.symbol_exposure_pct.get(symbol),
+            _q1_float(entry_ctx.get("symbol_exposure_pct")),
+        ),
     )
 def _q1_float(value: Any, default: float = 0.0) -> float:
     try:
-        return float(value) if value is not None else default
+        parsed = float(value) if value is not None else default
+        return parsed if isfinite(parsed) else default
     except (TypeError, ValueError, OverflowError):
         return default
 

@@ -344,6 +344,13 @@ def test_q1_bad_numeric_fields_fail_closed(field):
     assert _q1_trend_launch_eligible(near_miss, BASE_CONFIG, "OK") is False
 
 
+@pytest.mark.parametrize("field", ["score", "entry_price"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_q1_nonfinite_numeric_fields_fail_closed(field, value):
+    near_miss = _make_near_miss(**{field: value})
+    assert _q1_trend_launch_eligible(near_miss, BASE_CONFIG, "OK") is False
+
+
 def test_disabled_channel_rejected():
     cfg = replace(BASE_CONFIG, dry_run_q1_trend_launch_enabled=False)
     assert _q1_trend_launch_eligible(_make_near_miss(), cfg, "OK") is False
