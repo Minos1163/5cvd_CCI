@@ -60,6 +60,12 @@ def test_completed_candle_requires_full_15m_delay():
     assert completed_15m_candle_timestamp(row) == 1000
 
 
+def test_completed_candle_rejects_missing_timeframe():
+    row = _decision()
+    del row["kline"]["timeframe"]
+    assert completed_15m_candle_timestamp(row) is None
+
+
 def test_regime_evidence_distinguishes_breadth_confirmation_and_missing_data():
     assert regime_evidence(_decision(breadth=(0.7, 0.8)), 900)["status"] == "BULLISH_CONFIRMED"
     assert regime_evidence(_decision(), 900)["status"] == "BULLISH_TIME_WINDOW_PROXY"

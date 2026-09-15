@@ -54,7 +54,7 @@ def shadow_blocked(short_exec_before: list[dict], shadow_direct_threshold: float
 def completed_15m_candle_timestamp(payload: dict) -> int | None:
     """Return a candle timestamp only when the decision was logged after close."""
     kline = payload.get("kline") if isinstance(payload.get("kline"), dict) else {}
-    if str(kline.get("timeframe") or "15m") != "15m":
+    if str(kline.get("timeframe") or "") != "15m":
         return None
     candle_ts = _safe_int(kline.get("timestamp"))
     decision_ts = _safe_int(payload.get("timestamp"))
@@ -116,7 +116,13 @@ def reversal_confirmation_score(payload: dict) -> float:
 
 def shadow_rows(rows: list[dict], regime_start_ts: int, min_score: float, breadth_min: float) -> tuple[list[dict], dict]:
     candidates: list[dict] = []
-    counts = {"completed_candles": 0, "breadth_confirmed": 0, "breadth_missing": 0, "not_bullish": 0}
+    counts = {
+        "completed_candles": 0,
+        "outside_regime_window": 0,
+        "breadth_confirmed": 0,
+        "breadth_missing": 0,
+        "not_bullish": 0,
+    }
     for payload in rows:
         evidence = regime_evidence(payload, regime_start_ts, breadth_min)
         if evidence["status"] == "INCOMPLETE_CANDLE":
@@ -128,6 +134,8 @@ def shadow_rows(rows: list[dict], regime_start_ts: int, min_score: float, breadt
             counts["breadth_missing"] += 1
         elif evidence["status"] == "NOT_BULLISH":
             counts["not_bullish"] += 1
+        elif evidence["status"] == "OUTSIDE_REGIME_WINDOW":
+            counts["outside_regime_window"] += 1
         else:
             continue
         context = payload.get("entry_context") if isinstance(payload.get("entry_context"), dict) else {}

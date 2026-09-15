@@ -91,7 +91,7 @@ shadow 记录了 `reversal_confirmation_score`，该分数由已记录的 PA、C
 通过：
 
 - Q1、dry-run 相关测试：`121 passed`；
-- Task 3 shadow/审计/4x gate 测试：`14 passed`；
+- Task 3 shadow/审计/4x gate 测试：`16 passed`；
 - shadow 实际日志运行成功；
 - 4x SHORT/Q1 实际日志审计成功；
 - 所有改动保持 dry-run/offline，不发起真实交易所请求。

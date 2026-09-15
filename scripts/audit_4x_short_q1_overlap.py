@@ -91,6 +91,7 @@ def select_4x_short(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         selected.append(
             {
                 "timestamp": _safe_int(row.get("timestamp")),
+                "entry_timestamp": _safe_int(row.get("entry_timestamp")),
                 "symbol": str(row.get("symbol") or "").strip().upper(),
                 "side": "SHORT",
                 "leverage": 4,
