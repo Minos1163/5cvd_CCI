@@ -218,6 +218,7 @@ class EntryChainConfig:
     portfolio_stop_circuit_hours: int = 4
     portfolio_daily_loss_circuit_enabled: bool = False
     portfolio_daily_loss_limit: float = -30.0
+    max_single_trade_risk_pct: float = 0.0075
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "EntryChainConfig":

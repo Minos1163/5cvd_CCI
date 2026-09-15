@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
-from math import floor
+from math import floor, isfinite
 from typing import Any, Mapping
 
 from src.signals.entry_chain_config import EntryChainConfig
@@ -181,7 +181,14 @@ def evaluate_entry_chain(context: EntryChainContext, config: EntryChainConfig | 
         return _decision(context, cfg, "NO_TRADE", score, weights, points, reasons + ["SYMBOL_EXPOSURE_CAP"], max_symbol_exposure_pct, ratio)
 
     leverage = _select_leverage(action, score, context, cfg, reasons)
-    notional_hint = _notional_hint(action, score, context, cfg, max_symbol_exposure_pct)
+    notional_hint = _notional_hint(
+        action,
+        score,
+        context,
+        cfg,
+        max_symbol_exposure_pct,
+        selected_leverage=leverage,
+    )
 
     return _decision(
         context,
@@ -651,21 +658,100 @@ def _notional_hint(
     context: EntryChainContext,
     cfg: EntryChainConfig,
     max_symbol_exposure_pct: float,
+    selected_leverage: int | None = None,
 ) -> float:
+    diagnostics = _notional_cap_diagnostics(
+        action, score, context, cfg, max_symbol_exposure_pct, selected_leverage
+    )
+    return diagnostics["final_notional"]
+
+
+def _notional_cap_diagnostics(
+    action: str,
+    score: float,
+    context: EntryChainContext,
+    cfg: EntryChainConfig,
+    max_symbol_exposure_pct: float,
+    selected_leverage: int | None = None,
+) -> dict[str, float | int | str]:
     if action not in {"PROBE", "DIRECT"}:
-        return 0.0
-    exposure_pct = cfg.base_direct_exposure_pct
-    if action == "DIRECT":
-        exposure_pct += max(0.0, min(0.10, (score - cfg.direct_threshold) / 100.0))
-    else:
-        exposure_pct *= cfg.probe_fraction
-    exposure_pct = min(exposure_pct, max_symbol_exposure_pct)
-    score_based = context.account_equity * exposure_pct
-    stop_pct = context.stop_pct or max(cfg.min_stop_pct, min(cfg.max_stop_pct, context.atr_pct * 1.5))
+        return {
+            "selected_leverage": 0,
+            "stop_pct": 0.0,
+            "raw_notional": 0.0,
+            "leveraged_cap_notional": 0.0,
+            "remaining_exposure_notional": 0.0,
+            "final_notional": 0.0,
+            "binding_cap": "none",
+        }
+
+    leverage = selected_leverage
+    if leverage is None:
+        leverage = _select_leverage(action, score, context, cfg, [])
+    try:
+        leverage = max(1, int(leverage))
+    except (TypeError, ValueError, OverflowError):
+        leverage = 1
+
+    raw_stop_pct = context.stop_pct
+    if raw_stop_pct is None:
+        raw_stop_pct = max(cfg.min_stop_pct, min(cfg.max_stop_pct, context.atr_pct * 1.5))
+    try:
+        stop_pct = float(raw_stop_pct)
+        equity = float(context.account_equity)
+    except (TypeError, ValueError, OverflowError):
+        return {
+            "selected_leverage": leverage,
+            "stop_pct": 0.0,
+            "raw_notional": 0.0,
+            "leveraged_cap_notional": 0.0,
+            "remaining_exposure_notional": 0.0,
+            "final_notional": 0.0,
+            "binding_cap": "none",
+        }
+    if not isfinite(stop_pct) or stop_pct <= 0 or not isfinite(equity) or equity <= 0:
+        return {
+            "selected_leverage": leverage,
+            "stop_pct": round(stop_pct, 6) if isfinite(stop_pct) else 0.0,
+            "raw_notional": 0.0,
+            "leveraged_cap_notional": 0.0,
+            "remaining_exposure_notional": 0.0,
+            "final_notional": 0.0,
+            "binding_cap": "none",
+        }
+
     risk_pct = cfg.direct_risk_pct if action == "DIRECT" else cfg.probe_risk_pct
-    risk_based = context.account_equity * risk_pct / stop_pct
-    cap_remaining = max(0.0, (max_symbol_exposure_pct - context.symbol_exposure_pct) * context.account_equity)
-    return round(max(0.0, min(score_based, risk_based, cap_remaining)), 4)
+    raw_notional = equity * risk_pct / stop_pct
+    leveraged_cap_notional = (
+        equity * cfg.max_single_trade_risk_pct / (stop_pct * leverage)
+    )
+    remaining_exposure_notional = max(
+        0.0, (max_symbol_exposure_pct - context.symbol_exposure_pct) * equity
+    )
+    limits = {
+        "raw_notional": raw_notional,
+        "leveraged_cap_notional": leveraged_cap_notional,
+        "remaining_exposure_notional": remaining_exposure_notional,
+    }
+    if not all(isfinite(value) for value in limits.values()):
+        return {
+            "selected_leverage": leverage,
+            "stop_pct": round(stop_pct, 6),
+            "raw_notional": 0.0,
+            "leveraged_cap_notional": 0.0,
+            "remaining_exposure_notional": 0.0,
+            "final_notional": 0.0,
+            "binding_cap": "none",
+        }
+    final_notional = max(0.0, min(limits.values()))
+    binding_cap = min(limits, key=limits.get)
+    return {
+        "selected_leverage": leverage,
+        "stop_pct": round(stop_pct, 6),
+        **{key: round(value, 4) for key, value in limits.items()},
+        "final_notional": round(final_notional, 4),
+        "binding_cap": binding_cap,
+    }
 
 
 def _min_action(action: str, cap: str) -> str:
@@ -690,11 +776,22 @@ def _decision(
 ) -> EntryChainDecision:
     unique_reasons = tuple(dict.fromkeys(reasons))
     resolved_leverage = leverage if leverage is not None else _select_leverage(action, score, context, cfg, reasons)
-    resolved_notional = (
-        notional_hint
-        if notional_hint is not None
-        else _notional_hint(action, score, context, cfg, max_symbol_exposure_pct)
+    cap_diagnostics = _notional_cap_diagnostics(
+        action, score, context, cfg, max_symbol_exposure_pct, resolved_leverage
     )
+    cap_notional = float(cap_diagnostics["final_notional"])
+    if notional_hint is None:
+        resolved_notional = cap_notional
+    else:
+        try:
+            hinted_notional = float(notional_hint)
+        except (TypeError, ValueError, OverflowError):
+            hinted_notional = 0.0
+        resolved_notional = (
+            max(0.0, min(hinted_notional, cap_notional))
+            if isfinite(hinted_notional)
+            else 0.0
+        )
     return EntryChainDecision(
         action=action,
         side=context.side.strip().upper() if action in {"PROBE", "DIRECT"} else "NONE",
@@ -712,5 +809,6 @@ def _decision(
             "daily_max_trades": _daily_max_trades(context, cfg),
             "daily_budget_detail": _daily_budget_detail(context, cfg),
             "symbol": context.symbol.strip().upper(),
+            "risk_budget": cap_diagnostics,
         },
     )
