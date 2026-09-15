@@ -1643,6 +1643,14 @@ def _experimental_risk_context(
     portfolio = ledger.get_portfolio_state_snapshot(timestamp)
     summary = ledger.summary(timestamp)
     current_equity = _q1_float(summary.get("equity"), ledger.initial_equity)
+    snapshot_exposure_pct = portfolio.symbol_exposure_pct.get(normalized_symbol)
+    if snapshot_exposure_pct is not None and current_equity > 0.0 and ledger.initial_equity > 0.0:
+        current_symbol_exposure_pct = _q1_float(snapshot_exposure_pct) * ledger.initial_equity / current_equity
+    else:
+        current_symbol_exposure_pct = _q1_float(
+            snapshot_exposure_pct,
+            _q1_float(entry_context.get("symbol_exposure_pct")),
+        )
     return EntryChainContext(
         symbol=normalized_symbol,
         timestamp=timestamp,
@@ -1654,10 +1662,7 @@ def _experimental_risk_context(
         account_equity=current_equity,
         available_margin=current_equity,
         stop_pct=entry_context.get("stop_pct"),
-        symbol_exposure_pct=_q1_float(
-            portfolio.symbol_exposure_pct.get(normalized_symbol),
-            _q1_float(entry_context.get("symbol_exposure_pct")),
-        ),
+        symbol_exposure_pct=current_symbol_exposure_pct,
     )
 
 
@@ -1682,14 +1687,16 @@ def build_scout_micro_payloads(
         ledger=scout_paper,
         timestamp=timestamp,
     )
+    symbol_cap_pct = symbol_exposure_cap(symbol.strip().upper(), config)
     cap_diagnostics = _notional_cap_diagnostics(
         "PROBE",
         _q1_float(near_miss.get("score")),
         cap_context,
         config,
-        symbol_exposure_cap(symbol.strip().upper(), config),
+        symbol_cap_pct,
         selected_leverage=int(config.scout_micro_leverage),
     )
+    risk_budget = {**cap_diagnostics, "symbol_exposure_cap_pct": symbol_cap_pct}
     notional = round(min(configured_notional, float(cap_diagnostics["final_notional"])), 4)
     quantity = notional / float(price)
     entry_context = near_miss.get("entry_context", {})
@@ -1711,7 +1718,7 @@ def build_scout_micro_payloads(
         "score": float(near_miss.get("score") or 0.0),
         "leverage": int(config.scout_micro_leverage),
         "notional_hint": notional,
-        "max_symbol_exposure_pct": symbol_exposure_cap(symbol.strip().upper(), config),
+        "max_symbol_exposure_pct": 0.0,
         "risk_allowed": True,
         "reasons": list(dict.fromkeys(audit_reasons)),
         "entry_context": entry_context_payload,
@@ -1721,7 +1728,7 @@ def build_scout_micro_payloads(
         "experiment_id": FOUR_QUADRANT_EXPERIMENT_ID,
         "entry_channel": f"scout_{str(mission or 'unknown').lower()}",
         "source_quadrant": str(near_miss.get("quadrant") or decision_quadrant(near_miss, config)),
-        "risk_budget": cap_diagnostics,
+        "risk_budget": risk_budget,
         "scout_micro_notional_before_cap": configured_notional,
     }
     draft_payload = {
@@ -1790,14 +1797,16 @@ def build_mirror_ab_payloads(
         ledger=mirror_paper,
         timestamp=timestamp,
     )
+    symbol_cap_pct = symbol_exposure_cap(symbol.strip().upper(), config)
     cap_diagnostics = _notional_cap_diagnostics(
         "PROBE",
         _q1_float(near_miss.get("score")),
         cap_context,
         config,
-        symbol_exposure_cap(symbol.strip().upper(), config),
+        symbol_cap_pct,
         selected_leverage=1,
     )
+    risk_budget = {**cap_diagnostics, "symbol_exposure_cap_pct": symbol_cap_pct}
     notional = round(min(configured_notional, float(cap_diagnostics["final_notional"])), 4)
     quantity = notional / float(price)
     entry_context = near_miss.get("entry_context", {})
@@ -1814,7 +1823,7 @@ def build_mirror_ab_payloads(
         "score": float(near_miss.get("score") or 0.0),
         "leverage": 1,
         "notional_hint": notional,
-        "max_symbol_exposure_pct": symbol_exposure_cap(symbol.strip().upper(), config),
+        "max_symbol_exposure_pct": 0.0,
         "risk_allowed": True,
         "reasons": ["MIRROR_AB_SAMPLE", f"MIRROR_AB_SOURCE_{source_reason}", *reasons],
         "entry_context": entry_context_payload,
@@ -1823,7 +1832,7 @@ def build_mirror_ab_payloads(
         "experiment_id": FOUR_QUADRANT_EXPERIMENT_ID,
         "entry_channel": "mirror_ab_sample",
         "source_quadrant": source_quadrant,
-        "risk_budget": cap_diagnostics,
+        "risk_budget": risk_budget,
         "mirror_ab_notional_before_cap": configured_notional,
     }
     draft_payload = {

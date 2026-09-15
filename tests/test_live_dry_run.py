@@ -1045,6 +1045,11 @@ def test_high_beta_long_offset_probe_uses_half_scout_notional(tmp_path):
     )
 
     assert decision_payload["notional_hint"] == 25.0
+    assert decision_payload["max_symbol_exposure_pct"] == 0.0
+    assert decision_payload["risk_budget"]["selected_leverage"] == 1
+    assert decision_payload["risk_budget"]["stop_pct"] == 0.015
+    assert decision_payload["risk_budget"]["symbol_exposure_cap_pct"] == 0.1
+    assert decision_payload["risk_budget"]["final_notional"] == 1000.0
     assert "LONG_OFFSET_Q1_PROBE" in decision_payload["reasons"]
     assert decision_payload["scout_tags"] == ["LONG_OFFSET_Q1_PROBE"]
     assert draft_payload["request"]["quantity"] == 2.5
@@ -1191,6 +1196,11 @@ def test_build_scout_micro_payloads_keeps_small_notional_below_risk_cap(tmp_path
     assert decision_payload["action"] == "PROBE"
     assert decision_payload["side"] == "SHORT"
     assert decision_payload["notional_hint"] == 50.0
+    assert decision_payload["max_symbol_exposure_pct"] == 0.0
+    assert decision_payload["risk_budget"]["selected_leverage"] == 1
+    assert decision_payload["risk_budget"]["stop_pct"] == 0.015
+    assert decision_payload["risk_budget"]["symbol_exposure_cap_pct"] == 0.2
+    assert decision_payload["risk_budget"]["final_notional"] == 2000.0
     assert decision_payload["leverage"] == 1
     assert "SCOUT_MICRO" in decision_payload["reasons"]
     assert "SCOUT_MISSION_UNCLASSIFIED" in decision_payload["reasons"]
@@ -1366,6 +1376,9 @@ def test_scout_micro_allows_reversal_pivot_with_side_flip(tmp_path):
     )
     assert decision_payload["side"] == "SHORT"
     assert decision_payload["notional_hint"] == 25.0
+    assert decision_payload["max_symbol_exposure_pct"] == 0.0
+    assert decision_payload["risk_budget"]["selected_leverage"] == 1
+    assert decision_payload["risk_budget"]["stop_pct"] == 0.015
     assert draft_payload["request"]["position_side"] == "SHORT"
     assert draft_payload["request"]["quantity"] == 25.0 / 150.0
 
@@ -1756,6 +1769,11 @@ def test_mirror_ab_sample_opens_only_ab_ledgers(tmp_path):
     assert decision_payload["entry_channel"] == "mirror_ab_sample"
     assert decision_payload["source_quadrant"] == "Q4"
     assert "MIRROR_AB_SAMPLE" in decision_payload["reasons"]
+    assert decision_payload["max_symbol_exposure_pct"] == 0.0
+    assert decision_payload["risk_budget"]["selected_leverage"] == 1
+    assert decision_payload["risk_budget"]["stop_pct"] == 0.015
+    assert decision_payload["risk_budget"]["symbol_exposure_cap_pct"] == 0.2
+    assert decision_payload["risk_budget"]["final_notional"] == 2000.0
     assert draft_payload["request"]["quantity"] == 50.0 / 150.0
 
     events = update_mirror_ab_ledgers(
@@ -1814,6 +1832,51 @@ def test_mirror_ab_allows_q1_watch_sample_when_enabled(tmp_path):
     assert decision_payload["source_quadrant"] == "Q1"
 
 
+def test_scout_micro_cap_normalizes_existing_exposure_to_current_equity(tmp_path):
+    ledger = PaperTradingLedger(tmp_path / "scout_micro")
+    ledger.on_decision(
+        symbol="SOLUSDT",
+        decision_payload={
+            "action": "PROBE",
+            "side": "LONG",
+            "score": 90.0,
+            "leverage": 1,
+            "entry_context": {"atr_pct": 0.01},
+            "reasons": ["TEST_EXISTING"],
+        },
+        draft_payload={"approved": True, "request": {"position_side": "LONG", "quantity": 5.0, "price": 100.0}},
+        kline={"close": 100.0, "high": 100.0, "low": 100.0},
+        timestamp=900,
+    )
+    ledger.realized_pnl = -5_000.0
+    config = EntryChainConfig(scout_micro_notional=1_000.0, scout_micro_leverage=1)
+    near_miss = {
+        "symbol": "SOLUSDT",
+        "intended_side": "LONG",
+        "entry_price": 100.0,
+        "score": 90.0,
+        "entry_context": {"atr_pct": 0.01, "side": "LONG"},
+    }
+
+    decision_payload, draft_payload = build_scout_micro_payloads(
+        symbol="SOLUSDT",
+        near_miss=near_miss,
+        price=100.0,
+        config=config,
+        timestamp=1_000,
+        scout_paper=ledger,
+    )
+
+    assert decision_payload["max_symbol_exposure_pct"] == 0.0
+    assert decision_payload["risk_budget"]["stop_pct"] == 0.015
+    assert decision_payload["risk_budget"]["selected_leverage"] == 1
+    assert decision_payload["risk_budget"]["symbol_exposure_cap_pct"] == 0.2
+    assert decision_payload["risk_budget"]["remaining_exposure_notional"] == 499.9
+    assert decision_payload["risk_budget"]["final_notional"] == 499.9
+    assert decision_payload["notional_hint"] == 499.9
+    assert draft_payload["request"]["quantity"] == 4.999
+
+
 def test_scout_micro_update_uses_current_ledger_equity_and_selected_leverage(tmp_path):
     ledger = PaperTradingLedger(tmp_path / "scout_micro")
     ledger.realized_pnl = -5_000.0
@@ -1839,6 +1902,23 @@ def test_scout_micro_update_uses_current_ledger_equity_and_selected_leverage(tmp
         },
         "entry_context": {"atr_pct": 0.01, "side": "LONG"},
     }
+    capped_decision, capped_draft = build_scout_micro_payloads(
+        symbol="SOLUSDT",
+        near_miss=near_miss,
+        price=100.0,
+        config=config,
+        timestamp=1_000,
+        scout_paper=ledger,
+    )
+    assert capped_decision["leverage"] == 4
+    assert capped_decision["max_symbol_exposure_pct"] == 0.0
+    assert capped_decision["risk_budget"]["selected_leverage"] == 4
+    assert capped_decision["risk_budget"]["stop_pct"] == 0.015
+    assert capped_decision["risk_budget"]["raw_notional"] == 1_000.0
+    assert capped_decision["risk_budget"]["leveraged_cap_notional"] == 625.0
+    assert capped_decision["risk_budget"]["final_notional"] == 625.0
+    assert capped_decision["notional_hint"] == 625.0
+    assert capped_draft["request"]["quantity"] == 6.25
 
     events = update_scout_micro_ledger(
         scout_paper=ledger,
@@ -1874,6 +1954,29 @@ def test_mirror_ab_update_caps_each_ledger_independently(tmp_path):
         "reasons": ["DIRECT_BELOW_RISK_REWARD_GEOMETRY_MINIMUM_GAP_0.5"],
         "entry_context": {"atr_pct": 0.01, "side": "SHORT"},
     }
+    legacy_decision, legacy_draft = build_mirror_ab_payloads(
+        symbol="SOLUSDT",
+        near_miss=near_miss,
+        price=100.0,
+        config=config,
+        timestamp=1_000,
+        mirror_paper=ab_ledgers["legacy"],
+    )
+    trend_decision, trend_draft = build_mirror_ab_payloads(
+        symbol="SOLUSDT",
+        near_miss=near_miss,
+        price=100.0,
+        config=config,
+        timestamp=1_000,
+        mirror_paper=ab_ledgers["trend_capture"],
+    )
+    assert legacy_decision["leverage"] == trend_decision["leverage"] == 1
+    assert legacy_decision["max_symbol_exposure_pct"] == trend_decision["max_symbol_exposure_pct"] == 0.0
+    assert legacy_decision["risk_budget"]["stop_pct"] == trend_decision["risk_budget"]["stop_pct"] == 0.015
+    assert legacy_decision["risk_budget"]["final_notional"] == 333.3333
+    assert trend_decision["risk_budget"]["final_notional"] == 666.6667
+    assert legacy_draft["request"]["quantity"] == 3.333333
+    assert trend_draft["request"]["quantity"] == 6.666667
 
     events = update_mirror_ab_ledgers(
         ab_ledgers=ab_ledgers,
