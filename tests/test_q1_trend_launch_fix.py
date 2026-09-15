@@ -17,8 +17,14 @@ import pytest
 from src.backtest.engine import BacktestBar
 from src.signals.entry_chain_config import EntryChainConfig
 from src.signals.entry_chain_features import extreme_position_ratio
+from src.observability.paper_trading import PaperTradingLedger
+from src.signals.entry_chain import EntryChainDecision
 
-from scripts.run_live_dry_run import _q1_trend_launch_eligible
+from scripts.run_live_dry_run import (
+    _q1_trend_launch_eligible,
+    build_q1_green_channel_decision,
+    q1_symbol_policy_rejection_reason,
+)
 
 BASE_CONFIG = replace(
     EntryChainConfig(),
@@ -230,6 +236,55 @@ def test_non_q1_rejected():
 def test_blacklisted_symbol_rejected():
     cfg = replace(BASE_CONFIG, blacklist_symbols=["SOLUSDT"])
     assert _q1_trend_launch_eligible(_make_near_miss(), cfg, "OK") is False
+
+
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [
+        ("blacklist_symbols", "Q1_SYMBOL_BLACKLISTED"),
+        ("watch_only_symbols", "Q1_SYMBOL_WATCH_ONLY"),
+        ("observation_only_symbols", "Q1_SYMBOL_OBSERVATION_ONLY"),
+    ],
+)
+def test_q1_symbol_policy_rejects_with_auditable_reason(field, reason):
+    cfg = replace(BASE_CONFIG, **{field: ("SOLUSDT",)})
+    near_miss = _make_near_miss()
+    assert q1_symbol_policy_rejection_reason(near_miss, cfg) == reason
+    assert _q1_trend_launch_eligible(near_miss, cfg, "OK") is False
+
+
+def test_q1_symbol_policy_allows_unlisted_symbol():
+    assert q1_symbol_policy_rejection_reason(_make_near_miss(), BASE_CONFIG) is None
+
+
+def test_q1_green_channel_custom_notional_respects_central_risk_cap(tmp_path):
+    base = EntryChainDecision(
+        action="WATCH", side="NONE", score=90.0, weights={}, component_points={},
+        reasons=(), risk_allowed=False, leverage=0, max_symbol_exposure_pct=0.5,
+        notional_hint=0.0, liquidity_ratio=100.0, metadata={"symbol": "SOLUSDT"},
+    )
+    near_miss = _make_near_miss(
+        entry_context={
+            "extreme_position_ratio": 0.5,
+            "stop_pct": 0.02,
+            "atr_pct": 0.01,
+        }
+    )
+    config = replace(
+        BASE_CONFIG,
+        dry_run_q1_trend_launch_base_exposure_pct=0.5,
+        max_single_trade_risk_pct=0.001,
+    )
+    converted = build_q1_green_channel_decision(
+        base_decision=base,
+        near_miss=near_miss,
+        config=config,
+        data_health="OK",
+        paper=PaperTradingLedger(tmp_path),
+    )
+
+    assert converted is not None
+    assert converted.notional_hint == 500.0
 
 
 def test_disabled_channel_rejected():

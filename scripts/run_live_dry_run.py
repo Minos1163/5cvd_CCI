@@ -29,7 +29,7 @@ from src.risk.net_beta_exposure_model import (
     compute_net_beta_exposure,
 )
 from src.risk.stress_simulator import stress_decision
-from src.signals.entry_chain import EntryChainContext, EntryChainDecision, evaluate_entry_chain
+from src.signals.entry_chain import EntryChainContext, EntryChainDecision, _notional_cap_diagnostics, evaluate_entry_chain
 from src.signals.entry_chain_config import EntryChainConfig, load_entry_chain_config
 from src.signals.entry_chain_features import (
     atr_pct,
@@ -253,6 +253,22 @@ def run(args: argparse.Namespace) -> None:
                         ),
                         config,
                     )
+                else:
+                    q1_policy_reason = q1_symbol_policy_rejection_reason(near_miss, config)
+                    if q1_policy_reason is not None and decision_quadrant(near_miss, config) == "Q1":
+                        decision = _cap_decision_to_watch(decision, [q1_policy_reason])
+                        decision_payload = annotate_quadrant(
+                            enrich_decision_payload(
+                                decision.to_dict(),
+                                symbol=symbol,
+                                timestamp=now,
+                                target_tier=args.target_tier,
+                                market_snapshot=market_snapshot,
+                                latency_ms=latency_ms,
+                                debug=debug,
+                            ),
+                            config,
+                        )
                 decision, decision_payload = apply_experimental_quadrant_entry_rules(
                     decision=decision,
                     decision_payload=decision_payload,
@@ -845,6 +861,31 @@ def build_q1_green_channel_decision(
     rr_factor = max(0.25, min(1.0, rr_points / 8.0))
     exposure_pct = float(config.dry_run_q1_trend_launch_base_exposure_pct) * rr_factor
     notional = round(max(0.0, paper.initial_equity * exposure_pct), 4)
+    entry_ctx = near_miss.get("entry_context", {})
+    entry_ctx = entry_ctx if isinstance(entry_ctx, Mapping) else {}
+    cap_context = EntryChainContext(
+        symbol=str(near_miss.get("symbol") or "").strip().upper(),
+        timestamp=0,
+        side=side,
+        component_scores={},
+        quote_volume_24h=_q1_float(entry_ctx.get("quote_volume_24h")),
+        atr_pct=_q1_float(entry_ctx.get("atr_pct")),
+        expected_order_size=_q1_float(entry_ctx.get("expected_order_size")),
+        account_equity=float(paper.initial_equity),
+        available_margin=float(paper.initial_equity),
+        stop_pct=entry_ctx.get("stop_pct"),
+        symbol_exposure_pct=_q1_float(entry_ctx.get("symbol_exposure_pct")),
+    )
+    cap_diagnostics = _notional_cap_diagnostics(
+        "PROBE",
+        _q1_float(near_miss.get("score")),
+        cap_context,
+        config,
+        _q1_float(base_decision.max_symbol_exposure_pct),
+        selected_leverage=1,
+    )
+    notional_cap = float(cap_diagnostics["final_notional"])
+    notional = round(min(notional, notional_cap), 4)
     reasons = tuple(
         dict.fromkeys(
             [
@@ -865,6 +906,8 @@ def build_q1_green_channel_decision(
             "exit_mode": config.dry_run_q1_trend_launch_exit_mode,
             "q1_trend_launch_rr_factor": rr_factor,
             "q1_trend_launch_source": near_miss.get("q2_pending_source") or near_miss.get("q3_pending_source"),
+            "risk_budget": cap_diagnostics,
+            "q1_custom_notional_before_cap": round(max(0.0, paper.initial_equity * exposure_pct), 4),
         }
     )
     return replace(
@@ -880,6 +923,13 @@ def build_q1_green_channel_decision(
     )
 
 
+def _q1_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value) if value is not None else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _q1_green_channel_eligible(
     near_miss: Mapping[str, Any] | None,
     config: EntryChainConfig,
@@ -890,6 +940,24 @@ def _q1_green_channel_eligible(
     # dry_run_q1_trend_launch_* 字段;dry_run_q1_green_channel_* 字段为兼容保留(死配置),
     # 调整它们不产生任何效果——若要独立配置 green channel 需先接线独立逻辑。
     return _q1_trend_launch_eligible(near_miss, config, data_health)
+
+
+def q1_symbol_policy_rejection_reason(
+    near_miss: Mapping[str, Any] | None,
+    config: EntryChainConfig,
+) -> str | None:
+    if near_miss is None:
+        return None
+    symbol = str(near_miss.get("symbol") or "").strip().upper()
+    if not symbol:
+        return "Q1_SYMBOL_MISSING"
+    if symbol in config.blacklist_symbols:
+        return "Q1_SYMBOL_BLACKLISTED"
+    if symbol in config.watch_only_symbols:
+        return "Q1_SYMBOL_WATCH_ONLY"
+    if symbol in config.observation_only_symbols:
+        return "Q1_SYMBOL_OBSERVATION_ONLY"
+    return None
 
 
 def _q1_trend_launch_eligible(
@@ -903,8 +971,7 @@ def _q1_trend_launch_eligible(
         return False
     if str(data_health).upper() != "OK" and not config.dry_run_q1_trend_launch_allow_degraded_data:
         return False
-    symbol = str(near_miss.get("symbol") or "").strip().upper()
-    if not symbol or symbol in config.blacklist_symbols:
+    if q1_symbol_policy_rejection_reason(near_miss, config) is not None:
         return False
     if decision_quadrant(near_miss, config) != "Q1":
         return False
