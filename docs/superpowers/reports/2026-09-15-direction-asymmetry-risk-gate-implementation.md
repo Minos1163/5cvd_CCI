@@ -63,9 +63,10 @@ shadow 脚本要求 decision 记录的 15m K 线已经完成：decision timestam
 
 | 项目 | 结果 |
 |---|---:|
-| 完成的 15m candle | 29,592 |
+| 完成的 15m candle（全窗口） | 29,592 |
+| regime 起点外 candle | 0 |
 | breadth confirmed | 0 |
-| breadth 缺失的时间窗 proxy | 29,592 |
+| regime 窗口内 breadth 缺失的时间窗 proxy | 29,592 |
 | Q1 SHORT 可执行 proxy 候选（score >= 80） | 36 |
 | shadow offset 5 拦截 | 23 / 36 |
 | shadow offset 10 拦截 | 34 / 36 |

@@ -114,8 +114,8 @@ def summarize(rows: list[dict[str, Any]], decisions: dict[tuple[str, int], dict[
     q1 = [row for row in rows if row["source_quadrant"] == "Q1"]
     comparisons = []
     for row in rows:
-        entry_timestamp = _safe_int(row.get("entry_timestamp")) or row["timestamp"]
-        decision = decisions.get((row["symbol"], entry_timestamp))
+        entry_timestamp = _safe_int(row.get("entry_timestamp"))
+        decision = decisions.get((row["symbol"], entry_timestamp)) if entry_timestamp > 0 else None
         budget = decision.get("metadata", {}).get("risk_budget") if isinstance(decision, dict) else None
         if isinstance(budget, dict):
             comparisons.append(

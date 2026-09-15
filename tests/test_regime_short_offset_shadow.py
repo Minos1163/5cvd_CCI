@@ -72,6 +72,12 @@ def test_regime_evidence_distinguishes_breadth_confirmation_and_missing_data():
     assert regime_evidence(_decision(breadth=(0.4, 0.8)), 900)["status"] == "NOT_BULLISH"
 
 
+def test_shadow_rows_excludes_outside_regime_window():
+    rows, counts = shadow_rows([_decision(breadth=(0.7, 0.8))], 1100, 80.0, 0.6)
+    assert rows == []
+    assert counts["outside_regime_window"] == 1
+
+
 def test_shadow_rows_only_select_q1_short_and_record_reversal_score():
     rows, counts = shadow_rows([_decision(breadth=(0.7, 0.8)), _decision(score=70.0)], 900, 80.0, 0.6)
     assert len(rows) == 1

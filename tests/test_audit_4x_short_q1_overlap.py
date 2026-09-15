@@ -48,6 +48,13 @@ def test_summary_reports_q1_overlap_and_nominal_vs_leveraged_pnl():
     assert summary["by_symbol"]["SOLUSDT"]["leveraged_pnl"] == -40.0
 
 
+def test_summary_does_not_match_risk_metadata_without_entry_association():
+    selected = select_4x_short([_close("SOLUSDT")])
+    decisions = {("SOLUSDT", 100): {"metadata": {"risk_budget": {"final_notional": 1}}}}
+    assert selected[0]["entry_timestamp"] == 0
+    assert summarize(selected, decisions)["risk_budget_comparison"]["matched_decision_metadata_count"] == 0
+
+
 def test_load_trade_closes_reads_final_closes_only(tmp_path):
     day = tmp_path / "2026-08" / "2026-08-24"
     day.mkdir(parents=True)

@@ -136,6 +136,7 @@ def shadow_rows(rows: list[dict], regime_start_ts: int, min_score: float, breadt
             counts["not_bullish"] += 1
         elif evidence["status"] == "OUTSIDE_REGIME_WINDOW":
             counts["outside_regime_window"] += 1
+            continue
         else:
             continue
         context = payload.get("entry_context") if isinstance(payload.get("entry_context"), dict) else {}
