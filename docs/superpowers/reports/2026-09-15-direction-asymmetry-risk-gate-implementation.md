@@ -61,6 +61,12 @@ shadow 脚本要求 decision 记录的 15m K 线已经完成：decision timestam
 
 本次日志中 `market_snapshot` 没有 breadth 5h/6h 字段，因此没有任何 `BULLISH_CONFIRMED` 样本。结果只能作为时间窗 proxy，不能作为 breadth 已确认的结论：
 
+可复现命令：
+
+```powershell
+python scripts/regime_conditional_short_offset_shadow.py --log-root logs --start 2026-08-24 --end 2026-09-15 --regime-start "2026-08-24 00:00" --min-score 80 --output-dir logs/analysis/2026-09-15-short-bias-shadow
+```
+
 | 项目 | 结果 |
 |---|---:|
 | 完成的 15m candle（全窗口） | 29,592 |

@@ -181,9 +181,9 @@ def _safe_int(value: object) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--log-root", default="logs")
-    parser.add_argument("--start", default="2026-08-18")
-    parser.add_argument("--end", default="2026-08-24")
-    parser.add_argument("--regime-start", default="2026-08-19 19:15")  # 北京时间
+    parser.add_argument("--start", default="2026-08-24")
+    parser.add_argument("--end", default="2026-09-15")
+    parser.add_argument("--regime-start", default="2026-08-24 00:00")  # 北京时间
     parser.add_argument("--min-score", type=float, default=80.0)
     parser.add_argument("--shadow-short-offset", type=float, default=10.0)
     parser.add_argument("--breadth-min", type=float, default=0.60)
