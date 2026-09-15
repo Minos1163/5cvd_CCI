@@ -8,3 +8,4 @@
 - Documentation correction — commit 17baf1e; Task 2 report now accurately states policy rejection is additive audit metadata and does not rewrite action semantics.
 - Fix round 2: final-review findings — commit 0d0b0f1; task review SPEC PASS / QUALITY PASS with one minor report-documentation gap fixed. Focused tests: 98 passed.
 - Final-review Q1 scout/mirror policy observation adjudicated out of scope: the plan explicitly scopes policy enforcement to `_q1_trend_launch_eligible()` and the Q1 green-channel draft; existing scout/mirror experiment eligibility remains unchanged by design.
+- Final whole-branch re-review: APPROVE, no Critical/Important/Minor findings; verified drawdown normalization, action-aware shadow, valid audit association, centralized cap, custom draft cap, and documentation consistency.
