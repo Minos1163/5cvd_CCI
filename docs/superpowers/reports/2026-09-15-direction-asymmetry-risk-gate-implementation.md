@@ -41,6 +41,8 @@ final_notional = min(raw_notional, leveraged_cap, remaining_symbol_exposure)
 
 Q1 自定义 notional 也会复用中央 `_notional_cap_diagnostics`，并使用当前 `EntryChainContext` 的 equity、stop 和 symbol exposure。兼容性 fallback 使用 paper ledger 当前 summary/snapshot，而不是固定初始权益。
 
+scout micro 和 mirror A/B 的自定义 paper draft 也经过同一 cap 计算；mirror 的两个 A/B ledger 分别使用自己的当前 equity 和 symbol exposure。paper snapshot 原本按初始权益记录敞口，dry-run 在灌入 `EntryChainContext` 前会换算到当前权益基准，避免回撤后低估 symbol、总敞口和同向敞口。
+
 ## 3. Q1 标的政策
 
 Q1 eligibility 现在使用统一顺序记录拒绝原因：
@@ -74,14 +76,14 @@ python scripts/regime_conditional_short_offset_shadow.py --log-root logs --start
 | breadth confirmed | 0 |
 | regime 窗口内 breadth 缺失的时间窗 proxy | 29,592 |
 | Q1 SHORT 可执行 proxy 候选（score >= 80） | 36 |
-| shadow offset 5 拦截 | 23 / 36 |
-| shadow offset 10 拦截 | 34 / 36 |
+| shadow offset 5 拦截 | 4 / 36 |
+| shadow offset 10 拦截 | 6 / 36 |
 
-shadow 记录了 `reversal_confirmation_score`，该分数由已记录的 PA、CVD、CCI component points 归一化得到，仅用于观测，未作为 live 阻断条件。
+shadow 对 `DIRECT` 使用 `82 + offset`、对 `PROBE` 使用 `70 + offset`，保留主链 action 的门槛语义；记录了 `reversal_confirmation_score`，该分数由已记录的 PA、CVD、CCI component points 归一化得到，仅用于观测，未作为 live 阻断条件。
 
 ## 5. 4x SHORT/Q1 只读交叉审计
 
-审计只统计最终 `PAPER_CLOSE`，排除中间 `PAPER_REDUCE`，并同时报告名义和杠杆后 PnL：
+审计只统计最终 `PAPER_CLOSE`，排除中间 `PAPER_REDUCE`，并要求 close 在窗口内能按 symbol/side FIFO 关联到 `PAPER_OPEN`；未关联 close 不进入交易统计。报告同时给出名义和杠杆后 PnL：
 
 | 范围 | 笔数 | 名义 PnL | 杠杆后 PnL |
 |---|---:|---:|---:|
@@ -97,8 +99,10 @@ shadow 记录了 `reversal_confirmation_score`，该分数由已记录的 PA、C
 
 通过：
 
-- Q1、dry-run 相关测试：`121 passed`；
-- Task 3 shadow/审计/4x gate 测试：`16 passed`；
+- 核心定向测试（风险 cap、Q1、dry-run、SHORT shadow、4x 审计、4x gate）：`161 passed`；
+- 相关信号、执行适配器、执行引擎、纸账本和组合状态测试：`84 passed`；
+- `python -m compileall -q src scripts tests` 通过；
+- `git diff --check` 通过；
 - shadow 实际日志运行成功；
 - 4x SHORT/Q1 实际日志审计成功；
 - 所有改动保持 dry-run/offline，不发起真实交易所请求。
@@ -109,6 +113,8 @@ shadow 记录了 `reversal_confirmation_score`，该分数由已记录的 PA、C
 - 新 cap 是否把 4x 单笔杠杆后风险限制在权益 0.75%；
 - Q1 SHORT shadow 拦截样本的反事实 PnL，而不是只看拦截率；
 - `entry_channel` 是否在所有主账本开仓中稳定落盘。
+
+本轮补充的回撤回归测试证明：当初始权益基准敞口在当前权益基准下已经超过总敞口或同向敞口上限时，主链拒绝新增 entry；这只修正 dry-run context 的单位换算，不改变 paper ledger 的历史 snapshot 字段口径。
 
 ## 7. DeepSeek 评审重点
 
