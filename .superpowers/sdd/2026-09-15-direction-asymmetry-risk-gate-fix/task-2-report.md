@@ -5,7 +5,7 @@
 - Added a shared Q1 symbol-policy reason helper in `scripts/run_live_dry_run.py`.
 - Q1 specialized eligibility now rejects blacklist, watch-only, and observation-only symbols.
 - Rejections use distinct auditable reasons: `Q1_SYMBOL_BLACKLISTED`, `Q1_SYMBOL_WATCH_ONLY`, and `Q1_SYMBOL_OBSERVATION_ONLY`.
-- The main dry-run loop records a policy rejection as a controlled WATCH decision with the reason, so the specialized path cannot silently promote a blocked symbol and cannot crash the loop.
+- The main dry-run loop records Q1 policy rejection additively for auditability: `_add_decision_reasons()` appends the distinct policy reason and metadata while preserving the underlying action, `risk_allowed`, leverage, and notional semantics.
 - The Q1 custom PROBE notional is re-constrained with the existing centralized `_notional_cap_diagnostics` helper using the same stop, equity, exposure, and leverage=1 inputs; cap diagnostics and the pre-cap custom notional are included in decision metadata.
 - Preserved the existing `build_q1_green_channel_decision` rejected-candidate `None` contract and ordinary DIRECT/PROBE/WATCH behavior.
 - Added focused tests for all three rejected policy classes, an allowed symbol, and reason auditability.
