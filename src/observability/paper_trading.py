@@ -22,6 +22,21 @@ TP_LEVELS = (1.2, 2.0, 3.0)
 TP_FRACTIONS = (0.40, 0.35, 0.25)
 
 
+def _resolve_entry_channel(decision_payload: Mapping[str, Any]) -> str | None:
+    """主账本交易的可观测性(08-31 评审 6.2):显式 entry_channel 优先;
+    缺失时按 action 标注主路径(main_direct / main_probe),消除 null 盲区。
+    """
+    explicit = decision_payload.get("entry_channel")
+    if explicit:
+        return str(explicit)
+    action = str(decision_payload.get("action") or "").upper()
+    if action == "DIRECT":
+        return "main_direct"
+    if action == "PROBE":
+        return "main_probe"
+    return None
+
+
 @dataclass(frozen=True)
 class PaperExitConfig:
     mode: str = "legacy"
@@ -175,7 +190,7 @@ class PaperTradingLedger:
             exit_mode=str(decision_payload.get("exit_mode") or self.exit_config.mode),
             scout_mission=str(decision_payload.get("scout_mission")) if decision_payload.get("scout_mission") else None,
             experiment_id=str(decision_payload.get("experiment_id")) if decision_payload.get("experiment_id") else None,
-            entry_channel=str(decision_payload.get("entry_channel")) if decision_payload.get("entry_channel") else None,
+            entry_channel=_resolve_entry_channel(decision_payload),
             source_quadrant=str(decision_payload.get("source_quadrant") or decision_payload.get("quadrant")) if (decision_payload.get("source_quadrant") or decision_payload.get("quadrant")) else None,
             q3_reduced=False,
             q4_streak=0,
