@@ -34,6 +34,12 @@
 | 2026-08-24-BULLREGIME | 2026-08-24 | P1 | BULL_REGIME_BREAKOUT_V1 设计 + shadow 纳管(breadth 5/6h) | docs/2026-08-24-bull-regime-breakout-design.md + channel_cumulative_tracker | DEPLOYED | 设计完成(复用 BNB 单 symbol 突破 + regime_gate);六通道路由表落盘;tracker 纳管 2 通道(样本 0,shadow 开仓后自动累计);20 笔纪律 |
 | 2026-08-18-纪律 | 2026-08-18 | P0 | 小样本决策规则固化(SAMPLE_SIZE_DECISION_RULES:10/20/20/2窗口) | scripts/channel_cumulative_tracker.py | DEPLOYED | 规则固化为脚本常量:<10 不"证明有效/提炼特征"、<20 不调参数/不资源倾斜、负信号 2 窗口一致可停用;tracker 输出四通道平等表 |
 | 2026-08-18-Q3Q1 | 2026-08-18 | P1 | Q3→Q1 pending 通道验证(唯一正 +0.39) | scout_q3_to_q1_confirmation | IN_PROGRESS | 累计 3 笔 +0.389(<10 仅记录,不因符号正优先);与 Q2 pending(3 笔 -0.14)平等对待;距 20 笔差 17 |
+| 2026-08-31-LOSSATTR | 2026-08-31 | P0 | 三笔大额亏损归因审查(DEEPSEEK 6.3 立即行动:Q1 SHORT 集中度) | docs/2026-08-31-large-position-loss-attribution-and-risk-budget.md | VERIFIED | 三笔 100% 同一模式:BCH/DOGE 08-24 + SOL 08-28 = Q1 + SHORT + leverage 4 + margin≈486 + MFE 0.36-0.75R + 止损/超时;口径修正:账户真实损失 -61.4(notional 主口径)而非 -226.64(margin 报告口径) |
+| 2026-08-31-RISKBUDGET | 2026-08-31 | P0 | 单笔风险预算复核(DEEPSEEK 4.2 建议新增硬约束) | src/signals/entry_chain.py `_notional_hint` + tests/test_entry_chain_risk_budget.py | VERIFIED | **复核结论:机制已存在**(risk_based = equity × risk_pct / stop_pct,与 score_based/cap 取 min),配置 direct_risk_pct=0.006 比评审建议 1.2% 更保守;反事实:三笔均不会被裁剪(实际风险 0.235% < 0.6%),根因是入场位置非仓位大小;5 单测锁定 |
+| 2026-08-31-4XGATE | 2026-08-31 | P0 | 4x 杠杆质量门控设计 + shadow(DEEPSEEK 5.2:4x 无质量门) | docs/2026-08-31-leverage-tier-quality-gate-design.md + scripts/leverage_tier_gate_shadow.py | DEPLOYED | 设计落盘(4x fib≥10/pa≥7/rr≥5;3x fib≥6/pa≥6/rr≥2;2x 默认);门控逻辑 5 单测通过;live `_select_leverage` 未改(数值待历史回测校准,遵 20 笔纪律);三笔低 RR 画像会被拦截 |
+| 2026-08-31-ATTRIB | 2026-08-31 | P1 | 归因字段补全(entry_channel=null 盲区,DEEPSEEK 6.2) | src/observability/paper_trading.py `_resolve_entry_channel` + tests/test_paper_entry_channel.py | DEPLOYED | 主账本 entry_channel 不再 null:显式优先,缺失时 DIRECT→main_direct / PROBE→main_probe;source_quadrant 确认已在 L179 记录;4 单测通过 |
+| 2026-09-27-WINATTR | 2026-09-27 | P0 | 09-16 重启~09-27 窗口亏损归因 + 因子诊断 | docs/2026-09-27-window-loss-attribution-and-factor-diagnosis.md + scripts/analyze_0916_0927_window.py | VERIFIED | 33 笔 notional **-136.51**(margin -445.78),胜率 15.2%;LONG/SHORT 同亏(非方向偏置);Q1 占 -113.18;MFE<1R 占 28/33,INITIAL_STOP_HIT 13 笔 100% 亏损,5 笔盈利 MFE 全 ≥1.61R;score 75→95 与盈亏无关;PCA:6 因子有效维度**仅 2**(PC1=动能四因子同源,PC2=位置 vs 赔率);`flow_cvd_confirmation` 实为 K 线方向投票伪 CVD |
+| 2026-09-27-FACTOR | 2026-09-27 | P0 | **因子正交化重构**:6 因子 → 5-6 个正交因子(标准化→PCA→正交性硬指标) | docs/2026-09-27-orthogonal-factor-redesign.md + src/signals/ | PENDING | 设计已落盘待 Claude 评审:①F1 趋势持久性 ②F2 去方向化结构位置 ③F3 连续赔率(修复 62.5% 天花板)④F4 波动率状态(全新)⑤F5 真实订单流(**复用已有 cvd_builder/indicators.cvd**,替换伪 CVD)⑥F6 拥挤度/资金成本(全新);硬指标 \|r\|≤0.3、Kaiser≥4、零值占比≤20%;路线 P0 shadow 并轨 → P1 正交验收 → P2 IC 定权 → P3 影子对照 → P4 切换 |
 
 ---
 
@@ -41,3 +47,4 @@
 
 - 本表状态基于 2026-08-04 对代码与配置的静态核对 + 08-02 21:45~08-04 19:00 窗口日志证据,由 `scripts/recommendation_tracker.py` 可复现解析。
 - 更新方式:直接编辑本表(保持 7 列);`check` 命令将 P0 且非 DEPLOYED/VERIFIED/ABANDONED 视为阻塞。
+- 2026-08-31 更新:新增 08-31 评审落实四条(LOSSATTR/RISKBUDGET/4XGATE/ATTRIB),依据 `docs/2026-08-31-review-implementation-record.md`。
