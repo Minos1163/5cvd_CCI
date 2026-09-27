@@ -48,6 +48,10 @@ from src.signals.entry_chain_features import (
 )
 from src.signals.entry_chain_gates import HIGH_BETA_SYMBOLS
 from src.signals.fib_location import detect_fractal_swings
+from src.signals.orthogonal_factors import (
+    SCHEMA_VERSION as FIVE_FACTOR_SCHEMA_VERSION,
+    five_factor_scores,
+)
 
 
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
@@ -194,6 +198,11 @@ def run(args: argparse.Namespace) -> None:
                     "total_score": decision_payload.get("score"),
                 }
                 decision_payload["entry_context"] = debug.get("entry_context", {})
+                # P0 影子(只记录,不参与决策):五正交因子分量与元信息
+                if "component_points_v2" in debug:
+                    decision_payload["component_points_v2"] = debug["component_points_v2"]
+                if "component_points_v2_meta" in debug:
+                    decision_payload["component_points_v2_meta"] = debug["component_points_v2_meta"]
                 decision_payload = annotate_quadrant(decision_payload, config)
                 near_miss = build_near_miss_payload(
                     decision_payload,
@@ -2326,6 +2335,24 @@ def synthetic_component_scores(symbol: str, timestamp: int, config: EntryChainCo
     )
 
 
+def synthetic_shadow_bars(symbol: str, timestamp: int, count: int = 260) -> list[BacktestBar]:
+    """synthetic 市场的五因子影子输入(带 taker_buy_volume,便于本地验证字段落盘)。"""
+    price = synthetic_price(symbol)
+    return [
+        BacktestBar(
+            symbol=symbol.upper(),
+            timestamp=timestamp - (count - index) * 900,
+            open=price + index * 0.01,
+            high=price + index * 0.01 + 0.2,
+            low=price + index * 0.01 - 0.2,
+            close=price + index * 0.01,
+            volume=1000.0,
+            taker_buy_volume=520.0,
+        )
+        for index in range(count)
+    ]
+
+
 def build_context(
     symbol: str,
     timestamp: int,
@@ -2335,7 +2362,15 @@ def build_context(
 ) -> tuple[EntryChainContext, str, dict[str, Any]]:
     if args.market_data_source == "synthetic":
         context = synthetic_context(symbol, timestamp, config)
-        return context, "OK", synthetic_debug_snapshot(symbol, timestamp, context)
+        debug = synthetic_debug_snapshot(symbol, timestamp, context)
+        attach_five_factor_shadow(
+            debug,
+            side=context.side,
+            histories={"15m": synthetic_shadow_bars(symbol, timestamp)},
+            atr_pct_value=context.atr_pct,
+            config=config,
+        )
+        return context, "OK", debug
     try:
         histories = fetch_public_market_histories(symbol, limit=public_history_limit(args, config))
         context, debug = public_market_context(symbol, timestamp, histories, config)
@@ -2350,6 +2385,10 @@ def build_context(
         debug = synthetic_debug_snapshot(symbol, timestamp, context)
         debug["warmup"]["error"] = exc.__class__.__name__
         debug["warmup"]["ready"] = False
+        debug["component_points_v2_meta"] = {
+            "schema_version": FIVE_FACTOR_SCHEMA_VERSION,
+            "status": "degraded_no_history",
+        }
         return context, "DEGRADED", debug
 
 
@@ -2419,9 +2458,39 @@ def fetch_public_klines(symbol: str, interval: str, *, limit: int) -> list[Backt
                 low=float(row[3]),
                 close=float(row[4]),
                 volume=float(row[5]),
+                # Binance klines 第 10 列 = taker_buy_base_volume(F5 真实订单流数据源)
+                taker_buy_volume=float(row[9]) if len(row) > 9 else 0.0,
             )
         )
     return bars
+
+
+def attach_five_factor_shadow(
+    debug: dict[str, Any],
+    *,
+    side: str,
+    histories: Mapping[str, Sequence[BacktestBar]],
+    atr_pct_value: float,
+    config,
+) -> None:
+    """P0 影子:五正交因子**只写记录字段**,不参与任何决策。
+
+    设计依据 `docs/2026-09-27-five-orthogonal-factor-strategy-decision.md` 第 4.8 节:
+    `component_points_v2` 只读、只记录;任何下游代码不得依赖它做决策。
+    影子计算抛异常时只记录错误标记,绝不冒泡影响主决策链路。
+    """
+    if not bool(getattr(config, "five_factor_shadow_enabled", True)):
+        return
+    try:
+        points, meta = five_factor_scores(side, histories, atr_pct_value)
+    except Exception as exc:  # noqa: BLE001 - 影子字段不得影响主链路
+        debug["component_points_v2_meta"] = {
+            "schema_version": FIVE_FACTOR_SCHEMA_VERSION,
+            "error": exc.__class__.__name__,
+        }
+        return
+    debug["component_points_v2"] = points
+    debug["component_points_v2_meta"] = meta
 
 
 def public_market_context(
@@ -2434,7 +2503,12 @@ def public_market_context(
     required_15m = max(1, int(getattr(config, "dry_run_warmup_15m_bars", 240) or 240))
     if len(bars_15m) < required_15m or len(histories.get("1h", [])) < 4:
         context = degraded_context(symbol, timestamp)
-        return context, public_debug_snapshot(symbol, context, histories, {}, ready=False, required_15m=required_15m)
+        debug = public_debug_snapshot(symbol, context, histories, {}, ready=False, required_15m=required_15m)
+        debug["component_points_v2_meta"] = {
+            "schema_version": FIVE_FACTOR_SCHEMA_VERSION,
+            "status": "insufficient_history",
+        }
+        return context, debug
     side = direction_from_history(histories.get("1h", []))
     if side == "NONE":
         side = "LONG" if bars_15m[-1].close >= bars_15m[-4].close else "SHORT"
@@ -2482,6 +2556,13 @@ def public_market_context(
     )
     debug = public_debug_snapshot(symbol, context, histories, scores, ready=True, required_15m=required_15m)
     debug["score_diagnostics"] = score_diagnostics
+    attach_five_factor_shadow(
+        debug,
+        side=side,
+        histories=histories,
+        atr_pct_value=atr_pct_value,
+        config=config,
+    )
     return context, debug
 
 

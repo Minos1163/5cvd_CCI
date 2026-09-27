@@ -162,6 +162,9 @@ class BacktestBar:
     low: float
     close: float
     volume: float
+    # 主动买量(Binance klines 第 10 列 taker_buy_base_volume)。
+    # 默认 0.0 保持向后兼容;F5 真实订单流因子的数据入口(五因子 P0 影子)。
+    taker_buy_volume: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -951,6 +954,7 @@ def _normalize_bar(item: Any) -> BacktestBar:
             low=item.low,
             close=item.close,
             volume=item.volume,
+            taker_buy_volume=float(getattr(item, "taker_buy_volume", 0.0) or 0.0),
         )
     if isinstance(item, Mapping):
         return BacktestBar(
@@ -961,6 +965,7 @@ def _normalize_bar(item: Any) -> BacktestBar:
             low=float(item["low"]),
             close=float(item["close"]),
             volume=float(item["volume"]),
+            taker_buy_volume=float(item.get("taker_buy_volume", 0.0) or 0.0),
         )
     raise TypeError("bar must be BacktestBar, Candle, or mapping")
 

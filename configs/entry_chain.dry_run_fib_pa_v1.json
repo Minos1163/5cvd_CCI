@@ -14,6 +14,7 @@
   "margin_buffer_pct": 0.30,
   "use_ema_architecture": true,
   "use_fib_pa_architecture": true,
+  "five_factor_shadow_enabled": true,
   "ema200_gate_mode": "soft",
   "ema200_buffer_pct": 0.003,
   "ema200_min_bars_stable": 3,

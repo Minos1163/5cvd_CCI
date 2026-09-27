@@ -219,6 +219,9 @@ class EntryChainConfig:
     portfolio_daily_loss_circuit_enabled: bool = False
     portfolio_daily_loss_limit: float = -30.0
     max_single_trade_risk_pct: float = 0.0075
+    # 五正交因子 P0 影子(2026-09-27 裁定报告):只写 component_points_v2 记录字段,
+    # 不参与 total_score/门槛/杠杆/action;置 false 即可完全回滚影子记录。
+    five_factor_shadow_enabled: bool = True
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "EntryChainConfig":
