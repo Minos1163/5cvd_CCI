@@ -79,28 +79,59 @@ def test_small_sample_is_insufficient_not_verdict():
     result = evaluate_orthogonality(_independent_rows(samples=5))
     assert result["samples"] == 5
     assert result["verdict"] == "INSUFFICIENT_SAMPLE"
-    assert result["checks"]  # 仍输出指标供观察
+    assert result["hard_gates"]  # 仍输出指标供观察
+    # 样本不足时不跑 parallel analysis(省时,且无统计意义)
+    parallel = next(m for m in result["reference_metrics"] if m["name"] == "parallel_analysis_p_value")
+    assert parallel["iterations"] == 0
 
 
 def test_independent_factors_produce_metric_report():
-    result = evaluate_orthogonality(_independent_rows())
+    result = evaluate_orthogonality(_independent_rows(), parallel_iterations=100)
     assert result["samples"] == 60
-    assert {check["name"] for check in result["checks"]} == {
+    assert {gate["name"] for gate in result["hard_gates"]} == {
         "max_abs_pairwise_r",
-        "kaiser_components",
-        "pc1_pc2_cumulative",
-        "min_unique_values",
         "max_zero_share",
+        "min_unique_values",
     }
     assert result["eigenvalues"]
     assert set(result["correlation_matrix"]) == set(FACTORS)
 
 
+def test_orthogonality_report_two_tier_output():
+    """Task V:输出须同时含硬门(通过/不通过)与参考指标(数值 + p 值),不得单一总判定。"""
+    result = evaluate_orthogonality(_independent_rows(), parallel_iterations=100)
+
+    assert all("passed" in gate for gate in result["hard_gates"])
+    metric_names = {metric["name"] for metric in result["reference_metrics"]}
+    assert {"kaiser_components", "pc1_pc2_cumulative", "parallel_analysis_p_value"} <= metric_names
+    # 参考指标不参与否决:不得带 passed 字段
+    assert all("passed" not in metric for metric in result["reference_metrics"])
+    assert result["verdict_basis"] == "hard_gates_only"
+    # 独立数据下硬门全过 → PASS,且不受参考指标影响
+    assert result["verdict"] == "PASS"
+
+
+def test_parallel_analysis_null_distribution_shape():
+    """Task V:置换零分布须体现"排序偏误"——5 个独立变量下前 2 名占比天然高于 2/5。"""
+    result = evaluate_orthogonality(_independent_rows(), parallel_iterations=200)
+    parallel = next(
+        metric for metric in result["reference_metrics"] if metric["name"] == "parallel_analysis_p_value"
+    )
+    assert parallel["iterations"] == 200
+    assert parallel["null_mean"] is not None
+    assert parallel["null_mean"] > 0.40  # 排序偏误基线(而非 2/5 = 0.40)
+    # 各因子本就独立时,实测值不应显著高于零分布
+    assert parallel["p_value"] > 0.02
+
+
 def test_correlated_factors_fail_orthogonality():
-    result = evaluate_orthogonality(_correlated_rows())
+    result = evaluate_orthogonality(_correlated_rows(), parallel_iterations=100)
     assert result["verdict"] == "FAIL"
-    kaiser = next(check for check in result["checks"] if check["name"] == "kaiser_components")
-    assert kaiser["actual"] < 4
+    pairwise = next(gate for gate in result["hard_gates"] if gate["name"] == "max_abs_pairwise_r")
+    assert pairwise["actual"] > 0.30
+    # Kaiser 已降为参考指标,不再决定 verdict
+    kaiser = next(m for m in result["reference_metrics"] if m["name"] == "kaiser_components")
+    assert kaiser["value"] is not None
 
 
 def test_f2_f3_convergence_plan_trigger():
@@ -113,6 +144,6 @@ def test_f2_f3_convergence_plan_trigger():
         values["structure_location"] = float(shared[row])
         values["payoff_geometry"] = float(shared[row])
         rows.append(values)
-    result = evaluate_orthogonality(rows)
+    result = evaluate_orthogonality(rows, parallel_iterations=100)
     assert abs(result["f2_f3_correlation"]) > 0.3
     assert result["convergence_plan_triggered"] is True

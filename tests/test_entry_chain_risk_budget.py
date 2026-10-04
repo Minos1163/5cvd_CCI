@@ -54,7 +54,79 @@ def test_fib_pa_config_parses_single_trade_risk_cap():
 
     assert config.max_single_trade_risk_pct == 0.0075
     assert config.direct_risk_pct == 0.006
-    assert config.probe_risk_pct == 0.0025
+    assert config.probe_risk_pct == 0.0015
+
+
+def test_probe_risk_pct_linear_scaling():
+    """Task P-RISK:`probe_risk_pct` 只作用于 `raw_notional`,与另两个 cap 解耦。
+
+    验证下调该参数(0.0025→0.0015)不会意外影响 `leveraged_cap_notional`
+    或 `remaining_exposure_notional` 的计算路径——即方向明确的风险收紧。
+    """
+    ctx = _ctx(stop_pct=0.02, symbol_exposure_pct=0.0)
+    low = EntryChainConfig(probe_risk_pct=0.0015, max_single_trade_risk_pct=0.0075)
+    high = EntryChainConfig(probe_risk_pct=0.0030, max_single_trade_risk_pct=0.0075)
+
+    low_diag = _notional_cap_diagnostics("PROBE", 70.0, ctx, low, 0.2, 1)
+    high_diag = _notional_cap_diagnostics("PROBE", 70.0, ctx, high, 0.2, 1)
+
+    # raw_notional 与 probe_risk_pct 线性正比(偏导数为正)
+    assert high_diag["raw_notional"] > low_diag["raw_notional"]
+    assert high_diag["raw_notional"] == pytest.approx(low_diag["raw_notional"] * 2.0)
+
+    # 另两个 cap 与 probe_risk_pct 完全无关
+    assert high_diag["leveraged_cap_notional"] == low_diag["leveraged_cap_notional"]
+    assert high_diag["remaining_exposure_notional"] == low_diag["remaining_exposure_notional"]
+
+    # 本组参数下 raw 即生效上限,故最终名义仓位同样随之下调
+    assert low_diag["binding_cap"] == "raw_notional"
+    assert high_diag["final_notional"] == pytest.approx(low_diag["final_notional"] * 2.0)
+
+
+def test_binding_cap_attribution_logged():
+    """Task P:`binding_cap` 来源须可从 decision 结构直接读出,无需重算三公式。
+
+    实证背景:跨两窗口 59 条可执行记录全部在 `metadata.risk_budget.binding_cap`
+    带值,故诊断脚本无需额外补字段即可归因(修正 2026-10-04 报告的初判)。
+    """
+    config = EntryChainConfig()
+    context = EntryChainContext(
+        symbol="TESTUSDT",
+        timestamp=0,
+        side="LONG",
+        component_scores={
+            "background_4h": 1.0,
+            "direction_1h": 1.0,
+            "quality_30m": 1.0,
+            "trigger_15m": 1.0,
+            "cvd_flow": 1.0,
+        },
+        quote_volume_24h=1e9,
+        atr_pct=0.01,
+        expected_order_size=1_000.0,
+        account_equity=EQUITY,
+        available_margin=EQUITY,
+        stop_pct=0.012,
+        symbol_exposure_pct=0.0,
+    )
+    budget = evaluate_entry_chain(context, config).to_dict()["metadata"]["risk_budget"]
+
+    for key in (
+        "binding_cap",
+        "raw_notional",
+        "leveraged_cap_notional",
+        "remaining_exposure_notional",
+        "final_notional",
+        "selected_leverage",
+        "stop_pct",
+    ):
+        assert key in budget, key
+    assert budget["binding_cap"] in {
+        "raw_notional",
+        "leveraged_cap_notional",
+        "remaining_exposure_notional",
+        "none",
+    }
 
 
 @pytest.mark.parametrize(

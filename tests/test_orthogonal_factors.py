@@ -15,6 +15,7 @@ from src.signals.fib_location import SwingPoint  # noqa: E402
 from src.signals.orthogonal_factors import (  # noqa: E402
     FIVE_FACTOR_POINT_KEYS,
     FIVE_FACTOR_WEIGHTS,
+    GAUSS_SIGMA_GRID,
     compute_order_flow,
     compute_payoff_geometry,
     compute_structure_location,
@@ -23,6 +24,7 @@ from src.signals.orthogonal_factors import (  # noqa: E402
     five_factor_scores,
     leverage_multiplier_from_percentile,
     volatility_score_from_percentile,
+    volatility_score_gauss,
 )
 
 
@@ -249,3 +251,58 @@ def test_five_factor_scores_handles_empty_input():
     points, meta = five_factor_scores("LONG", {}, 0.01)
     assert all(isinstance(value, float) for value in points.values())
     assert meta["shadow_total"] >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# Task F4-FIX:高斯型双轨影子(2026-10-04 评审裁定第二节)
+# ---------------------------------------------------------------------------
+
+
+def test_vol_score_gauss_no_hard_zero():
+    """高斯型在 [0,1] 上不得出现精确 0(渐近趋 0 但不触底)。"""
+    samples = [volatility_score_gauss(index / 10_000.0) for index in range(10_001)]
+    assert sum(1 for value in samples if value == 0.0) == 0
+    assert min(samples) > 0.0
+
+
+def test_vol_score_gauss_peak_unchanged():
+    """两版本均在 atr_percentile=0.60 取峰值(中部达峰的设计意图未丢失)。"""
+    gauss_peak = volatility_score_gauss(0.60)
+    assert gauss_peak == 1.0
+    assert gauss_peak > volatility_score_gauss(0.30)
+    assert gauss_peak > volatility_score_gauss(0.90)
+
+    clip_peak = volatility_score_from_percentile(0.60)
+    assert clip_peak == 1.0
+    assert clip_peak > volatility_score_from_percentile(0.30)
+    assert clip_peak > volatility_score_from_percentile(0.90)
+
+
+def test_vol_score_gauss_monotonic_in_sigma():
+    """σ 越大曲线越平缓:同一远离峰值的分位下得分单调递增,峰值恒为 1。"""
+    far = {sigma: volatility_score_gauss(0.10, sigma) for sigma in GAUSS_SIGMA_GRID}
+    ordered = [far[sigma] for sigma in GAUSS_SIGMA_GRID]
+    assert all(earlier < later for earlier, later in zip(ordered, ordered[1:]))
+    assert all(volatility_score_gauss(0.60, sigma) == 1.0 for sigma in GAUSS_SIGMA_GRID)
+
+
+def test_component_points_v2_meta_dual_write():
+    """meta 必须同时含 clip_v1 与 gauss_v2(σ 网格),互不覆盖。"""
+    completed = {"15m": _bars([100.0 + (index % 9) * 0.5 for index in range(260)])}
+    _, meta = five_factor_scores("LONG", completed, 0.01)
+
+    assert "volatility_regime_clip_v1" in meta
+    gauss = meta["volatility_regime_gauss_v2"]
+    assert set(gauss) == {f"sigma_{sigma:.2f}" for sigma in GAUSS_SIGMA_GRID}
+
+    # 现役分量仍由 clip v1 承担,双轨记录不得篡改 normalized_values
+    assert meta["normalized_values"]["volatility_regime"] == meta["volatility_regime_clip_v1"]
+
+
+def test_component_points_v2_meta_gauss_empty_on_fallback():
+    """波动率历史不足时,gauss 候选与 clip 一样不产出虚假数值。"""
+    completed = {"15m": _bars([100.0] * 100)}
+    _, meta = five_factor_scores("LONG", completed, 0.01)
+    assert meta["volatility_fallback"] is True
+    assert meta["volatility_regime_gauss_v2"] == {}
+    assert meta["volatility_regime_clip_v1"] == 0.5

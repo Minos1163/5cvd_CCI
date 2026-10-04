@@ -71,6 +71,10 @@ COST_BUFFER_PCT = 0.001  # 2×taker fee(5bps)+ 滑点(5bps)
 PAYOFF_R_FULL_SCORE = 3.0  # 3R 及以上满分(连续,无 1.3 式天花板)
 
 VOLATILITY_PEAK_PERCENTILE = 0.60
+# F4 双轨影子(2026-10-04 评审裁定第二节):clip v1 保持现役;高斯 v2 仅并行记录,
+# 不替换现役公式。下一窗口对比零值占比 / IC / 与其余四因子的相关性后再裁决 σ。
+GAUSS_SIGMA_GRID = (0.20, 0.25, 0.30)
+GAUSS_SIGMA_DEFAULT = 0.25
 LEVERAGE_DECAY_START = 0.70
 LEVERAGE_DECAY_FLOOR = 0.40
 ATR_PCT_WINDOW = 14
@@ -98,6 +102,8 @@ class VolatilityRegimeResult:
     leverage_multiplier: float
     fallback: bool
     lookback_bars: int
+    # F4 双轨:高斯型候选评分(σ 网格)仅记录,不参与现役评分
+    gauss_scores: Mapping[str, float] = field(default_factory=dict)
     detail: Mapping[str, float | bool | str] = field(default_factory=dict)
 
 
@@ -281,6 +287,28 @@ def volatility_score_from_percentile(atr_percentile: float) -> float:
     return round(_clip(1.0 - abs(atr_percentile - VOLATILITY_PEAK_PERCENTILE) * 2.5), 4)
 
 
+def volatility_score_gauss(
+    atr_percentile: float, sigma: float = GAUSS_SIGMA_DEFAULT
+) -> float:
+    """F4 候选评分分量(高斯型,2026-10-04 评审裁定 2.2 节方案 B)。
+
+    `exp(-((p-0.6)²)/(2σ²))` —— 渐近趋 0 而非硬夹断,消除现役 clip 版在
+    `|p-0.6| ≥ 0.4` 时(约 31% 样本)恒为 0 的信息损失。**仅并行记录**。
+    """
+    if sigma <= 0:
+        raise ValueError("sigma must be positive")
+    deviation = float(atr_percentile) - VOLATILITY_PEAK_PERCENTILE
+    return round(math.exp(-(deviation * deviation) / (2.0 * sigma * sigma)), 6)
+
+
+def gauss_scores_for_percentile(atr_percentile: float) -> dict[str, float]:
+    """σ 网格三档同时记录(最终取值由 P2 阶段 IC 数据裁决,不在此拍板)。"""
+    return {
+        f"sigma_{sigma:.2f}": volatility_score_gauss(atr_percentile, sigma)
+        for sigma in GAUSS_SIGMA_GRID
+    }
+
+
 def leverage_multiplier_from_percentile(atr_percentile: float) -> float:
     """仓位调节分量:0.70 分位后单调递减,1.00 分位降至 0.40(与 4XGATE 方向一致)。"""
     if atr_percentile < LEVERAGE_DECAY_START:
@@ -295,20 +323,22 @@ def compute_volatility_regime(bars: Sequence[BacktestBar]) -> VolatilityRegimeRe
     series = atr_pct_series(items)
     if len(series) < VOLATILITY_LOOKBACK_MIN_BARS:
         return VolatilityRegimeResult(
-            NEUTRAL_VALUE,
-            1.0,
-            True,
-            len(series),
-            {"reason": "insufficient_volatility_history"},
+            score=NEUTRAL_VALUE,
+            leverage_multiplier=1.0,
+            fallback=True,
+            lookback_bars=len(series),
+            gauss_scores={},
+            detail={"reason": "insufficient_volatility_history"},
         )
     current = series[-1]
     atr_percentile = percentile_rank(series, current)
     return VolatilityRegimeResult(
-        volatility_score_from_percentile(atr_percentile),
-        leverage_multiplier_from_percentile(atr_percentile),
-        False,
-        len(series),
-        {
+        score=volatility_score_from_percentile(atr_percentile),
+        leverage_multiplier=leverage_multiplier_from_percentile(atr_percentile),
+        fallback=False,
+        lookback_bars=len(series),
+        gauss_scores=gauss_scores_for_percentile(atr_percentile),
+        detail={
             "atr_pct": round(current, 6),
             "atr_percentile": round(atr_percentile, 4),
             "band_expansion": round(band_expansion(items), 4),
@@ -446,6 +476,9 @@ def five_factor_scores(
         "volatility_lookback_bars": volatility.lookback_bars,
         # 如实记录实际回看长度(受 --public-kline-limit 限制,通常远短于 30 天)
         "volatility_lookback_days": round(volatility.lookback_bars * 15 / (60 * 24), 2),
+        # F4 双轨影子:clip v1 现役、gauss v2 候选(σ 网格)并行记录,互不覆盖
+        "volatility_regime_clip_v1": volatility.score,
+        "volatility_regime_gauss_v2": dict(volatility.gauss_scores),
         "trend_fallback": trend.fallback,
         "payoff_fallback": payoff.fallback,
         "normalized_values": {
