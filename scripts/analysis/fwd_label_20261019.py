@@ -65,13 +65,16 @@ _extract_features = _features._extract_features
 _is_six_factor = _features.is_six_factor
 
 
-def _inject_cost(cfg=None, **fields):
-    """把模块级 ``ROUND_TRIP_BPS`` 写进 cfg,并同步调用参数,避免 fwdlib 的
-    「值等于旧默认即视为未覆盖」规则把 cfg 里的默认值当成调用方意图。"""
+def _inject_cost(cfg=None):
+    """把模块级 ``ROUND_TRIP_BPS`` 写进 ``cfg.cost_bps``,其余字段一律不动。
+
+    这里只负责成本注入点。``entry_mode`` / ``exit_mode`` / ``quadrant_defense``
+    等字段由调用方显式传参,或由 ``cfg`` 提供基线 —— labeler 自己的「值等于旧
+    默认即视为未覆盖」逻辑会正确合并。shim 若顺手把包装函数的默认值也写进
+    ``cfg``,就会把 ``cfg=LabelConfig(quadrant_defense=True)`` 静默改回 ``False``。
+    """
     base = LabelConfig() if cfg is None else cfg
-    updates = {k: v for k, v in fields.items() if v is not None}
-    updates["cost_bps"] = float(ROUND_TRIP_BPS)
-    return base.replaced(**updates)
+    return base.replaced(cost_bps=float(ROUND_TRIP_BPS))
 
 
 def label_barrier(bars, per_symbol, index, d, stop_pct, entry_mode="next_open",
@@ -84,8 +87,7 @@ def label_barrier(bars, per_symbol, index, d, stop_pct, entry_mode="next_open",
 def label_ladder(bars, per_symbol, index, d, stop_pct, entry_mode="bar_close",
                  quad_map=None, quadrant_defense=False, q2_tighten=False,
                  post_tp_mode="legacy", horizon=None, cost_breakeven_bars=None, cfg=None):
-    cfg = _inject_cost(cfg, entry_mode=entry_mode, post_tp_mode=post_tp_mode,
-                       quadrant_defense=quadrant_defense, q2_tighten=q2_tighten)
+    cfg = _inject_cost(cfg)
     return _labeler.label_ladder(
         bars, per_symbol, index, d, stop_pct, entry_mode, quad_map=quad_map,
         quadrant_defense=quadrant_defense, q2_tighten=q2_tighten,
@@ -97,9 +99,7 @@ def label_ladder(bars, per_symbol, index, d, stop_pct, entry_mode="bar_close",
 def run_labeling(decisions, exit_mode="barrier", stop_floor=None, stop_scale=None,
                  entry_mode="next_open", quadrant_defense=False, q2_tighten=False,
                  post_tp_mode="legacy", horizon=None, cost_breakeven_bars=None, cfg=None):
-    cfg = _inject_cost(cfg, exit_mode=exit_mode, entry_mode=entry_mode,
-                       post_tp_mode=post_tp_mode, quadrant_defense=quadrant_defense,
-                       q2_tighten=q2_tighten)
+    cfg = _inject_cost(cfg)
     return _labeler.run_labeling(
         decisions, exit_mode=exit_mode, stop_floor=stop_floor, stop_scale=stop_scale,
         entry_mode=entry_mode, quadrant_defense=quadrant_defense, q2_tighten=q2_tighten,

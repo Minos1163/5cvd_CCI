@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from scripts.analysis.fwdlib import labeler as fwdlib_labeler
+from scripts.analysis.fwdlib.config import LabelConfig
 from tests.fixtures.fwdlib.synthetic_bars import make_series
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -200,3 +201,20 @@ def test_shim_matches_fwdlib_direct_call(L) -> None:
         assert a["ts"] == b["ts"]
         for key in ("R", "R_net", "reason"):
             assert a[key] == b[key], (a["symbol"], key)
+
+
+def test_shim_only_injects_cost_and_does_not_override_cfg(L) -> None:
+    """``_inject_cost`` 只补 cost_bps:cfg 里的 exit_mode / quadrant_defense 必须活下来。"""
+    decisions = _ladder_decisions()
+    cfg = LabelConfig(exit_mode="ladder", quadrant_defense=True)
+    original = L.ROUND_TRIP_BPS
+    try:
+        shim_rows, *_ = L.run_labeling(decisions, cfg=cfg)
+    finally:
+        L.ROUND_TRIP_BPS = original
+
+    lib_rows, *_ = fwdlib_labeler.run_labeling(decisions, cfg=cfg)
+    assert len(shim_rows) == len(lib_rows)
+    assert [r["R"] for r in shim_rows] == [r["R"] for r in lib_rows]
+    # cfg.exit_mode 真的生效:走 ladder 才有 MAX_HOLD / 成本保本超时
+    assert {r["reason"] for r in shim_rows} & {"MAX_HOLD", "COST_BREAKEVEN_TIMEOUT"}
