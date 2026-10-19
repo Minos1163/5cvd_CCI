@@ -322,6 +322,21 @@ def main() -> int:
     ts_all = sorted({r["ts"] for r in rows})
     nonoverlap_ts = {t for t in ts_all if t % NONOVERLAP_STRIDE_SECONDS == 0}
     rows_nonoverlap = [r for r in rows if r["ts"] in nonoverlap_ts]
+    nonnull = Counter()
+    date_sets: dict[str, set[str]] = defaultdict(set)
+    for r in rows:
+        for f in FEATURES:
+            if r.get(f) is not None:
+                nonnull[f] += 1
+                date_sets[f].add(r["date"])
+    coverage = {
+        f: {
+            "nonnull": nonnull[f],
+            "pct": round(nonnull[f] / len(rows), 4) if rows else 0.0,
+            "dates": len(date_sets[f]),
+        }
+        for f in FEATURES
+    }
     cs_sizes = Counter(r["ts"] for r in rows if r.get(FEATURES[0]) is not None)
     cs_widths = sorted(Counter(r["ts"] for r in rows).values())
     print(f"[design] ts={len(ts_all)} dates={len({r['date'] for r in rows})} "
@@ -565,6 +580,7 @@ def main() -> int:
             **row_audit,
         },
         "design_effect_summary": design_summary,
+        "feature_coverage": coverage,
         "shape_by_feature": shapes,
         "shape_counts": dict(shape_counts),
         "informative_features": informative,
@@ -757,7 +773,23 @@ def write_report(out_dir, cells, terciles, shapes, shape_counts, dominant,
     md += ["", f"78 格中 BH q<{args.bh_q} 的 {metrics['n_tercile_bh_reject']} 格;"
                "spread 为逐 bar 三分位后对时间取均值(top−bottom),非池化。"]
 
+    sparse = {f: v for f, v in metrics.get("feature_coverage", {}).items() if v["pct"] < 0.999}
+    if sparse:
+        pcts = sorted({v["pct"] for v in sparse.values()})
+        sparse_dates = sorted({v["dates"] for v in sparse.values()})
+        pct_txt = f"{min(pcts):.1%}" if min(pcts) == max(pcts) else f"{min(pcts):.1%}–{max(pcts):.1%}"
+        day_txt = (f"{min(sparse_dates)}" if min(sparse_dates) == max(sparse_dates)
+                   else f"{min(sparse_dates)}–{max(sparse_dates)}")
+        coverage_note = (
+            f"- 特征覆盖:{', '.join(f'`{f}`' for f in sparse)} 非空 {pct_txt},"
+            f"仅覆盖 {day_txt} 天(其余特征 100%)。"
+            f"这些格的 `n_obs` 相应减半,跨族比较需注意时间窗不同。"
+        )
+    else:
+        coverage_note = "- 13 个特征在全部行上均非空。"
+
     md += ["", "## 9. 偏离与备注", "",
+           coverage_note,
            "- `ic_by_bar.csv` 只落 h=32(按任务允许的裁剪),其余周期的逐 bar IC 未落盘。",
            "- `ic_matrix.csv` 在要求列之外追加了 `se_nonoverlap`,用于并列展示两个 SE;"
            "`metrics.json` 的 `n_sig_conservative_two_se` 用保守 SE 重算 mde。",
