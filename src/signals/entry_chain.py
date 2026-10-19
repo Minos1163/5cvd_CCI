@@ -721,10 +721,21 @@ def _notional_cap_diagnostics(
         }
 
     risk_pct = cfg.direct_risk_pct if action == "DIRECT" else cfg.probe_risk_pct
-    raw_notional = equity * risk_pct / stop_pct
-    leveraged_cap_notional = (
-        equity * cfg.max_single_trade_risk_pct / (stop_pct * leverage)
-    )
+    if bool(getattr(cfg, "risk_first_sizing_enabled", False)):
+        # 风险优先:单笔风险定额(受硬上限约束),杠杆只决定保证金占用。
+        # leveraged_cap_notional 在此模式下是「保证金可支撑的名义」,不再是风险上限,
+        # 键名保持不变,避免下游 diagnostics 读取方断裂。
+        effective_risk_pct = min(risk_pct, cfg.max_single_trade_risk_pct)
+        raw_notional = equity * effective_risk_pct / stop_pct
+        margin_headroom = max(
+            0.0, float(context.available_margin) - equity * cfg.margin_buffer_pct
+        )
+        leveraged_cap_notional = margin_headroom * leverage
+    else:
+        raw_notional = equity * risk_pct / stop_pct
+        leveraged_cap_notional = (
+            equity * cfg.max_single_trade_risk_pct / (stop_pct * leverage)
+        )
     remaining_exposure_notional = max(
         0.0, (max_symbol_exposure_pct - context.symbol_exposure_pct) * equity
     )

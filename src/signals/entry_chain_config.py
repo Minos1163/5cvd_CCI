@@ -219,6 +219,14 @@ class EntryChainConfig:
     portfolio_daily_loss_circuit_enabled: bool = False
     portfolio_daily_loss_limit: float = -30.0
     max_single_trade_risk_pct: float = 0.0075
+    # 风险优先仓位(2026-10-19 网络交流后新增,默认关闭):
+    # 关闭时沿用旧口径——名义先按 equity×risk_pct/stop_pct 算,再用
+    # equity×max_single_trade_risk_pct/(stop_pct×leverage) 封顶,于是杠杆越低名义越小、
+    # 单笔风险与杠杆成反比。打开后改为「风险定额」:单笔风险 = min(risk_pct, 上限),
+    # 名义 = 风险额/stop_pct;杠杆只决定保证金占用,不再改变单笔风险。
+    # 打开会让同一 risk_pct 下的名义显著变大(旧口径被杠杆上限压掉约 3 倍),
+    # 必须先用独立配置 + dry-run/paper 验证,不要直接改线上配置。
+    risk_first_sizing_enabled: bool = False
     # 五正交因子 P0 影子(2026-09-27 裁定报告):只写 component_points_v2 记录字段,
     # 不参与 total_score/门槛/杠杆/action;置 false 即可完全回滚影子记录。
     five_factor_shadow_enabled: bool = True

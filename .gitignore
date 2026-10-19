@@ -20,6 +20,9 @@ logs/
 id_rsa
 id_ed25519
 
+# WorkBuddy agent workspace (memory / session state; do not commit)
+.workbuddy/
+
 # AOCI agent host integration (machine-bound; do not commit)
 .mcp.json
 .mcp.json.backup.*
