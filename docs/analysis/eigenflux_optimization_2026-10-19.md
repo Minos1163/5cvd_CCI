@@ -207,7 +207,9 @@
 - 启动脚本 `scripts/parallel_paper_20261019.sh`：两条 `--symbols` **钉死为同一份 14 标的**（不走市值排名，避免两路看到不同入场机会），同一份代码、同一行情源、对齐 15m 收盘。
 - 产物目录 `D:/AIDCA/AI300-fwdlib/logs_parallel/{fib_pa_v1,risk_first}/`（与主工作区 `logs/` 完全隔离）。
 - 对比脚本 `scripts/analysis/paper_parallel_compare_20261019.py`，指标：单笔风险分位数、名义、权益曲线、最大回撤（已实现口径 + 账本含浮亏口径）。
-- **当前状态**：两路进程已起（`runtime.out.*.log` 正常，等待 15:45 UTC 首个扫描），`decisions.jsonl` 尚无内容，成交 0 笔。线上入场频率约 1–2 笔/天，要做到 §3 的"可比样本"（≥20 笔）需要数周。脚本内置 `insufficient_sample` 判定，样本不足时不会给出结论。
+- **当前状态**（16:15 UTC 首个扫描已确认）：两路 `warmup.source=public-binance`、`ready=True`、真实分数 26–76 分，**两路分数逐标的完全一致**（同一个 bar、同一份代码）；XLMUSDT 76.09 分触发 WATCH（SHORT watch 70），尚无成交。线上入场频率约 1–2 笔/天，要做到 §3 的"可比样本"（≥20 笔）需要数周。脚本内置 `insufficient_sample` 判定，样本不足时不会给出结论。
+- **踩坑（两次）**：本机会话里预置了沙箱代理 `127.0.0.1:55964`，对 Binance 返回 502；`urllib` 的 `getproxies_environment` 只读 `*_proxy` 环境变量，**只设大写 `HTTP_PROXY` 盖不掉它**，结果 klines 全部 URLError → `warmup` 静默退化成 `source=synthetic`、score 全 0、`reason=DATA_POLLUTION_COOLDOWN`，**日志里没有任何报错**，看起来像"市场没信号"。修法：显式设小写 `http_proxy`/`https_proxy`，并把 `--http-timeout` 调到 30s、两路错峰 120s 启动（56 个请求 ×2 同时打满会拖垮代理）。
+- 为此给 `run_live_dry_run.py` 加了 `--http-timeout`（默认 10.0，行为不变）。
 
 ### 6.6 P1-1 / P1-2：成本分档 + 日块置换
 

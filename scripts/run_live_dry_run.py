@@ -57,6 +57,11 @@ from src.signals.orthogonal_factors import (
 
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 BINANCE_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+
+#: 公网行情请求超时(秒)。由 ``--http-timeout`` 覆盖;默认值 10.0 保持历史行为
+#: (klines 10s / 其他 15s)。代理链路或网络拥塞时调大,否则热身取数会 URLError
+#: 并**静默退化到 synthetic 数据**(日志里表现为 warmup.source=synthetic)。
+HTTP_TIMEOUT = 10.0
 STABLE_SYMBOLS = {
     "USDT",
     "USDC",
@@ -93,7 +98,9 @@ COINGECKO_BASE_OVERRIDES = {
 
 
 def main() -> None:
+    global HTTP_TIMEOUT
     args = parse_args()
+    HTTP_TIMEOUT = float(args.http_timeout)
     output_dir = resolve_output_dir(args)
     try:
         run(args)
@@ -434,6 +441,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--near-miss-min-score", type=float, default=82.0)
     parser.add_argument("--market-data-source", default="synthetic", choices=["synthetic", "public-binance"])
     parser.add_argument("--public-kline-limit", type=int, default=240)
+    parser.add_argument(
+        "--http-timeout",
+        type=float,
+        default=10.0,
+        help="公网行情请求超时(秒)。默认值保持历史行为;高延迟/代理链路下可调大,"
+        "否则热身取数会 URLError 并静默退化到 synthetic 数据。",
+    )
     return parser.parse_args()
 
 
@@ -2298,7 +2312,7 @@ def resolve_market_cap_rank_symbols(rank_start: int, rank_end: int) -> tuple[lis
 
 def fetch_json(url: str, params: Mapping[str, Any]) -> Any:
     query = f"?{urlencode(params)}" if params else ""
-    with urlopen(f"{url}{query}", timeout=15) as response:
+    with urlopen(f"{url}{query}", timeout=max(15.0, HTTP_TIMEOUT)) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -2510,7 +2524,7 @@ def public_history_limit(args: argparse.Namespace, config) -> int:
 def fetch_public_klines(symbol: str, interval: str, *, limit: int) -> list[BacktestBar]:
     params = urlencode({"symbol": symbol.upper(), "interval": interval, "limit": max(2, min(limit, 1500))})
     url = f"https://fapi.binance.com/fapi/v1/klines?{params}"
-    with urlopen(url, timeout=10) as response:
+    with urlopen(url, timeout=max(10.0, HTTP_TIMEOUT)) as response:
         rows = json.loads(response.read().decode("utf-8"))
     now_ms = int(time.time() * 1000)
     bars: list[BacktestBar] = []
