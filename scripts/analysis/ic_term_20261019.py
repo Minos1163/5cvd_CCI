@@ -45,6 +45,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import statistics
 import sys
 import time
@@ -65,6 +66,19 @@ from fwdlib.stats import (  # noqa: E402
     mde,
     partial_spearman,
 )
+
+# ---- 默认路径:相对仓库根,支持 FWD_LOGS / FWD_REPORTS 覆盖 ----
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _default_logs() -> str:
+    return os.environ.get("FWD_LOGS") or str(REPO_ROOT / "logs")
+
+
+def _default_out(slug: str) -> str:
+    base = os.environ.get("FWD_REPORTS")
+    return str(Path(base) / slug) if base else str(REPO_ROOT / "reports" / "analysis" / slug)
+
 
 # ---- 预登记 ----
 ALPHA = 0.05
@@ -282,9 +296,9 @@ def classify_shape(ics: list[float | None]) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="分量 × 周期 IC 期限结构矩阵")
-    ap.add_argument("--logs", default="D:/AIDCA/AI300/logs")
+    ap.add_argument("--logs", default=_default_logs())
     ap.add_argument("--months", default="2026-09,2026-10")
-    ap.add_argument("--out", default="D:/AIDCA/AI300/reports/analysis/ic-term-20261019")
+    ap.add_argument("--out", default=_default_out("ic-term-20261019"))
     ap.add_argument("--horizons", default="1,2,4,8,16,32")
     ap.add_argument("--min-cs", type=int, default=MIN_CS)
     ap.add_argument("--bh-q", type=float, default=BH_Q)

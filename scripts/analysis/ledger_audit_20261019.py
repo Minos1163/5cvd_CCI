@@ -33,6 +33,7 @@ import argparse
 import csv
 import glob
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -46,8 +47,22 @@ from fwdlib.ledger import (  # noqa: E402
     symbol_quantiles,
 )
 
-DEFAULT_TRADES = "D:/AIDCA/AI300/logs/*/*/paper_trades.jsonl"
-DEFAULT_OUT = "D:/AIDCA/AI300/reports/analysis/cost-audit-20261019"
+#: 默认路径相对**仓库根**解析(worktree 里就是本仓库),换机器不会写死到别人的盘符;
+#: 环境变量 ``FWD_LOGS`` / ``FWD_REPORTS`` 优先,便于把产物指回主工作区。
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _default_logs() -> str:
+    return os.environ.get("FWD_LOGS") or str(REPO_ROOT / "logs")
+
+
+def _default_out(slug: str) -> str:
+    base = os.environ.get("FWD_REPORTS")
+    return str(Path(base) / slug) if base else str(REPO_ROOT / "reports" / "analysis" / slug)
+
+
+DEFAULT_TRADES = str(Path(_default_logs()) / "*" / "*" / "paper_trades.jsonl")
+DEFAULT_OUT = _default_out("cost-audit-20261019")
 
 LEDGER_FIELDS = [
     "event",
