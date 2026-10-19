@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from scripts.analysis.fwdlib.config import (
+from .config import (
     ATR_STOP_MULT,
     BAR_SECONDS,
     COST_BREAKEVEN_BUFFER_MULT,
