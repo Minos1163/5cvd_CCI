@@ -497,6 +497,10 @@ def main() -> int:
     tercile_sig = sum(
         1 for t in terciles if t["q_bh"] is not None and t["q_bh"] < args.bh_q
     )
+    nonoverlap_flip = sum(
+        1 for c in sig
+        if c["ic_nonoverlap"] is not None and c["ic"] * c["ic_nonoverlap"] < 0
+    )
 
     def _de(values):
         vals = [v for v in values if v is not None]
@@ -594,6 +598,7 @@ def main() -> int:
         "n_tercile_bh_reject": tercile_sig,
         "n_sig_bh_mde_neff": len(sig),
         "n_sig_conservative_two_se": len(sig_conservative),
+        "n_sig_nonoverlap_sign_flip": nonoverlap_flip,
         "significant_cells": [
             {
                 "feature": c["feature"], "horizon": c["horizon"],
@@ -795,9 +800,11 @@ def write_report(out_dir, cells, terciles, shapes, shape_counts, dominant,
            "`metrics.json` 的 `n_sig_conservative_two_se` 用保守 SE 重算 mde。",
            "- 非重叠子采样按 UTC 固定 8 小时网格取点(不做逐标的错位抽样,以保住截面宽度);"
            f"命中 {metrics['universe'].get('nonoverlap_timestamps')} / "
-           f"{metrics['universe'].get('timestamps')} 个时间戳。子采样把样本量降到 1/32,"
-           "其 SE 会机械放大约 √32 倍,因此「双 SE 保守」列主要用于显示结论对抽样密度的敏感性,"
-           "不能单独当作否定主列的证据。",
+           f"{metrics['universe'].get('timestamps')} 个时间戳,即只落在 00/08/16 UTC 三个时点,"
+           "除样本量降到 1/32 外还混入时段差异。"
+           f"{len(sig)} 个主列显著格中有 {metrics['n_sig_nonoverlap_sign_flip']} 格在该子样本上符号相反;"
+           "该子样本仅 143 个时间戳,不足以独立复核或推翻主列,"
+           "因此「双 SE 保守」列只用于显示结论对抽样密度/时段的敏感性。",
            "- 日块 bootstrap 的 p 值分辨率为 1/iters;表中 `p=0.0` 表示 2000 次重采样无一跨零,"
            "并非数学上的 0,故相应的 `q_bh=0.0` 同样只是分辨率下限。",
            f"- 运行耗时 {metrics['elapsed_seconds']}s。",
