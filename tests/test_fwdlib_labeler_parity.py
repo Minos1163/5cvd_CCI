@@ -29,6 +29,9 @@ from scripts.analysis.fwdlib.labeler import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOG_ROOT = Path(os.environ.get("FWD_LOGS", "D:/AIDCA/AI300/logs"))
+#: 539bc64 冻结的旧标注器。**不能**指向 ``scripts/analysis/fwd_label_20261019.py`` ——
+#: 它现在是 fwdlib 的薄 shim,拿它做对照等于自己跟自己比,断言恒真。
+LEGACY_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "fwdlib" / "legacy_fwd_label.py"
 HORIZONS = (1, 2, 4, 8, 16, 32)
 LEGACY_KEYS = ("R", "R_net", "cost_r", "stop_pct_eff", "bars", "reason", "ambiguous",
                "entry_price", "stop_price", "mfe_r")
@@ -178,9 +181,69 @@ def test_run_labeling_horizon_and_breakeven_follow_config() -> None:
     assert {r["horizon"] for r in rows8} == {8}
 
 
+def test_label_ladder_breakeven_bars_follow_argument_horizon() -> None:
+    """直接调用与 ``run_labeling`` 必须按同一个 horizon 解析保本根数。
+
+    旧实现用 ``cfg.horizon_bars``(32→8)算,``label_ladder(horizon=8)`` 得到 8 根,
+    而 ``run_labeling(horizon=8)`` 得到 2 根 —— 同一 horizon 两套出场判定。
+    """
+    decisions = _synthetic_decisions()
+    bars, ps, ix = build_bars(decisions)
+    rows, _, _, _, _ = run_labeling(decisions, exit_mode="ladder", entry_mode="bar_close",
+                                    horizon=8)
+    assert rows
+    for row in rows:
+        direct = label_ladder(bars, ps, ix, row, row["stop_pct_eff"], "bar_close", horizon=8)
+        assert direct is not None
+        assert (direct["bars"], direct["reason"]) == (row["bars"], row["reason"]), (
+            row["symbol"], row["ts"]
+        )
+
+
+def test_label_at_horizons_respects_cfg_entry_mode() -> None:
+    """``cfg.entry_mode`` 必须与其它标注函数同规则生效,不能收了 cfg 却不用。"""
+    decisions = _synthetic_decisions()
+    bars, ps, ix = build_bars(decisions)
+    d = decisions[7]
+    multi = label_at_horizons(bars, ps, ix, d, 0.01, (4, 8),
+                              cfg=LabelConfig(entry_mode="bar_close"))
+    for h in (4, 8):
+        single = label_barrier(bars, ps, ix, d, 0.01, "bar_close", horizon=h)
+        assert _strip_horizon(multi[h]) == single
+
+
 # --------------------------------------------------------------------------- #
 # 真实日志抽样对照
 # --------------------------------------------------------------------------- #
+
+def _load_legacy():
+    """加载 fixture 里的旧标注器(独立实现,不是 ``fwdlib`` 的 shim)。"""
+    name = "fwd_label_legacy"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, LEGACY_FIXTURE)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:  # pragma: no cover - 导入失败时不要把半成品留在 sys.modules
+        sys.modules.pop(name, None)
+        raise
+    return mod
+
+
+def test_legacy_fixture_is_not_the_shim() -> None:
+    """对照必须是 539bc64 的独立实现,否则 parity 断言恒真。"""
+    legacy = _load_legacy()
+    assert Path(legacy.__file__).resolve() == LEGACY_FIXTURE.resolve()
+    assert legacy.run_labeling is not run_labeling
+    assert legacy.label_barrier is not label_barrier
+    assert legacy.label_ladder is not label_ladder
+    # shim 特有的成本注入包装函数;fixture 里不应存在
+    assert not hasattr(legacy, "_inject_cost")
+    assert legacy.ROUND_TRIP_BPS == 20.0
+
 
 def _load_repo_decisions(limit_days: int = 5):
     if not LOG_ROOT.exists():
@@ -188,12 +251,7 @@ def _load_repo_decisions(limit_days: int = 5):
     paths = [str(p) for p in sorted(LOG_ROOT.glob("2026-10/*/decisions.jsonl"))][:limit_days]
     if not paths:
         pytest.skip(f"未找到 decisions.jsonl: {LOG_ROOT}")
-    legacy = REPO_ROOT / "scripts/analysis/fwd_label_20261019.py"
-    spec = importlib.util.spec_from_file_location("fwd_label_legacy", legacy)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules.setdefault("fwd_label_legacy", mod)
-    spec.loader.exec_module(mod)
-    decisions = mod.load_decisions(paths)
+    decisions = _load_legacy().load_decisions(paths)
     if len(decisions) < 200:
         pytest.skip(f"样本不足 200 行: {len(decisions)}")
     return decisions
@@ -201,7 +259,7 @@ def _load_repo_decisions(limit_days: int = 5):
 
 def test_parity_with_legacy_run_labeling_on_sample() -> None:
     decisions = _load_repo_decisions()
-    legacy = sys.modules["fwd_label_legacy"]
+    legacy = _load_legacy()
     sample = random.Random(20261019).sample(decisions, 200)
 
     new_rows, bars, ps, ix, _ = run_labeling(sample)
