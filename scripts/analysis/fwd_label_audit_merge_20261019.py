@@ -19,10 +19,20 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+#: 默认路径相对**仓库根**解析(worktree 里就是本仓库),换机器不会写死到别人的盘符;
+#: 环境变量 ``FWD_REPORTS`` 优先(本脚本只读报告,不读日志)。
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _default_out(slug: str) -> str:
+    base = os.environ.get("FWD_REPORTS")
+    return str(Path(base) / slug) if base else str(REPO_ROOT / "reports" / "analysis" / slug)
 
 #: 台账行数硬断言:任何一条线新增/删除检验都必须显式改这里,避免结论页漂移
 LEDGER_EXPECTED_ROWS = 159
@@ -231,8 +241,17 @@ def build_h1(l1: dict) -> dict:
     stop_audit = l1.get("stop_pct_audit") or {}
 
     mirror_diff = float(inv.get("mirror_max_abs_diff", float("inf")))
-    no_lookahead = bool(inv.get("no_lookahead_ok"))
-    status = "PASS" if (mirror_diff <= 1e-9 and no_lookahead) else "FAIL"
+    prior_ok = inv.get("no_lookahead_prior_unchanged")
+    entry_ok = inv.get("no_lookahead_entry_changed")
+    # 缺字段/类型不对 ⇒ UNVERIFIED:旧版 L1 只有硬编码的 no_lookahead_ok=True,
+    # 不能拿它当通过依据,更不能默认成 True。
+    if not isinstance(prior_ok, bool) or not isinstance(entry_ok, bool):
+        status = "UNVERIFIED"
+    elif mirror_diff <= 1e-9 and prior_ok and entry_ok:
+        status = "PASS"
+    else:
+        status = "FAIL"
+    no_lookahead_ok = prior_ok is True and entry_ok is True
 
     return {
         "status": status,
@@ -242,12 +261,17 @@ def build_h1(l1: dict) -> dict:
             "ambiguous_pct": l1.get("ambiguous_pct"),
             "mirror_max_abs_diff": mirror_diff,
             "mirror_n_checked": inv.get("mirror_n_checked"),
-            "no_lookahead_ok": no_lookahead,
+            "no_lookahead_prior_unchanged": prior_ok,
+            "no_lookahead_entry_changed": entry_ok,
+            "no_lookahead_n_checked": inv.get("no_lookahead_n_checked"),
+            "no_lookahead_prior_mismatch": inv.get("no_lookahead_prior_mismatch"),
+            "no_lookahead_entry_mismatch": inv.get("no_lookahead_entry_mismatch"),
+            "no_lookahead_ok": no_lookahead_ok,
             "random_walk": {
                 "hit_band": inv.get("band"),
                 "source": inv.get("source"),
                 "rerun_here": False,
-                "note": "随机游走/单调/无前视以 pytest 引用,本脚本不重跑",
+                "note": "随机游走/单调以 pytest 引用;无前视由 L1 脚本实测",
             },
             "placebo_valid_rate": placebo.get("valid_rate"),
             "placebo_n_valid": placebo.get("n_valid"),
@@ -259,7 +283,7 @@ def build_h1(l1: dict) -> dict:
                 "E_R": stop_audit.get("E_R_gt_3pct"),
             },
         },
-        "caveat": "随机游走腿只引用 tests/test_fwdlib_labeler_invariance.py 的结论,本次未重跑",
+        "caveat": "随机游走/单调腿只引用 tests/test_fwdlib_labeler_invariance.py;无前视是 L1 的实测字段",
     }
 
 
@@ -552,7 +576,10 @@ def build_report(m: dict) -> str:
     L.append(
         f"| H1 {HYPOTHESES['H1']} | **{h1['status']}** | "
         f"镜像 {h1['evidence']['mirror_n_checked']} 对 max\\|R_long+R_short\\|="
-        f"{h1['evidence']['mirror_max_abs_diff']:.1e}；无前视 ok；有效配对 "
+        f"{h1['evidence']['mirror_max_abs_diff']:.1e}；无前视 prior="
+        f"{h1['evidence']['no_lookahead_prior_unchanged']}/entry="
+        f"{h1['evidence']['no_lookahead_entry_changed']}"
+        f"（实测 {h1['evidence']['no_lookahead_n_checked']} 条）；有效配对 "
         f"{h1['evidence']['placebo_n_valid']}/{h1['evidence']['labeled']}="
         f"{h1['evidence']['placebo_valid_rate']:.4f}；超时 {h1['evidence']['timeout_n']}"
         f"（{h1['evidence']['timeout_pct']:.1%}）；随机游走 {h1['evidence']['random_walk']['hit_band']}"
@@ -641,10 +668,10 @@ def build_report(m: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="三条线合并结论页(BH 两套校正 + 代码生成 verdict)")
-    ap.add_argument("--l1", default="D:/AIDCA/AI300/reports/analysis/fwd-label-v2-20261019")
-    ap.add_argument("--l2", default="D:/AIDCA/AI300/reports/analysis/cost-audit-20261019")
-    ap.add_argument("--l3", default="D:/AIDCA/AI300/reports/analysis/ic-term-20261019")
-    ap.add_argument("--out", default="D:/AIDCA/AI300/reports/analysis/fwd-label-audit-20261019")
+    ap.add_argument("--l1", default=_default_out("fwd-label-v2-20261019"))
+    ap.add_argument("--l2", default=_default_out("cost-audit-20261019"))
+    ap.add_argument("--l3", default=_default_out("ic-term-20261019"))
+    ap.add_argument("--out", default=_default_out("fwd-label-audit-20261019"))
     ap.add_argument("--bh-q", type=float, default=0.10)
     args = ap.parse_args(argv)
 

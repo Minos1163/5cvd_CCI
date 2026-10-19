@@ -21,6 +21,10 @@
 - 三档成本只改 `LabelConfig.cost_bps`。barrier 口径下 `R` 与成本无关, 因此
   **三档的 `R` 必须逐行相同**; 若不同, 说明成本串进了毛收益, 那是 bug, 脚本直接
   失败而不是继续出数。
+- `--exit-mode ladder` 下这条恒等式**不适用**: 成本会改变 `COST_BREAKEVEN_TIMEOUT`
+  与 Q4 判定, 三档的出场通道本来就不同。此时脚本只校验三档行键集合相同, 并在
+  `metrics.json` 写 `gross_invariance: "not_applicable_ladder"`, 不把口径差异
+  误诊成「成本串进毛收益」。
 - `cost_R` 分布取 `fwdlib.cost.cost_r_distribution(stops, keys=...)`,
   `stops = [r["stop_pct_eff"]]`。
 - 置信区间: 按 `(symbol|date)` 分块的 80% bootstrap(`fwdlib.stats.block_bootstrap_mean`)。
@@ -44,6 +48,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import statistics
 import sys
 import time
@@ -62,6 +67,20 @@ SEED = 7
 GROSS_TOL = 1e-12
 IDENTITY_TOL = 1e-9
 
+#: 默认路径相对**仓库根**解析(worktree 里就是本仓库),换机器不会写死到别人的盘符;
+#: 环境变量 ``FWD_LOGS`` / ``FWD_REPORTS`` 优先,便于把产物指回主工作区。
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _default_logs() -> str:
+    return os.environ.get("FWD_LOGS") or str(REPO_ROOT / "logs")
+
+
+def _default_out(slug: str) -> str:
+    base = os.environ.get("FWD_REPORTS")
+    return str(Path(base) / slug) if base else str(REPO_ROOT / "reports" / "analysis" / slug)
+
+
 CSV_COLS = (
     "scenario", "bps", "n", "E_R", "E_Rnet", "E_Rnet_ci80",
     "cost_R_mean", "cost_R_median", "cost_R_p10", "cost_R_p90",
@@ -78,9 +97,9 @@ MARK_END = "<!-- END cost_sensitivity_v2_20261019 -->"
 
 def _parse_args(argv=None):
     ap = argparse.ArgumentParser(description="成本敏感性三条曲线(6/10/20bps)")
-    ap.add_argument("--logs", default="D:/AIDCA/AI300/logs")
+    ap.add_argument("--logs", default=_default_logs())
     ap.add_argument("--months", default="2026-09,2026-10")
-    ap.add_argument("--out", default="D:/AIDCA/AI300/reports/analysis/cost-audit-20261019")
+    ap.add_argument("--out", default=_default_out("cost-audit-20261019"))
     ap.add_argument("--costs", default="6,10,20", help="逗号分隔的往返 bps;必须是 SCENARIOS 里的档位")
     ap.add_argument("--horizon", type=int, default=32)
     ap.add_argument("--exit-mode", default="barrier", choices=("barrier", "ladder"))
@@ -136,8 +155,15 @@ def _max_abs_diff(values_a, values_b) -> float:
     return max((abs(a - b) for a, b in zip(values_a, values_b)), default=0.0)
 
 
-def _check_gross_invariance(rows_by_bps: dict[float, list[dict]]) -> dict:
-    """三档的 `R` 必须逐行相同: 成本只允许影响 `R_net`。"""
+def _check_gross_invariance(rows_by_bps: dict[float, list[dict]], exit_mode: str) -> dict:
+    """三档的 `R` 必须逐行相同: 成本只允许影响 `R_net`。
+
+    ``exit_mode="ladder"`` 下这条恒等式**不适用**:ladder 的成本保本超时
+    (``COST_BREAKEVEN_TIMEOUT``)与 Q4 防御判定都读 ``cost_r``,成本档变了,
+    出场通道就变了,毛 R 自然逐行不同。此时只校验「同一批决策都被标注出来」
+    (行键集合相同),并把状态标成 ``not_applicable_ladder``,而不是把正常的
+    口径差异误诊成「成本串进毛收益」。
+    """
     costs = list(rows_by_bps)
     base_cost = costs[0]
     base_rows = rows_by_bps[base_cost]
@@ -165,16 +191,34 @@ def _check_gross_invariance(rows_by_bps: dict[float, list[dict]]) -> dict:
         default=0.0,
     )
     worst = max(pairwise.values(), default=0.0)
-    passed = keys_identical and stops_identical and worst < GROSS_TOL and gross_alias < GROSS_TOL
-    return {
-        "window": "三档 cost_bps 分别重跑 run_labeling, 逐行比较 R",
+    common = {
         "row_keys_identical": keys_identical,
         "stop_pct_eff_identical": stops_identical,
         "pairwise_max_abs_diff_R": pairwise,
         "max_abs_diff_R": worst,
         "max_abs_diff_R_vs_gross_R": gross_alias,
         "tolerance": GROSS_TOL,
-        "passed": passed,
+    }
+    if exit_mode == "ladder":
+        return {
+            "status": "not_applicable_ladder",
+            "status_note": (
+                "ladder 口径下成本会改变 COST_BREAKEVEN_TIMEOUT / Q4 判定,"
+                "三档成交通道本来就不同,毛 R 逐行相同不适用;只校验行键集合相同"
+            ),
+            "applicable": False,
+            "window": "三档 cost_bps 分别重跑 run_labeling, 只比较行键与 stop_pct_eff",
+            **common,
+            "passed": keys_identical and stops_identical and gross_alias < GROSS_TOL,
+        }
+    return {
+        "status": "ok",
+        "status_note": "barrier 口径下成本只进 R_net,三档毛 R 应逐行相同",
+        "applicable": True,
+        "window": "三档 cost_bps 分别重跑 run_labeling, 逐行比较 R",
+        **common,
+        "passed": keys_identical and stops_identical and worst < GROSS_TOL
+        and gross_alias < GROSS_TOL,
     }
 
 
@@ -209,10 +253,24 @@ def _summarize(rows: list[dict], bps: float, dist: dict, iters: int) -> dict:
     }
 
 
-def _identity_check(rows_by_bps: dict[float, list[dict]], summaries: list[dict]) -> dict:
-    """`E_Rnet(低) - E_Rnet(高)` 必须等于 `mean(cost_R 高) - mean(cost_R 低)`。"""
+def _identity_check(rows_by_bps: dict[float, list[dict]], summaries: list[dict],
+                    exit_mode: str = "barrier") -> dict:
+    """`E_Rnet(低) - E_Rnet(高)` 必须等于 `mean(cost_R 高) - mean(cost_R 低)`。
+
+    仅在 barrier 口径成立:ladder 下毛 R 本身随成本档变化,差值里会多出
+    `mean(gross 低) - mean(gross 高)` 这一项。
+    """
     costs = sorted(rows_by_bps)
     lo, hi = costs[0], costs[-1]
+    if exit_mode == "ladder":
+        return {
+            "status": "not_applicable_ladder",
+            "formula": f"E_Rnet({lo:g}) - E_Rnet({hi:g}) == mean(cost_R{hi:g}) - mean(cost_R{lo:g})",
+            "note": "ladder 下毛 R 随成本档变化,差值与纯成本差不相等属口径差异,不做断言",
+            "tolerance": IDENTITY_TOL,
+            "passed": True,
+            "row_level_passed": True,
+        }
     by_cost = {s["bps"]: s for s in summaries}
     lhs = by_cost[lo]["E_Rnet"] - by_cost[hi]["E_Rnet"]
     rhs = by_cost[hi]["cost_R_mean"] - by_cost[lo]["cost_R_mean"]
@@ -270,8 +328,17 @@ def _preregistered(summaries: list[dict], args) -> dict:
             "COST_CAN_FIX": "最便宜档的 80% CI 下界 > 0",
         },
         "invariants": {
-            "gross_R_cost_invariance": f"三档 R 逐行相同, max|diff| < {GROSS_TOL:g}",
-            "identity": f"E_Rnet(低) - E_Rnet(高) == mean(cost_R 高) - mean(cost_R 低), 差 < {IDENTITY_TOL:g}",
+            "gross_R_cost_invariance": (
+                f"三档 R 逐行相同, max|diff| < {GROSS_TOL:g}"
+                if args.exit_mode == "barrier"
+                else "ladder 口径不适用:成本会改变 COST_BREAKEVEN_TIMEOUT / Q4 判定,"
+                     "只校验三档行键集合相同"
+            ),
+            "identity": (
+                f"E_Rnet(低) - E_Rnet(高) == mean(cost_R 高) - mean(cost_R 低), 差 < {IDENTITY_TOL:g}"
+                if args.exit_mode == "barrier"
+                else "ladder 口径不适用:毛 R 也随成本档变化"
+            ),
         },
         "note": "判据只看最便宜档: 若连理论下界都打不平, 更贵的档位不必再看;"
                 "反之也只在算术意义上成立, 不含队列/成交率/深度冲击。",
@@ -378,41 +445,78 @@ def _render_block(summaries, gross, identity, prereg, verdict, detail, args, rec
 
     lines += [
         "",
-        "读法：`E[R]` 三档相同（成本不进毛收益），`cost_R` 随 bps 线性放大，"
-        "所以 `E[R_net]` 三条曲线是同一毛期望减去三条平行的成本线。",
-        "",
-        "### 不变量：三档的 `R` 逐行相同",
-        "",
-        "| 检查 | 值 | 阈值 | 结论 |",
-        "|---|---:|---:|---|",
-        f"| 行键 `(symbol, ts)` 序列相同 | — | — | {'是' if gross['row_keys_identical'] else '否'} |",
-        f"| `stop_pct_eff` 逐行相同 | — | — | {'是' if gross['stop_pct_eff_identical'] else '否'} |",
-        f"| `max abs diff R` | {gross['max_abs_diff_R']:.3e} | {gross['tolerance']:g} | "
-        f"{'通过' if gross['max_abs_diff_R'] < gross['tolerance'] else '失败'} |",
-        f"| `max abs diff (R - gross_R)` | {gross['max_abs_diff_R_vs_gross_R']:.3e} | "
-        f"{gross['tolerance']:g} | "
-        f"{'通过' if gross['max_abs_diff_R_vs_gross_R'] < gross['tolerance'] else '失败'} |",
-        "",
-        "```json",
-        json.dumps(gross["pairwise_max_abs_diff_R"], ensure_ascii=False),
-        "```",
-        "",
-        "结论：成本只改 `R_net`，三档的毛收益完全相同。若这里出现非零差值，"
-        "说明成本串进了毛收益，是 bug。",
-        "",
-        "### 恒等式检查",
-        "",
-        f"`{identity['formula']}`",
-        "",
-        "| 项 | 值 |",
-        "|---|---:|",
-        f"| 左式 `E_Rnet(低) - E_Rnet(高)` | {identity['lhs_E_Rnet_diff']:+.12f} |",
-        f"| 右式 `mean(cost_R 高) - mean(cost_R 低)` | {identity['rhs_cost_R_diff']:+.12f} |",
-        f"| 差值 | {identity['diff']:.3e}（阈值 {identity['tolerance']:g}） |",
-        f"| 逐行 `max abs diff` | {identity['row_level_max_abs_diff']:.3e} |",
-        f"| 结论 | **{'通过' if identity['passed'] and identity['row_level_passed'] else '失败'}** |",
+        "读法：" + (
+            "`E[R]` 三档相同（成本不进毛收益），`cost_R` 随 bps 线性放大，"
+            "所以 `E[R_net]` 三条曲线是同一毛期望减去三条平行的成本线。"
+            if gross.get("status") != "not_applicable_ladder"
+            else "ladder 口径下成本也参与出场判定，`E[R]` 与 `E[R_net]` 都随 bps 变化，"
+                 "不能按「同一条毛期望减三条成本线」解读。"
+        ),
         "",
     ]
+
+    if gross.get("status") == "not_applicable_ladder":
+        lines += [
+            "### 不变量：三档行键集合相同（ladder 下毛 R 恒等不适用）",
+            "",
+            f"{gross['status_note']}。",
+            "",
+            "| 检查 | 值 | 结论 |",
+            "|---|---:|---|",
+            f"| 行键 `(symbol, ts)` 序列相同 | — | {'是' if gross['row_keys_identical'] else '否'} |",
+            f"| `stop_pct_eff` 逐行相同 | — | {'是' if gross['stop_pct_eff_identical'] else '否'} |",
+            f"| `max abs diff (R - gross_R)` | {gross['max_abs_diff_R_vs_gross_R']:.3e} | "
+            f"{'通过' if gross['max_abs_diff_R_vs_gross_R'] < gross['tolerance'] else '失败'} |",
+            "",
+            "结论：ladder 下成本参与成本保本超时 / Q4 判定，三档成交通道不同，"
+            "毛 R 不要求逐行相同；这里只要求同一批决策都被标注出来。",
+            "",
+        ]
+    else:
+        lines += [
+            "### 不变量：三档的 `R` 逐行相同",
+            "",
+            "| 检查 | 值 | 阈值 | 结论 |",
+            "|---|---:|---:|---|",
+            f"| 行键 `(symbol, ts)` 序列相同 | — | — | {'是' if gross['row_keys_identical'] else '否'} |",
+            f"| `stop_pct_eff` 逐行相同 | — | — | {'是' if gross['stop_pct_eff_identical'] else '否'} |",
+            f"| `max abs diff R` | {gross['max_abs_diff_R']:.3e} | {gross['tolerance']:g} | "
+            f"{'通过' if gross['max_abs_diff_R'] < gross['tolerance'] else '失败'} |",
+            f"| `max abs diff (R - gross_R)` | {gross['max_abs_diff_R_vs_gross_R']:.3e} | "
+            f"{gross['tolerance']:g} | "
+            f"{'通过' if gross['max_abs_diff_R_vs_gross_R'] < gross['tolerance'] else '失败'} |",
+            "",
+            "```json",
+            json.dumps(gross["pairwise_max_abs_diff_R"], ensure_ascii=False),
+            "```",
+            "",
+            "结论：成本只改 `R_net`，三档的毛收益完全相同。若这里出现非零差值，"
+            "说明成本串进了毛收益，是 bug。",
+            "",
+        ]
+
+    if identity.get("status") == "not_applicable_ladder":
+        lines += [
+            "### 恒等式检查",
+            "",
+            f"{identity['note']}。",
+            "",
+        ]
+    else:
+        lines += [
+            "### 恒等式检查",
+            "",
+            f"`{identity['formula']}`",
+            "",
+            "| 项 | 值 |",
+            "|---|---:|",
+            f"| 左式 `E_Rnet(低) - E_Rnet(高)` | {identity['lhs_E_Rnet_diff']:+.12f} |",
+            f"| 右式 `mean(cost_R 高) - mean(cost_R 低)` | {identity['rhs_cost_R_diff']:+.12f} |",
+            f"| 差值 | {identity['diff']:.3e}（阈值 {identity['tolerance']:g}） |",
+            f"| 逐行 `max abs diff` | {identity['row_level_max_abs_diff']:.3e} |",
+            f"| 结论 | **{'通过' if identity['passed'] and identity['row_level_passed'] else '失败'}** |",
+            "",
+        ]
 
     lines += [
         "### 旧归因「20.98 USDT」错在哪",
@@ -502,24 +606,34 @@ def main(argv=None) -> int:
         print(f"[label] {_scenario_key(bps):>10} {bps:>4.0f}bps n={len(rows):,} "
               f"({cost_runtime[_scenario_key(bps)]:.1f}s)", flush=True)
 
-    gross = _check_gross_invariance(rows_by_bps)
+    gross = _check_gross_invariance(rows_by_bps, args.exit_mode)
     if not gross["passed"]:
         raise SystemExit(
-            "毛收益不满足成本不变性: 三档的 R 不是逐行相同, 成本串进了毛收益 —— "
-            f"{json.dumps(gross, ensure_ascii=False)}"
+            f"毛收益不满足成本不变性({gross['status']}): "
+            + ("三档行键/止损宽度不一致" if not gross["applicable"]
+               else "三档的 R 不是逐行相同, 成本串进了毛收益")
+            + f" —— {json.dumps(gross, ensure_ascii=False)}"
         )
-    print(f"[check] gross R invariant: max|diff|={gross['max_abs_diff_R']:.3e} "
-          f"(tol {GROSS_TOL:g})", flush=True)
+    if gross["applicable"]:
+        print(f"[check] gross R invariant: max|diff|={gross['max_abs_diff_R']:.3e} "
+              f"(tol {GROSS_TOL:g})", flush=True)
+    else:
+        print(f"[check] gross R invariance: {gross['status']} "
+              f"(行键一致={gross['row_keys_identical']}, "
+              f"stop 一致={gross['stop_pct_eff_identical']})", flush=True)
 
     stops = [r["stop_pct_eff"] for r in rows_by_bps[costs[0]]]
     dist = cost_r_distribution(stops, keys=keys)
     summaries = [_summarize(rows_by_bps[b], b, dist[_scenario_key(b)], args.iters) for b in costs]
 
-    identity = _identity_check(rows_by_bps, summaries)
+    identity = _identity_check(rows_by_bps, summaries, args.exit_mode)
     if not (identity["passed"] and identity["row_level_passed"]):
         raise SystemExit(f"恒等式检查失败: {json.dumps(identity, ensure_ascii=False)}")
-    print(f"[check] identity diff={identity['diff']:.3e} "
-          f"row-level max={identity['row_level_max_abs_diff']:.3e}", flush=True)
+    if identity.get("status") == "not_applicable_ladder":
+        print("[check] identity: not_applicable_ladder", flush=True)
+    else:
+        print(f"[check] identity diff={identity['diff']:.3e} "
+              f"row-level max={identity['row_level_max_abs_diff']:.3e}", flush=True)
 
     prereg = _preregistered(summaries, args)
     verdict, detail = _verdict(summaries)
@@ -565,6 +679,8 @@ def main(argv=None) -> int:
             for s in summaries
         },
         "scenario_catalog": describe_scenarios(),
+        "gross_invariance": gross["status"],
+        "gross_invariance_note": gross["status_note"],
         "gross_R_invariance": gross,
         "identity_check": identity,
         "preregistered": prereg,

@@ -20,11 +20,17 @@
 不变式的处理(重要)
 ------------------
 随机游走命中率每条路径要跑 2000 条合成序列,那是 pytest 的职责
-(``tests/test_fwdlib_labeler_invariance.py``),本脚本**不重跑**。脚本里只做
-一个廉价镜像检查:随机抽 300 条真实决策,把 side 翻转后按同 ``stop_pct``
-重新标注,断言 ``R_long + R_short ≈ 0``(同根双触的 AMBIGUOUS 行两边都记 -1R,
-单独计数、不进 max|diff|)。其余三项(随机游走命中率 / 单调行情 / 无前视)
-只在 ``metrics.json`` 里以字符串引用 pytest 结论与 ``source`` 路径,不伪造数字。
+(``tests/test_fwdlib_labeler_invariance.py``),本脚本**不重跑**。脚本里实测两项:
+
+* **多空镜像**:随机抽 300 条真实决策,把 side 翻转后按同 ``stop_pct`` 重新标注,
+  断言 ``R_long + R_short ≈ 0``(同根双触的 AMBIGUOUS 行两边都记 -1R,单独计数、
+  不进 max|diff|)。
+* **无前视**:随机抽 200 条决策,在本次标注的 ``bars`` 面板上原地扰动 —— 入场
+  bar 之前的 bar OHLC×1.5 后 ``R/reason/bars`` 必须完全不变;把入场后首根可平仓
+  bar 改成必触 target / 必触 stop,结果必须改变。两个结论写进 ``invariance`` 的
+  ``no_lookahead_prior_unchanged`` / ``no_lookahead_entry_changed``。
+
+只有随机游走命中率与单调行情以字符串引用 pytest 结论与 ``source`` 路径,不伪造数字。
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import random
 import statistics
 import sys
@@ -48,7 +55,9 @@ try:
     from fwdlib.labeler import (
         _SCORE_BUCKETS,
         _STOP_BUCKETS,
+        entry_and_start,
         label_barrier,
+        label_ladder,
         run_labeling,
         timeout_profile,
     )
@@ -62,16 +71,36 @@ except ImportError:  # 只把仓库根放进 sys.path 时走这条
     from scripts.analysis.fwdlib.labeler import (
         _SCORE_BUCKETS,
         _STOP_BUCKETS,
+        entry_and_start,
         label_barrier,
+        label_ladder,
         run_labeling,
         timeout_profile,
     )
     from scripts.analysis.fwdlib.ledger import attribute_legs, load_trade_events
     from scripts.analysis.fwdlib.stats import block_bootstrap_mean
 
+#: 默认路径相对**仓库根**解析(worktree 里就是本仓库),换机器不会写死到别人的盘符;
+#: 环境变量 ``FWD_LOGS`` / ``FWD_REPORTS`` 优先,便于把产物指回主工作区。
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _default_logs() -> str:
+    return os.environ.get("FWD_LOGS") or str(REPO_ROOT / "logs")
+
+
+def _default_out(slug: str) -> str:
+    base = os.environ.get("FWD_REPORTS")
+    return str(Path(base) / slug) if base else str(REPO_ROOT / "reports" / "analysis" / slug)
+
+
 INVARIANCE_SOURCE = "tests/test_fwdlib_labeler_invariance.py"
 MIRROR_SAMPLE = 300
 MIRROR_TOL = 1e-9
+#: 无前视实测:抽样条数,以及「入场 bar 之前的 bar」的扰动倍数。
+#: 用 1.5 而不是 1.001 —— 0.1% 的价格漂移可能落在障碍阈值内,漏检比误报更危险。
+NO_LOOKAHEAD_SAMPLE = 200
+NO_LOOKAHEAD_PRIOR_FACTOR = 1.5
 
 #: 与 ``fwdlib.labeler.timeout_profile`` 完全相同的分档,CSV 的 R 分位数按同一批行算
 _SCORE_GROUPS = _SCORE_BUCKETS
@@ -110,6 +139,21 @@ def _quantile(values, q: float):
     lo = math.floor(pos)
     hi = min(lo + 1, len(data) - 1)
     return data[lo] + (data[hi] - data[lo]) * (pos - lo)
+
+
+def _placebo_valid(row: dict) -> bool:
+    """行级有效标记:``placebo_valid`` 为真**且**均值是有限数。
+
+    双重条件是为了在口径漂移(比如无有效 draw 却忘了置 False)时,CSV 里的
+    ``placebo_valid`` 仍不会把 ``delta_R=0`` 的占位行标成有效观测。
+    """
+    mean = row.get("placebo_R_mean")
+    if not row.get("placebo_valid") or mean is None:
+        return False
+    try:
+        return math.isfinite(float(mean))
+    except (TypeError, ValueError):
+        return False
 
 
 def _ci(values_by_block, iters: int, seed: int):
@@ -213,7 +257,137 @@ def _mirror_check(labeled, bars, per_symbol, index, *, entry_mode: str, horizon:
         "n_pairs_nonambiguous": len(diffs),
         "n_ambiguous_pairs": ambiguous,
         "tolerance": MIRROR_TOL,
-        "note": "AMBIGUOUS 对两边均记 -1R,不进 max|diff|;随机游走/单调/无前视仅引用 pytest",
+        "note": "AMBIGUOUS 对两边均记 -1R,不进 max|diff|;随机游走/单调行情仅引用 pytest",
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 不变式:无前视实测(不重跑 pytest)
+# --------------------------------------------------------------------------- #
+
+def _label_for_mode(bars, per_symbol, index, row, stop, *, entry_mode, horizon, cfg,
+                    exit_mode):
+    """按报告的出场口径重标一条决策。"""
+    if exit_mode == "ladder":
+        return label_ladder(bars, per_symbol, index, row, stop, entry_mode,
+                            horizon=horizon, cfg=cfg)
+    return label_barrier(bars, per_symbol, index, row, stop, entry_mode,
+                         cfg=cfg, horizon=horizon)
+
+
+def _forced_bar(entry: float, stop_pct: float, sign: float, hit: int) -> tuple:
+    """构造一根「必然且只触发单侧障碍」的 bar,用于证明标签真的读了入场后首根 bar。
+
+    ``hit=+1`` 打 target 一侧,``hit=-1`` 打 stop 一侧(上下轨由 ``sign`` 决定);
+    另一侧留 1e-9 的相对缝隙,避免同根双触被记成 AMBIGUOUS。
+    """
+    gap = 1e-9
+    inner = entry * (1.0 + sign * gap)
+    if hit > 0:
+        close = entry * (1.0 + sign * stop_pct)
+        outer = entry * (1.0 + sign * 2.0 * stop_pct)
+    else:
+        close = entry * (1.0 - sign * stop_pct)
+        outer = entry * (1.0 - sign * 2.0 * stop_pct)
+    high, low = (outer, inner) if (sign > 0) == (hit > 0) else (inner, outer)
+    return (entry, high, low, close)
+
+
+def _no_lookahead_check(labeled, bars, per_symbol, index, *, entry_mode: str,
+                        horizon: int, cfg: LabelConfig, exit_mode: str,
+                        seed: int) -> dict:
+    """实测无前视:改「入场 bar 之前的 bar」结果不变,改「入场后首根可平仓 bar」结果必变。
+
+    与 pytest 里的不变量测试同构,但只抽 ``NO_LOOKAHEAD_SAMPLE`` 条真实决策,
+    直接在本次标注的 ``bars`` 面板上做原地扰动(用完立即复原),代价可忽略。
+    """
+    n = len(labeled)
+    base_out = {
+        "no_lookahead_prior_unchanged": False,
+        "no_lookahead_entry_changed": False,
+        "no_lookahead_n_checked": 0,
+        "no_lookahead_prior_mismatch": 0,
+        "no_lookahead_entry_mismatch": 0,
+        "no_lookahead_sample": 0,
+        "no_lookahead_prior_factor": NO_LOOKAHEAD_PRIOR_FACTOR,
+        "no_lookahead_note": "无前视实测失败:没有可检查的行",
+    }
+    if n == 0:
+        return base_out
+
+    rng = random.Random(seed)
+    picks = rng.sample(range(n), min(NO_LOOKAHEAD_SAMPLE, n))
+
+    checked = 0
+    prior_bad = 0
+    entry_bad = 0
+    for i in picks:
+        row = labeled[i]
+        stop = row["stop_pct_eff"]
+        base = _label_for_mode(bars, per_symbol, index, row, stop,
+                               entry_mode=entry_mode, horizon=horizon,
+                               cfg=cfg, exit_mode=exit_mode)
+        anchor = entry_and_start(bars, per_symbol, index, row, entry_mode, horizon)
+        if base is None or anchor is None:
+            continue
+        checked += 1
+        symbol = row["symbol"]
+        _entry_px, start, _last, order = anchor
+        base_triple = (base["R"], base["reason"], base["bars"])
+
+        # (a) 入场 bar 之前(position < start-1)的 bar 全乘 1.5:结果必须完全不变
+        prior_positions = list(range(0, start - 1))
+        if len(prior_positions) > 3:
+            prior_positions = rng.sample(prior_positions, 3)
+        saved: dict = {}
+        try:
+            for pos in prior_positions:
+                key = (symbol, order[pos])
+                saved[key] = bars[key]
+                o, h, l, c = saved[key]
+                f = NO_LOOKAHEAD_PRIOR_FACTOR
+                bars[key] = (o * f, h * f, l * f, c * f)
+            if saved:
+                got = _label_for_mode(bars, per_symbol, index, row, stop,
+                                      entry_mode=entry_mode, horizon=horizon,
+                                      cfg=cfg, exit_mode=exit_mode)
+                if got is None or (got["R"], got["reason"], got["bars"]) != base_triple:
+                    prior_bad += 1
+        finally:
+            bars.update(saved)
+
+        # (b) 入场后首根可平仓 bar 改成必触 target / 必触 stop:至少一种必须改变结果
+        key = (symbol, order[start])
+        saved_bar = bars[key]
+        sign = 1.0 if row["side"] == "LONG" else -1.0
+        try:
+            changed = False
+            for hit in (1, -1):
+                bars[key] = _forced_bar(base["entry_price"], stop, sign, hit)
+                got = _label_for_mode(bars, per_symbol, index, row, stop,
+                                      entry_mode=entry_mode, horizon=horizon,
+                                      cfg=cfg, exit_mode=exit_mode)
+                if got is None or (got["R"], got["reason"], got["bars"]) != base_triple:
+                    changed = True
+                    break
+            if not changed:
+                entry_bad += 1
+        finally:
+            bars[key] = saved_bar
+
+    return {
+        "no_lookahead_prior_unchanged": prior_bad == 0 and checked > 0,
+        "no_lookahead_entry_changed": entry_bad == 0 and checked > 0,
+        "no_lookahead_n_checked": checked,
+        "no_lookahead_prior_mismatch": prior_bad,
+        "no_lookahead_entry_mismatch": entry_bad,
+        "no_lookahead_sample": len(picks),
+        "no_lookahead_prior_factor": NO_LOOKAHEAD_PRIOR_FACTOR,
+        "no_lookahead_note": (
+            f"抽 {checked} 条决策原地扰动:入场 bar 之前的 bar OHLC×"
+            f"{NO_LOOKAHEAD_PRIOR_FACTOR:g} 后 R/reason/bars 必须不变;"
+            "入场后首根可平仓 bar 改成必触 target 或必触 stop 后必须改变"
+        ),
     }
 
 
@@ -424,8 +598,12 @@ entry={m['cfg']['entry_mode']} / exit={m['cfg']['exit_mode']}，指纹 `{m['cfg'
 ## 1. 口径与不变式
 
 随机抽 {inv['mirror_n_checked']} 条决策做多空镜像重标：`max|R_long+R_short| = {inv['mirror_max_abs_diff']!r}`
-（非歧义对 {inv['mirror_n_pairs_nonambiguous']}，歧义对 {inv['mirror_n_ambiguous_pairs']}）。随机游走命中率、单调行情、
-无前视三项**未在本脚本重跑**，结论以字符串引用 `{inv['source']}`（随机游走带宽 ±0.0335，见该测试）。
+（非歧义对 {inv['mirror_n_pairs_nonambiguous']}，歧义对 {inv['mirror_n_ambiguous_pairs']}）。
+
+无前视**本脚本实测**：抽 {inv['no_lookahead_n_checked']} 条决策，入场 bar 之前的 bar OHLC×{inv['no_lookahead_prior_factor']:g}
+后 `prior_unchanged={inv['no_lookahead_prior_unchanged']}`（不一致 {inv['no_lookahead_prior_mismatch']} 条）；把入场后首根可平仓 bar
+改成必触 target / 必触 stop 后 `entry_changed={inv['no_lookahead_entry_changed']}`（不一致 {inv['no_lookahead_entry_mismatch']} 条）。
+随机游走命中率与单调行情两项**未在本脚本重跑**，结论以字符串引用 `{inv['source']}`（随机游走带宽 ±0.0335，见该测试）。
 
 字段来源与实测覆盖率：entry_price `{prov['entry_price']['coverage']}`（{prov['entry_price']['by_source']}）；
 stop_pct `{prov['stop_pct']['coverage']}`（{prov['stop_pct']['by_source']}）；
@@ -472,9 +650,9 @@ config 上限 0.04。
 def main() -> None:
     t0 = time.time()
     ap = argparse.ArgumentParser(description="前向标签 v2:配对安慰剂正式报告")
-    ap.add_argument("--logs", default="D:/AIDCA/AI300/logs")
+    ap.add_argument("--logs", default=_default_logs())
     ap.add_argument("--months", default="2026-09,2026-10")
-    ap.add_argument("--out", default="D:/AIDCA/AI300/reports/analysis/fwd-label-v2-20261019")
+    ap.add_argument("--out", default=_default_out("fwd-label-v2-20261019"))
     ap.add_argument("--profile", default="any", choices=["any", "six_factor"])
     ap.add_argument("--exit-mode", default="barrier", choices=["barrier", "ladder"])
     ap.add_argument("--entry-price", default="next_open", choices=["next_open", "bar_close"])
@@ -555,11 +733,19 @@ def main() -> None:
     }
     print(f"[audit] stop>3%: {len(gt)} rows, E_R={stop_audit['E_R_gt_3pct']}", flush=True)
 
-    # --- 不变式(廉价镜像) ---
+    # --- 不变式(廉价镜像 + 无前视实测) ---
     inv_mirror = _mirror_check(
         labeled, bars, per_symbol, index,
         entry_mode=args.entry_price, horizon=args.horizon, cfg=cfg, seed=args.seed,
     )
+    inv_lookahead = _no_lookahead_check(
+        labeled, bars, per_symbol, index,
+        entry_mode=args.entry_price, horizon=args.horizon, cfg=cfg,
+        exit_mode=args.exit_mode, seed=args.seed,
+    )
+    print(f"[lookahead] n={inv_lookahead['no_lookahead_n_checked']} "
+          f"prior_unchanged={inv_lookahead['no_lookahead_prior_unchanged']} "
+          f"entry_changed={inv_lookahead['no_lookahead_entry_changed']}", flush=True)
     invariance = {
         "mirror_max_abs_diff": inv_mirror["mirror_max_abs_diff"],
         "mirror_n_checked": inv_mirror["n_checked"],
@@ -567,7 +753,10 @@ def main() -> None:
         "mirror_n_ambiguous_pairs": inv_mirror["n_ambiguous_pairs"],
         "random_walk_hit": "pytest 通过:hit_rate 落在 0.5±3σ 内,同 seed 逐位可复现(本脚本不重跑)",
         "band": "±3*sqrt(0.25/2000)=±0.0335",
-        "no_lookahead_ok": True,
+        # 无前视:本脚本实测(不是引用 pytest)。两个字段都要为 True 才算通过。
+        **inv_lookahead,
+        "no_lookahead_ok": (inv_lookahead["no_lookahead_prior_unchanged"]
+                            and inv_lookahead["no_lookahead_entry_changed"]),
         "source": INVARIANCE_SOURCE,
         "note": inv_mirror["note"],
     }
@@ -587,13 +776,19 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     # --- placebo_pairs.csv ---
+    # placebo_valid 必须落盘:无效行的 placebo_R_mean 是 NaN、delta_R 被置 0
+    # (见 fwdlib.baseline._invalid_row),没有这一列,读表的人会把 delta_R=0
+    # 当成「安慰剂与真实样本一致」的有效观测。
     cols = ("symbol", "ts", "side", "score", "stop_pct_eff", "R", "R_net",
-            "placebo_R_mean", "placebo_R_sd", "placebo_n_valid", "delta_R", "delta_R_net")
+            "placebo_R_mean", "placebo_R_sd", "placebo_n_valid", "placebo_valid",
+            "delta_R", "delta_R_net")
     with (out / "placebo_pairs.csv").open("w", encoding="utf-8", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(cols)
         for row in labeled:
-            w.writerow([row.get(c) for c in cols])
+            values = [row.get(c) for c in cols]
+            values[cols.index("placebo_valid")] = _placebo_valid(row)
+            w.writerow(values)
 
     # --- timeout_profile.csv ---
     _write_timeout_csv(out / "timeout_profile.csv", labeled, tp)
