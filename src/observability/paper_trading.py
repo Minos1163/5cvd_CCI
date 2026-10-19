@@ -117,6 +117,9 @@ class PaperPosition:
     q3_reduced: bool = False
     q4_streak: int = 0
     stop_pct: float = 0.0
+    # 事件配对键: OPEN/REDUCE/CLOSE 三类事件共用的稳定仓位标识。
+    # 旧 paper_positions.json 无此键时由默认值兜底,保持向后兼容。
+    position_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -203,6 +206,7 @@ class PaperTradingLedger:
         stop_price = price - risk_distance if side == "LONG" else price + risk_distance
         tp_prices = [price + risk_distance * level if side == "LONG" else price - risk_distance * level for level in TP_LEVELS]
         notional = price * quantity
+        position_id = f"{symbol}:{int(timestamp)}:{side}"
         position = PaperPosition(
             symbol=symbol,
             side=side,
@@ -235,6 +239,7 @@ class PaperTradingLedger:
             q3_reduced=False,
             q4_streak=0,
             stop_pct=stop_pct,
+            position_id=position_id,
         )
         self.positions[symbol] = position
         self.realized_pnl += position.realized_pnl
@@ -268,6 +273,13 @@ class PaperTradingLedger:
                 "entry_channel": position.entry_channel,
                 "source_quadrant": position.source_quadrant,
                 "max_favorable_r_observed": position.max_favorable_r_observed,
+                # --- 配对键与成本口径(纯增量,不改任何计算) ---
+                "position_id": position.position_id,
+                "entry_price": position.entry_price,
+                "entry_time": position.entry_time,
+                "fee_bps": FEE_BPS,
+                "slippage_bps": SLIPPAGE_BPS,
+                "cost_source": "constant_assumption",
             }
         )
         return position
@@ -393,6 +405,16 @@ class PaperTradingLedger:
                 "entry_channel": position.entry_channel,
                 "source_quadrant": position.source_quadrant,
                 "max_favorable_r_observed": position.max_favorable_r_observed,
+                # --- 配对键与成本口径(纯增量,不改任何计算) ---
+                "position_id": position.position_id,
+                "entry_price": position.entry_price,
+                "entry_time": position.entry_time,
+                "notional": position.notional,
+                "notional_fraction": position.notional * fraction,
+                "exit_notional": exit_notional,
+                "fee_bps": FEE_BPS,
+                "slippage_bps": SLIPPAGE_BPS,
+                "cost_source": "constant_assumption",
             }
         )
         return net
