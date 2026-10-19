@@ -148,7 +148,7 @@ def entry_and_start(bars, per_symbol, index, d, entry_mode="next_open", horizon=
 # 止损
 # --------------------------------------------------------------------------- #
 
-def resolve_stop(raw_stop, atr_pct, *, cfg=None, stop_floor=None, stop_scale=None) -> float:
+def resolve_stop(raw_stop, atr_pct, stop_floor=None, stop_scale=None, *, cfg=None) -> float:
     """还原线上止损:先 clamp(atr*mult, min, max),再套场景(floor 只升不降 / scale 全量乘)。"""
     c = _cfg(cfg)
     floor = stop_floor if stop_floor is not None else c.stop_floor
@@ -581,12 +581,18 @@ def _timeout_stats(rows: list[dict]) -> dict:
     others = [r for r in rows if not _is_timeout(r)]
     tout_r = [r["R_net"] for r in timeouts]
     other_r = [r["R_net"] for r in others]
+    tout_g = [r["R"] for r in timeouts]
+    other_g = [r["R"] for r in others]
     return {
         "n": n,
         "timeout_n": len(timeouts),
         "timeout_pct": (len(timeouts) / n) if n else None,
         "timeout_R_p50": statistics.median(tout_r) if tout_r else None,
         "E_R_excl_timeout": statistics.fmean(other_r) if other_r else None,
+        # 毛口径:与报告里的 E[R] 同量级,避免把净 R 误读成毛边际
+        "timeout_R_p50_gross": statistics.median(tout_g) if tout_g else None,
+        "E_R_excl_timeout_gross": statistics.fmean(other_g) if other_g else None,
+        "E_R_timeout_gross": statistics.fmean(tout_g) if tout_g else None,
     }
 
 

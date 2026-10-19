@@ -521,12 +521,12 @@ def build_report(m: dict) -> str:
         f"指纹 `{cfg.get('fingerprint')}`。"
     )
     L.append(
-        f"- **66279 从哪来**:评审文档的 66279 是旧脚本 `fwd-label-20261019` 的 labeled"
-        f"（数据截至 12:30）。旧报告口径同样是 ±1R 障碍 + 下一根开盘入场，所以这 "
-        f"{LEGACY_LABELED - int(l1['labeled'])} 行差**不是 exit 口径差异**，而在窗口尾部："
-        f"v2 数据止于 12:15，最后一根 15m bar 上的 {LEGACY_LABELED - int(l1['labeled'])} 个标的"
-        f"没有前向 bar 可标（{l1['labeled']}+{LEGACY_LABELED - int(l1['labeled'])}={LEGACY_LABELED}）。"
-        f"本页统一用 v2 的 barrier + next_open 口径 66263。"
+        f"- **66279 从哪来**:评审文档的 66279 来自 **`bar_close` 入场口径**"
+        f"（实测复现:`--entry-price bar_close` → decisions=66295 / labeled=66279,"
+        f"尾部多出 12:30 那根 bar 上的 {LEGACY_LABELED - int(l1['labeled'])} 个标的）；"
+        f"`next_open` 口径因最后一根 bar 无「下一根开盘」可标而少这 "
+        f"{LEGACY_LABELED - int(l1['labeled'])} 行（{l1['labeled']}）。"
+        f"两个数字都对,只是入场口径不同。本页统一用 next_open 的 {l1['labeled']}。"
     )
     L.append(
         f"- **成本是常量假设，不是实测**:`FEE_BPS=5.0` / `SLIPPAGE_BPS=5.0` 是两个写死标量，"
