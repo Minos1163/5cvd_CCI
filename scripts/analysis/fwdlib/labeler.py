@@ -214,8 +214,16 @@ def label_at_horizons(bars, per_symbol, index, d, stop_pct,
     (仅多一个 ``horizon`` 键):单次扫描到 ``max(horizons)``,在某根 bar 上
     触障即对「尚未结束」的 horizon 一起结算;每个 horizon 在其最后一根 bar
     用该 bar 的 close 结算超时。
+
+    ``entry_mode`` 与其它标注函数同规则解析:``cfg`` 提供基线,显式传入非旧默认
+    值时才覆盖 ``cfg``(签名默认 ``next_open`` 视为未覆盖)。``cfg`` 的其它字段
+    (horizon / 成本 / 止损)不参与 —— horizon 由 ``horizons`` 显式给出。
     """
-    # horizon 由 horizons 显式给出,cfg 只保留在签名里与其它标注函数对齐
+    # horizon 由 horizons 显式给出,cfg 只在 entry_mode 上提供基线,与其它函数对齐
+    cfg_given = cfg is not None
+    c = _cfg(cfg)
+    entry_mode = _pick(entry_mode, _LEGACY_ENTRY_BARRIER, c.entry_mode, cfg_given)
+
     hs = sorted({int(h) for h in horizons})
     out: dict[int, dict | None] = {h: None for h in hs}
     if not hs:
@@ -309,7 +317,11 @@ def label_ladder(
     最大持仓 close 平仓;可选 Q2 收紧 / Q3 减半 / Q4 全平。
 
     ``horizon=None`` ⇒ ``cfg.horizon_bars``;``cost_breakeven_bars=None`` ⇒
-    ``cfg.resolved_breakeven_bars()``(15m / horizon=32 时为 8 根,与旧常量一致)。
+    ``cfg.replaced(horizon_bars=h).resolved_breakeven_bars()``(15m / horizon=32
+    时为 8 根,与旧常量一致)。注意默认值必须按**最终 h**(显式 ``horizon`` 实参
+    优先)解析:用 ``cfg.horizon_bars`` 会让 ``label_ladder(horizon=8)``、
+    ``run_labeling(horizon=8)`` 与 ``cfg.horizon_bars=8`` 三条路径取到不同的
+    保本根数(8 vs 2 vs 2),同一 horizon 却换了一套出场判定。
     换周期时必须让两者随周期一起缩放,否则「成本超时」与「最大持仓」会退化成同一条件。
     """
     cfg_given = cfg is not None
@@ -320,7 +332,8 @@ def label_ladder(
     q2_tighten = _pick(q2_tighten, _LEGACY_FLAG, c.q2_tighten, cfg_given)
     post_tp_mode = _pick(post_tp_mode, _LEGACY_POST_TP, c.post_tp_mode, cfg_given)
     breakeven_bars = (
-        cost_breakeven_bars if cost_breakeven_bars is not None else c.resolved_breakeven_bars()
+        cost_breakeven_bars if cost_breakeven_bars is not None
+        else c.replaced(horizon_bars=h).resolved_breakeven_bars()
     )
 
     base = entry_and_start(bars, per_symbol, index, d, entry_mode, h)
@@ -413,7 +426,7 @@ def label_ladder(
                     stop = breakeven
 
         # 5) 成本保本超时
-        if hold >= (breakeven_bars or c.resolved_breakeven_bars()) and consumed == 0:
+        if breakeven_bars is not None and hold >= breakeven_bars and consumed == 0:
             if _pnl(close) < COST_BREAKEVEN_BUFFER_MULT * cost_r_value:
                 return _result(close, "COST_BREAKEVEN_TIMEOUT", hold)
 
@@ -599,8 +612,12 @@ def _timeout_stats(rows: list[dict]) -> dict:
 def timeout_profile(labeled) -> dict:
     """超时单画像:按分数档 / 止损宽度档 / 方向分组,看超时占比与「剔除超时后的 E[R]」。
 
-    ``timeout_*`` 里的 R 一律是 ``R_net``;超时口径含 barrier 的 ``TIMEOUT``
-    与 ladder 的 ``COST_BREAKEVEN_TIMEOUT`` / ``MAX_HOLD``。
+    R 列有两种口径:不带 ``_gross`` 后缀的(``timeout_R_p50`` /
+    ``E_R_excl_timeout``)是净口径(``R_net``),带 ``_gross`` 后缀的
+    (``timeout_R_p50_gross`` / ``E_R_excl_timeout_gross`` /
+    ``E_R_timeout_gross``)是毛口径(``R``)。
+    超时口径含 barrier 的 ``TIMEOUT`` 与 ladder 的 ``COST_BREAKEVEN_TIMEOUT`` /
+    ``MAX_HOLD``。
     """
     rows = list(labeled)
 
