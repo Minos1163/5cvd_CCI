@@ -222,6 +222,10 @@ class EntryChainConfig:
     # 五正交因子 P0 影子(2026-09-27 裁定报告):只写 component_points_v2 记录字段,
     # 不参与 total_score/门槛/杠杆/action;置 false 即可完全回滚影子记录。
     five_factor_shadow_enabled: bool = True
+    # 声明式入场闸门(2026-10-19 条件扫描):空 = 关闭。规则形如
+    # [{"feature": "trend_ema_context", "op": ">=", "value": 0.72}]，
+    # 参数必须来自 reports/analysis/edge-scan-*/selected.json，不允许手调。
+    entry_gates: tuple[Mapping[str, Any], ...] = ()
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "EntryChainConfig":
@@ -255,6 +259,14 @@ class EntryChainConfig:
             values["dry_run_symbols"] = _normalize_symbols(values["dry_run_symbols"])
         if "explicit_watchlist" in values:
             values["explicit_watchlist"] = _parse_explicit_watchlist(values["explicit_watchlist"], data.get("blacklist_symbols", ()))
+        if "entry_gates" in values:
+            gates = values["entry_gates"] or ()
+            if not isinstance(gates, (list, tuple)):
+                raise ValueError("entry_gates must be a list of rule objects")
+            for item in gates:
+                if not isinstance(item, dict):
+                    raise ValueError("each entry_gates item must be an object")
+            values["entry_gates"] = tuple(gates)
         return cls(**values)
 
 

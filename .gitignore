@@ -19,3 +19,7 @@ logs/
 *.pfx
 id_rsa
 id_ed25519
+
+# AOCI agent host integration (machine-bound; do not commit)
+.mcp.json
+.mcp.json.backup.*

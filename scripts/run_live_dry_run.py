@@ -32,6 +32,7 @@ from src.risk.net_beta_exposure_model import (
 from src.risk.stress_simulator import stress_decision
 from src.signals.entry_chain import EntryChainContext, EntryChainDecision, _notional_cap_diagnostics, evaluate_entry_chain
 from src.signals.entry_chain_config import EntryChainConfig, load_entry_chain_config
+from src.signals.entry_gate import EntryGate, build_gate_features
 from src.signals.entry_chain_gates import symbol_exposure_cap
 from src.signals.entry_chain_features import (
     atr_pct,
@@ -285,6 +286,14 @@ def run(args: argparse.Namespace) -> None:
                     decision=decision,
                     decision_payload=decision_payload,
                     paper=paper,
+                )
+                decision, decision_payload = apply_entry_gates(
+                    decision=decision,
+                    decision_payload=decision_payload,
+                    config=config,
+                    context=context,
+                    scores=debug.get("scores", {}),
+                    kline=debug.get("kline", {}),
                 )
                 audit.write_decision(decision_payload)
                 summary.record_decision(decision_payload)
@@ -549,11 +558,15 @@ def paper_exit_config(config: EntryChainConfig, *, scout: bool, mode_override: s
             mode=config.scout_micro_exit_mode,
             trend_trigger_r=config.scout_micro_exit_trend_trigger_r,
             trailing_r_mult=config.scout_micro_exit_trailing_r_mult,
+            min_stop_pct=config.min_stop_pct,
+            max_stop_pct=config.max_stop_pct,
         )
     return PaperExitConfig(
         mode=mode_override or config.paper_exit_mode,
         trend_trigger_r=config.paper_exit_trend_trigger_r,
         trailing_r_mult=config.paper_exit_trailing_r_mult,
+        min_stop_pct=config.min_stop_pct,
+        max_stop_pct=config.max_stop_pct,
     )
 
 
@@ -1049,6 +1062,62 @@ def _q1_trend_launch_eligible(
         and _component_point(near_miss, "flow_cvd_confirmation") >= float(config.dry_run_q1_trend_launch_min_cvd_score)
         and _component_point(near_miss, "risk_reward_geometry") >= float(config.dry_run_q1_trend_launch_min_rr_score)
     )
+
+
+def apply_entry_gates(
+    *,
+    decision: EntryChainDecision,
+    decision_payload: Mapping[str, Any],
+    config: EntryChainConfig,
+    context: Any = None,
+    scores: Mapping[str, float] | None = None,
+    kline: Mapping[str, Any] | None = None,
+) -> tuple[EntryChainDecision, dict[str, Any]]:
+    """声明式入场闸门(2026-10-19 条件扫描产物)。
+
+    config.entry_gates 为空时不改变任何行为。拒单等价于把 action 降为 WATCH,
+    并把 gate 判定写进 metadata.gate_trace,供下一轮扫描复用。
+    """
+    payload = dict(decision_payload)
+    gate = EntryGate.from_config(getattr(config, "entry_gates", ()))
+    if not gate or decision.action not in {"PROBE", "DIRECT"}:
+        return decision, payload
+    features = build_gate_features(
+        context,
+        scores=scores,
+        kline=kline,
+        score_total=payload.get("score"),
+        shadow_total=(payload.get("component_points_v2_meta") or {}).get("shadow_total"),
+        timestamp=payload.get("timestamp"),
+    )
+    verdict = gate.evaluate(features)
+    payload["gate_trace"] = verdict.to_dict()
+    if verdict.passed:
+        return decision, payload
+    reasons = list(dict.fromkeys([*decision.reasons, "ENTRY_GATE_REJECTED"]))
+    metadata = dict(decision.metadata)
+    metadata["entry_gate"] = verdict.to_dict()
+    blocked = replace(
+        decision,
+        action="WATCH",
+        reasons=tuple(reasons),
+        risk_allowed=False,
+        leverage=0,
+        max_symbol_exposure_pct=0.0,
+        notional_hint=0.0,
+        metadata=metadata,
+    )
+    payload.update(
+        {
+            "action": blocked.action,
+            "risk_allowed": blocked.risk_allowed,
+            "leverage": blocked.leverage,
+            "notional_hint": blocked.notional_hint,
+            "reasons": list(blocked.reasons),
+            "metadata": dict(blocked.metadata),
+        }
+    )
+    return blocked, payload
 
 
 def apply_experimental_quadrant_entry_rules(
@@ -2544,7 +2613,7 @@ def public_market_context(
         account_equity=10_000.0,
         available_margin=8_000.0,
         wick_anomaly_active=wick_anomaly(current_bar, previous_bar),
-        stop_pct=max(0.005, min(0.04, atr_pct_value * 1.5)),
+        stop_pct=max(config.min_stop_pct, min(config.max_stop_pct, atr_pct_value * 1.5)),
         long_overextension_active=long_overextension_active(bars_15m),
         long_upper_wick_risk_active=long_upper_wick_risk_active(bars_15m),
         long_chase_risk_active=long_chase_risk_active(bars_15m, atr_pct_value),

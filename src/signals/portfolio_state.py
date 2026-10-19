@@ -127,3 +127,81 @@ class PortfolioState:
         if deviation == 0:
             return None
         return mean(window) / deviation * sqrt(len(window))
+
+    def to_dict(self) -> dict:
+        """序列化到可落盘的 JSON 结构。
+
+        修复点:cooldown_until_by_symbol 之前只在内存里,进程重启后冷却全部丢失,
+        同一标的会在冷却窗口内被重复开仓(见 run_live_dry_run 的 SYMBOL_POST_INITIAL_STOP_COOLDOWN)。
+        """
+        return {
+            "schema_version": 1,
+            "trades_by_day": {str(k): int(v) for k, v in self.trades_by_day.items()},
+            "symbol_trades_by_day": {
+                f"{symbol}|{day}": int(count)
+                for (symbol, day), count in self.symbol_trades_by_day_map.items()
+            },
+            "cooldown_until_by_symbol": {str(k): int(v) for k, v in self.cooldown_until_by_symbol.items()},
+            "active_symbols": sorted(self.active_symbols),
+            "same_direction_exposure": {str(k): float(v) for k, v in self.same_direction_exposure.items()},
+            "symbol_exposure": {str(k): float(v) for k, v in self.symbol_exposure.items()},
+            "trade_returns": [float(v) for v in self.trade_returns[-200:]],
+            "simulated_positions": [
+                {
+                    "symbol": p.symbol,
+                    "side": p.side,
+                    "notional": float(p.notional),
+                    "expires_at_ts": p.expires_at_ts,
+                }
+                for p in self.simulated_positions
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict | None) -> "PortfolioState":
+        if not isinstance(payload, dict):
+            return cls()
+        trades_by_day = {}
+        for key, value in (payload.get("trades_by_day") or {}).items():
+            try:
+                trades_by_day[int(key)] = int(value)
+            except (TypeError, ValueError):
+                continue
+        symbol_trades = {}
+        for key, value in (payload.get("symbol_trades_by_day") or {}).items():
+            symbol, _, day = str(key).partition("|")
+            try:
+                symbol_trades[(symbol.strip().upper(), int(day))] = int(value)
+            except (TypeError, ValueError):
+                continue
+        cooldowns = {}
+        for key, value in (payload.get("cooldown_until_by_symbol") or {}).items():
+            try:
+                cooldowns[str(key).strip().upper()] = int(value)
+            except (TypeError, ValueError):
+                continue
+        positions = []
+        for item in payload.get("simulated_positions") or ():
+            if not isinstance(item, dict):
+                continue
+            expires = item.get("expires_at_ts")
+            positions.append(
+                SimulatedPosition(
+                    symbol=str(item.get("symbol") or "").strip().upper(),
+                    side=str(item.get("side") or "").strip().upper(),
+                    notional=float(item.get("notional") or 0.0),
+                    expires_at_ts=int(expires) if expires is not None else None,
+                )
+            )
+        return cls(
+            trades_by_day=trades_by_day,
+            symbol_trades_by_day_map=symbol_trades,
+            cooldown_until_by_symbol=cooldowns,
+            active_symbols={str(s).strip().upper() for s in (payload.get("active_symbols") or ())},
+            same_direction_exposure={
+                str(k): float(v) for k, v in (payload.get("same_direction_exposure") or {}).items()
+            },
+            symbol_exposure={str(k): float(v) for k, v in (payload.get("symbol_exposure") or {}).items()},
+            trade_returns=[float(v) for v in (payload.get("trade_returns") or ())],
+            simulated_positions=positions,
+        )

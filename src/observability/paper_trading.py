@@ -22,6 +22,40 @@ TP_LEVELS = (1.2, 2.0, 3.0)
 TP_FRACTIONS = (0.40, 0.35, 0.25)
 
 
+def _resolve_stop_pct(
+    decision_payload: Mapping[str, Any],
+    min_stop_pct: float = MIN_STOP_PCT,
+    max_stop_pct: float = MAX_STOP_PCT,
+) -> tuple[float, str]:
+    """决定本笔止损宽度。
+
+    优先级(2026-10-19 stop_pct 下限影子实验):
+      1. decision_payload["stop_pct"] 或 metadata.risk_budget.stop_pct —— 策略侧算出的止损,
+         这样建仓仓位与出场止损用的是同一个数字;
+      2. 退回 atr_pct × ATR_STOP_MULT,再 clamp 到 [min_stop_pct, max_stop_pct]。
+    历史实现只走第 2 条,导致 context.stop_pct(配置上限 0.04)与账本止损(硬编码 0.03)不一致:
+    atr×1.5 ∈ (0.03, 0.04) 时建仓按 3–4% 算仓位、出场按 3% 止损。
+    """
+    override = _positive_float(decision_payload.get("stop_pct"))
+    source = "payload"
+    if override is None:
+        metadata = decision_payload.get("metadata")
+        if isinstance(metadata, Mapping):
+            budget = metadata.get("risk_budget")
+            if isinstance(budget, Mapping):
+                override = _positive_float(budget.get("stop_pct"))
+                if override is not None:
+                    source = "payload.risk_budget"
+    if override is not None:
+        return max(min_stop_pct, min(max_stop_pct, override)), source
+    entry_context = decision_payload.get("entry_context")
+    atr_pct = 0.0
+    if isinstance(entry_context, Mapping):
+        atr_pct = max(0.0, float(entry_context.get("atr_pct") or 0.0))
+    stop_pct = max(min_stop_pct, min(max_stop_pct, atr_pct * ATR_STOP_MULT if atr_pct > 0 else 0.01))
+    return stop_pct, "atr"
+
+
 def _resolve_entry_channel(decision_payload: Mapping[str, Any]) -> str | None:
     """主账本交易的可观测性(08-31 评审 6.2):显式 entry_channel 优先;
     缺失时按 action 标注主路径(main_direct / main_probe),消除 null 盲区。
@@ -44,6 +78,10 @@ class PaperExitConfig:
     trailing_r_mult: float = 1.0
     early_breakeven_enabled: bool = False
     early_breakeven_trigger_r: float = 1.0
+    # 止损宽度上下限的单一来源:由 EntryChainConfig.min_stop_pct/max_stop_pct 传入,
+    # 避免「建仓按 4% 算仓位、出场按 3% 止损」的口径分裂
+    min_stop_pct: float = MIN_STOP_PCT
+    max_stop_pct: float = MAX_STOP_PCT
 
 
 @dataclass
@@ -78,6 +116,7 @@ class PaperPosition:
     source_quadrant: str | None = None
     q3_reduced: bool = False
     q4_streak: int = 0
+    stop_pct: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -157,8 +196,9 @@ class PaperTradingLedger:
         side = str(request.get("position_side") or decision_payload.get("side") or "").upper()
         if side not in {"LONG", "SHORT"}:
             return None
-        atr_pct = max(0.0, float(decision_payload.get("entry_context", {}).get("atr_pct") or 0.0))
-        stop_pct = max(MIN_STOP_PCT, min(MAX_STOP_PCT, atr_pct * ATR_STOP_MULT if atr_pct > 0 else 0.01))
+        stop_pct, stop_source = _resolve_stop_pct(
+            decision_payload, self.exit_config.min_stop_pct, self.exit_config.max_stop_pct
+        )
         risk_distance = price * stop_pct
         stop_price = price - risk_distance if side == "LONG" else price + risk_distance
         tp_prices = [price + risk_distance * level if side == "LONG" else price - risk_distance * level for level in TP_LEVELS]
@@ -194,6 +234,7 @@ class PaperTradingLedger:
             source_quadrant=str(decision_payload.get("source_quadrant") or decision_payload.get("quadrant")) if (decision_payload.get("source_quadrant") or decision_payload.get("quadrant")) else None,
             q3_reduced=False,
             q4_streak=0,
+            stop_pct=stop_pct,
         )
         self.positions[symbol] = position
         self.realized_pnl += position.realized_pnl
@@ -216,6 +257,11 @@ class PaperTradingLedger:
                 "pnl_accounting_mode": "notional_primary_margin_reporting",
                 "score": position.score,
                 "reasons": position.reasons,
+                "stop_pct": stop_pct,
+                "stop_source": stop_source,
+                "risk_distance": risk_distance,
+                "stop_price": stop_price,
+                "tp_prices": list(tp_prices),
                 "exit_mode": position.exit_mode,
                 "scout_mission": position.scout_mission,
                 "experiment_id": position.experiment_id,
@@ -339,6 +385,8 @@ class PaperTradingLedger:
                 "position_margin_realized_pnl": position.realized_margin_pnl,
                 "pnl_accounting_mode": "notional_primary_margin_reporting",
                 "remaining_fraction": position.remaining_fraction,
+                "stop_pct": position.stop_pct,
+                "stop_price": position.stop_price,
                 "exit_mode": position.exit_mode,
                 "scout_mission": position.scout_mission,
                 "experiment_id": position.experiment_id,

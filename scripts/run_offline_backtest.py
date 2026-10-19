@@ -330,7 +330,7 @@ def build_entry_chain_strategy(
             total_exposure_pct=state.total_exposure_pct(account_equity),
             same_direction_exposure_pct=state.same_direction_exposure_pct(side, account_equity),
             rolling_sharpe_20=state.rolling_sharpe_20(),
-            stop_pct=max(0.005, min(0.04, atr_pct_value * 1.5)),
+            stop_pct=max(cfg.min_stop_pct, min(cfg.max_stop_pct, atr_pct_value * 1.5)),
             long_overextension_active=long_overextension_active(bars_15m),
             long_upper_wick_risk_active=long_upper_wick_risk_active(bars_15m),
             long_chase_risk_active=long_chase_risk_active(bars_15m, atr_pct_value),
