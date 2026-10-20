@@ -234,6 +234,11 @@ class EntryChainConfig:
     # [{"feature": "trend_ema_context", "op": ">=", "value": 0.72}]，
     # 参数必须来自 reports/analysis/edge-scan-*/selected.json，不允许手调。
     entry_gates: tuple[Mapping[str, Any], ...] = ()
+    # 评分核开关(2026-10-20):"legacy" = 现有 15m 加权评分(默认,行为不变);
+    # "s1_shadow" = 额外计算 4h SMA50/SMA200 趋势状态,只写入 decisions.jsonl 的
+    # `s1_core` 字段,**不参与 total_score / action / 杠杆 / 名义**。
+    # 见 src/signals/score_core.py 与 docs/analysis/s1_overlay_oos_2026-10-20.md。
+    score_core: str = "legacy"
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "EntryChainConfig":

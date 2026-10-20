@@ -53,6 +53,7 @@ from src.signals.orthogonal_factors import (
     SCHEMA_VERSION as FIVE_FACTOR_SCHEMA_VERSION,
     five_factor_scores,
 )
+from src.signals.score_core import s1_shadow
 
 
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
@@ -211,6 +212,9 @@ def run(args: argparse.Namespace) -> None:
                     decision_payload["component_points_v2"] = debug["component_points_v2"]
                 if "component_points_v2_meta" in debug:
                     decision_payload["component_points_v2_meta"] = debug["component_points_v2_meta"]
+                # S1 影子核(只写日志,不参与决策;legacy 模式下该字段不存在)
+                if "s1_core" in debug:
+                    decision_payload["s1_core"] = debug["s1_core"]
                 decision_payload = annotate_quadrant(decision_payload, config)
                 near_miss = build_near_miss_payload(
                     decision_payload,
@@ -2436,6 +2440,23 @@ def synthetic_shadow_bars(symbol: str, timestamp: int, count: int = 260) -> list
     ]
 
 
+def attach_s1_core_shadow(debug: dict[str, Any], histories: Mapping[str, Sequence[BacktestBar]] | None,
+                          config) -> None:
+    """S1 影子核(2026-10-20):4h SMA50/SMA200 趋势状态,**只写日志**。
+
+    `config.score_core == "legacy"` 时直接返回,不产生任何字段 → 历史行为逐字段不变。
+    写出的 `debug["s1_core"]` 由主循环转到 `decisions.jsonl`,不参与 score/action/名义。
+    """
+    mode = getattr(config, "score_core", "legacy")
+    if mode == "legacy":
+        return
+    bars = list((histories or {}).get("4h", []))
+    closes = [float(bar.close) for bar in bars if getattr(bar, "close", None) is not None]
+    payload = s1_shadow(closes, mode=mode)
+    if payload is not None:
+        debug["s1_core"] = payload
+
+
 def build_context(
     symbol: str,
     timestamp: int,
@@ -2453,16 +2474,19 @@ def build_context(
             atr_pct_value=context.atr_pct,
             config=config,
         )
+        attach_s1_core_shadow(debug, None, config)
         return context, "OK", debug
     try:
         histories = fetch_public_market_histories(symbol, limit=public_history_limit(args, config))
         context, debug = public_market_context(symbol, timestamp, histories, config)
+        attach_s1_core_shadow(debug, histories, config)
         return context, "OK", debug
     except Exception as exc:
         if warmup_history:
             context, debug = public_market_context(symbol, timestamp, warmup_history, config)
             debug["warmup"]["cache_fallback"] = True
             debug["warmup"]["error"] = exc.__class__.__name__
+            attach_s1_core_shadow(debug, warmup_history, config)
             return context, "DEGRADED", debug
         context = degraded_context(symbol, timestamp)
         debug = synthetic_debug_snapshot(symbol, timestamp, context)
