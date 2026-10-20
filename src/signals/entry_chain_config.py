@@ -239,6 +239,11 @@ class EntryChainConfig:
     # `s1_core` 字段,**不参与 total_score / action / 杠杆 / 名义**。
     # 见 src/signals/score_core.py 与 docs/analysis/s1_overlay_oos_2026-10-20.md。
     score_core: str = "legacy"
+    # 组合层仓位规则(2026-10-20):"off" | "shadow" | "cap"。
+    # 4h SMA50/SMA200 决定"允许的最大仓位"(1/0);"cap" 时目标 0 会拦截新开仓。
+    # 参数由预登记 walk-forward 选出(scripts/analysis/regime_overlay_wf_20261020.py),
+    # 见 docs/analysis/overlay_on_majors_2026-10-20.md。默认 off,行为不变。
+    regime_overlay: str = "off"
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "EntryChainConfig":

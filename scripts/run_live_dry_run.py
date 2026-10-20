@@ -53,6 +53,7 @@ from src.signals.orthogonal_factors import (
     SCHEMA_VERSION as FIVE_FACTOR_SCHEMA_VERSION,
     five_factor_scores,
 )
+from src.portfolio.regime_overlay import cap_decision, overlay_payload
 from src.signals.score_core import s1_shadow
 
 
@@ -215,6 +216,8 @@ def run(args: argparse.Namespace) -> None:
                 # S1 影子核(只写日志,不参与决策;legacy 模式下该字段不存在)
                 if "s1_core" in debug:
                     decision_payload["s1_core"] = debug["s1_core"]
+                if "regime_overlay" in debug:
+                    decision_payload["regime_overlay"] = debug["regime_overlay"]
                 decision_payload = annotate_quadrant(decision_payload, config)
                 near_miss = build_near_miss_payload(
                     decision_payload,
@@ -306,6 +309,21 @@ def run(args: argparse.Namespace) -> None:
                     scores=debug.get("scores", {}),
                     kline=debug.get("kline", {}),
                 )
+                # 组合层仓位上限:目标仓位 0 时拦截新开仓(只降级,不平已持仓)
+                _overlay = decision_payload.get("regime_overlay") or {}
+                _action, _notional, _reasons, _blocked = cap_decision(
+                    mode=getattr(config, "regime_overlay", "off"),
+                    target=int(_overlay.get("target", 1)),
+                    action=str(decision.action),
+                    notional_hint=float(decision.notional_hint or 0.0),
+                    reasons=tuple(decision.reasons),
+                )
+                if _blocked:
+                    decision = replace(decision, action=_action, notional_hint=_notional,
+                                       reasons=_reasons)
+                    decision_payload["action"] = _action
+                    decision_payload["notional_hint"] = _notional
+                    decision_payload["reasons"] = list(_reasons)
                 audit.write_decision(decision_payload)
                 summary.record_decision(decision_payload)
                 if near_miss is not None:
@@ -2440,6 +2458,23 @@ def synthetic_shadow_bars(symbol: str, timestamp: int, count: int = 260) -> list
     ]
 
 
+def attach_regime_overlay(debug: dict[str, Any], histories: Mapping[str, Sequence[BacktestBar]] | None,
+                          config) -> None:
+    """组合层仓位规则(2026-10-20):4h SMA50/SMA200 → 目标仓位 0/1。
+
+    `config.regime_overlay == "off"` 时直接返回,不产生字段 → 历史行为不变。
+    `shadow` 只写 `debug["regime_overlay"]`;`cap` 额外由主循环拦截新开仓。
+    """
+    mode = getattr(config, "regime_overlay", "off")
+    if mode == "off":
+        return
+    bars = list((histories or {}).get("4h", []))
+    closes = [float(bar.close) for bar in bars if getattr(bar, "close", None) is not None]
+    payload = overlay_payload(closes, mode=mode)
+    if payload is not None:
+        debug["regime_overlay"] = payload
+
+
 def attach_s1_core_shadow(debug: dict[str, Any], histories: Mapping[str, Sequence[BacktestBar]] | None,
                           config) -> None:
     """S1 影子核(2026-10-20):4h SMA50/SMA200 趋势状态,**只写日志**。
@@ -2475,11 +2510,13 @@ def build_context(
             config=config,
         )
         attach_s1_core_shadow(debug, None, config)
+        attach_regime_overlay(debug, None, config)
         return context, "OK", debug
     try:
         histories = fetch_public_market_histories(symbol, limit=public_history_limit(args, config))
         context, debug = public_market_context(symbol, timestamp, histories, config)
         attach_s1_core_shadow(debug, histories, config)
+        attach_regime_overlay(debug, histories, config)
         return context, "OK", debug
     except Exception as exc:
         if warmup_history:
@@ -2487,6 +2524,7 @@ def build_context(
             debug["warmup"]["cache_fallback"] = True
             debug["warmup"]["error"] = exc.__class__.__name__
             attach_s1_core_shadow(debug, warmup_history, config)
+            attach_regime_overlay(debug, warmup_history, config)
             return context, "DEGRADED", debug
         context = degraded_context(symbol, timestamp)
         debug = synthetic_debug_snapshot(symbol, timestamp, context)
@@ -2496,6 +2534,9 @@ def build_context(
             "schema_version": FIVE_FACTOR_SCHEMA_VERSION,
             "status": "degraded_no_history",
         }
+        # 降级分支也要写影子字段(目标会是 INSUFFICIENT),避免"有开关却没字段"的歧义
+        attach_s1_core_shadow(debug, None, config)
+        attach_regime_overlay(debug, None, config)
         return context, "DEGRADED", debug
 
 
