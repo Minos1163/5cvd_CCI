@@ -81,8 +81,19 @@ BTC 买入持有(不含资金费):full **+5.3% / DD 77% / Calmar 0.07**;train +1
 2. **等权再平衡是免费的**:组合按每个时间戳等权平均,等于假设每 4h 免费再平衡一次。
    实际若按季度/月度再平衡,跟踪误差与换手成本都会变。下一版必须显式建模再平衡频率。
 
-## 5. 下一步
+## 5. 下一步(状态)
 
-- T4(S1 核心):`long/flat + SMA50/SMA200(4h)+ 7 天检查`,先作为**影子核**接进决策链(不参与下单)。
-- T5(开关接入):`score_core = legacy | s1`,legacy 逐字段零变更。
-- 与 T4 并行:把标的池改成"按历史时点可得"的版本,重跑 §1 的四道门(这是唯一可能把 +24.5% 打回原形的检验)。
+- ✅ **T4/T5 已完成**(commit `8af141a`):`src/signals/score_core.py` 的 `s1_regime/s1_shadow`;
+  `EntryChainConfig.score_core = "legacy" | "s1_shadow"`;`run_live_dry_run.attach_s1_core_shadow`
+  只在 `s1_shadow` 模式下往 `decisions.jsonl` 写 `s1_core` 字段,**不碰 score/action/名义/杠杆**;
+  配置 `configs/entry_chain.dry_run_s1_shadow.json`;测试 `tests/test_score_core_s1.py`(10 条)。
+  公网 3 标的单轮实测:字段正常写出(`state=FLAT, ready=true`),`score/action` 不变;
+  全量回归 858 passed / 1 failed(既有 EMA-vs-RSI 漂移)。
+- 🔄 **偏差 1 修补**:`scripts/analysis/pit_universe_overlay_20261020.py` 把候选池换成
+  `onboardDate ≤ 2021-11-01` 的 85 个品种(排除事后挑新币),并在每个换仓时点加
+  "≥200 根历史 + 30 日均美元成交额 ≥$10M" 两道时点内过滤。
+
+  **结果(见 `pit_universe_findings_2026-10-20.md`):全样本 −1.4%、检验窗口 +2.2%、
+  逐品种中位 −42.4%、正收益 5/18 → 三条判定全部不通过。**
+  也就是说本文 §1–§3 的 +24.5%/+55.5% **是标的池偏差的产物**;唯一还站得住的性质是
+  "回撤更低"(检验窗口 33% vs BTC 53%)。**T4/T5 因此不进入灰度**,影子核只作研究记录器。

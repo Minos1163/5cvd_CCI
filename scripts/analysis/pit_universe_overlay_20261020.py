@@ -208,12 +208,19 @@ def main() -> None:
     ap.add_argument("--min-dollar-vol", type=float, default=1e7)
     ap.add_argument("--eval-only", action="store_true")
     ap.add_argument("--max-symbols", type=int, default=0)
+    ap.add_argument("--sample", type=int, default=0,
+                    help="从候选池里随机抽 N 个(按 --seed 固定),0=全用")
+    ap.add_argument("--seed", type=int, default=20261020)
     ap.add_argument("--date", default="2026-10-20")
     args = ap.parse_args()
 
     symbols = universe()
     if args.max_symbols:
         symbols = symbols[: args.max_symbols]
+    if args.sample:
+        import random
+        rng = random.Random(args.seed)
+        symbols = sorted(rng.sample(symbols, min(args.sample, len(symbols))))
     print(f"[universe] {len(symbols)} symbols listed before 2021-11")
 
     data: dict[str, pd.DataFrame] = {}
@@ -302,17 +309,31 @@ def main() -> None:
         lines.append("")
 
     test = results.get("test") or {}
+    full = results.get("full") or {}
     btc_test = (bench.get("test") or {}).get("cagr", float("nan"))
     lines.append("## 判定")
     lines.append("")
+    lines.append("> 判定规则(**事先写死**):三条同时满足才算过门 ——")
+    lines.append("> ① 全样本年化 >0;② 检验窗口年化 >0;③ 检验窗口逐品种正收益 ≥50%。")
+    lines.append("> 只跟 BTC 比相对胜负是不够的:绝对收益为 0 的策略不该上线。")
+    lines.append("")
     if test:
-        passed = test["cagr"] > btc_test and test["max_dd"] < (bench.get("test") or {}).get("max_dd", 1) * 0.85
-        if passed:
-            lines.append(f"**偏差修补后仍过门**:检验窗口 {test['cagr']:+.1%}/DD {test['max_dd']:.0%} "
-                         f"vs BTC {btc_test:+.1%}/DD {(bench.get('test') or {}).get('max_dd', float('nan')):.0%} → 可继续 T4/T5。")
+        pos_ratio = (sum(1 for v in per_symbol_test.values() if v > 0) / len(per_symbol_test)) \
+            if per_symbol_test else 0.0
+        c1 = full.get("cagr", -1) > 0
+        c2 = test.get("cagr", -1) > 0
+        c3 = pos_ratio >= 0.5
+        lines.append(f"- ① 全样本 {full.get('cagr', float('nan')):+.1%} → {'通过' if c1 else '**不通过**'}")
+        lines.append(f"- ② 检验 {test.get('cagr', float('nan')):+.1%} → {'通过' if c2 else '**不通过**'}")
+        lines.append(f"- ③ 正收益品种占比 {pos_ratio:.0%} → {'通过' if c3 else '**不通过**'}")
+        lines.append("")
+        if c1 and c2 and c3:
+            lines.append(f"**过门**:全样本 {full['cagr']:+.1%}、检验 {test['cagr']:+.1%}、"
+                         f"正收益 {pos_ratio:.0%} → 可继续 T4/T5 灰度。")
         else:
-            lines.append(f"**偏差修补后不再过门**:检验窗口 {test['cagr']:+.1%}/DD {test['max_dd']:.0%} "
-                         f"vs BTC {btc_test:+.1%} → 原结论是标的池偏差的产物,应停下重新评估。")
+            lines.append(f"**不过门**:时点池下全样本 {full.get('cagr', float('nan')):+.1%}、"
+                         f"检验 {test.get('cagr', float('nan')):+.1%}、正收益 {pos_ratio:.0%}。"
+                         "**上一轮的 +24.5% 是标的池偏差的产物**;S1 只保留影子记录,不进入灰度。")
     lines.append("")
     lines.append("> 幸存者偏差仍在:已下架的品种无法通过公开 API 取得,本池只包含「活到今天」的品种。")
     lines.append("")
