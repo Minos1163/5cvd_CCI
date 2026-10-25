@@ -1,0 +1,25 @@
+[Unit]
+# 影子实例:只写日志与独立纸面账本(regime_overlay=shadow),不拦任何开仓。
+# 与 ai300-dry-run.service / aibot.service 并行运行,输出目录完全隔离:
+#   生产:/root/AIBOT/logs
+#   影子:/root/AIBOT-shadow/logs_shadow/regime
+Description=AI300 regime_overlay shadow observer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/AIBOT-shadow
+Environment=PYTHONUNBUFFERED=1
+# 若机器访问 Binance 需要代理,取消注释并把地址改成本机代理端口:
+# (必须同时给大写和小写,urllib 只读 *_proxy)
+#Environment=http_proxy=http://127.0.0.1:7890
+#Environment=https_proxy=http://127.0.0.1:7890
+#Environment=HTTP_PROXY=http://127.0.0.1:7890
+#Environment=HTTPS_PROXY=http://127.0.0.1:7890
+ExecStart=/bin/bash /root/AIBOT-shadow/scripts/run_shadow_regime.sh
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

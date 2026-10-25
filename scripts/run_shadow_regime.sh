@@ -5,9 +5,20 @@
 # 两套账本互不干扰。默认只记录(regime_overlay=shadow),不会拦任何开仓。
 #
 # 用法:
-#   bash scripts/run_shadow_regime.sh                  # 前台跑(会阻塞,建议配合 tmux/screen)
+#   bash scripts/run_shadow_regime.sh            # 前台跑:**会一直阻塞**(这是常驻进程,正常)
+#   ONCE=1 bash scripts/run_shadow_regime.sh     # 只跑一轮就退出,用来验证行情能不能拉到
 #   PROXY=http://127.0.0.1:7890 bash scripts/run_shadow_regime.sh
-#   nohup bash scripts/run_shadow_regime.sh >/tmp/shadow_regime.log 2>&1 &
+#
+# 要常驻,三选一(不要用裸 `cmd &`,SSH 断开会被带走):
+#   1) systemd(推荐,见 deploy/systemd/ai300-shadow-regime.service)
+#   2) setsid:
+#        setsid nohup bash scripts/run_shadow_regime.sh \
+#          >>/tmp/shadow_regime.log 2>&1 < /dev/null &
+#        echo $! > /tmp/shadow_regime.pid
+#   3) tmux/screen:tmux new -s shadow 'bash scripts/run_shadow_regime.sh'
+#
+# 注意:加了 --align-to-kline-close,启动后会一直等到下一根 15m 收盘才开始第一轮,
+# 所以日志可能安静 5~15 分钟 —— 这期间"没输出"是正常的。
 #
 # 可用环境变量:
 #   CODE     仓库根(默认脚本上一级)
