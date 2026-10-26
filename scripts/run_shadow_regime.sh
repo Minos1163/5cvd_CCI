@@ -20,9 +20,15 @@
 # 注意:加了 --align-to-kline-close,启动后会一直等到下一根 15m 收盘才开始第一轮,
 # 所以日志可能安静 5~15 分钟 —— 这期间"没输出"是正常的。
 #
+# 目录布局(会按 UTC 日期自动切分,跨天不覆盖):
+#   $OUT/logs/<YYYY-MM>/<YYYY-MM-DD>/decisions.jsonl 等
+#   $OUT/logs/<YYYY-MM>/<YYYY-MM-DD>/runtime.out.HH.log
+#   $OUT/state/paper/                     纸面账本状态(跨天保留,不分日期)
+#
 # 可用环境变量:
 #   CODE     仓库根(默认脚本上一级)
-#   OUT      输出目录(默认 $CODE/logs_shadow/regime)
+#   OUT      影子根目录(默认 $CODE/logs_shadow/regime)
+#   DATA_SOURCE 行情源,默认 public-binance;无网络自检可设 synthetic
 #   PY       python 解释器(默认 python3)
 #   SYMBOLS  标的清单;留空 = 不传 --symbols,跟随配置里的 market_cap_rank(和线上一致)
 #   CFG      配置(默认 configs/entry_chain.dry_run_regime_shadow.json)
@@ -40,6 +46,8 @@ SYMBOLS="${SYMBOLS-BNBUSDT,XRPUSDT,SOLUSDT,TRXUSDT,HYPEUSDT,DOGEUSDT,ZECUSDT,XLM
 #   SYMBOLS="BNBUSDT,XRPUSDT,SOLUSDT,TRXUSDT,HYPEUSDT,DOGEUSDT,ZECUSDT,XLMUSDT,ADAUSDT,XMRUSDT,LINKUSDT,CCUSDT,LABUSDT,TONUSDT" bash scripts/run_shadow_regime.sh
 CFG="${CFG:-configs/entry_chain.dry_run_regime_shadow.json}"
 PROXY="${PROXY:-}"
+DATA_SOURCE="${DATA_SOURCE:-public-binance}"
+ALIGN="${ALIGN:-1}"   # 0 = 不等 15m 收盘(仅用于自检)
 
 cd "$CODE"
 
@@ -59,25 +67,26 @@ mkdir -p "$OUT"
 ARGS=(
   scripts/run_live_dry_run.py
   --config "$CFG"
-  --market-data-source public-binance
+  --market-data-source "$DATA_SOURCE"
   --public-kline-limit 240
   --http-timeout 30
-  --align-to-kline-close
   --kline-interval-seconds 900
   --post-close-delay-seconds 10
   --interval-seconds 60
-  --output-dir "$OUT"
-  --log-root "$OUT/dry_run"
+  --log-root "$OUT/logs"
   --paper-state-dir "$OUT/state/paper"
 )
+if [ "$ALIGN" = "1" ]; then
+  ARGS+=(--align-to-kline-close)
+fi
 if [ "${ONCE:-0}" = "1" ]; then
   ARGS+=(--once)
 fi
 if [ -n "$SYMBOLS" ]; then
   ARGS+=(--symbols "$SYMBOLS")
-  echo "[run] cfg=$CFG out=$OUT symbols(pinned)=$SYMBOLS"
+  echo "[run] cfg=$CFG out=$OUT/logs/$(date -u +%Y-%m)/<YYYY-MM-DD> symbols(pinned)=$SYMBOLS"
 else
-  echo "[run] cfg=$CFG out=$OUT symbols=config(market_cap_rank 3-25)"
+  echo "[run] cfg=$CFG out=$OUT/logs symbols=config(market_cap_rank 3-25)"
 fi
 
 exec "$PY" "${ARGS[@]}"
