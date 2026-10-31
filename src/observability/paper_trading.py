@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -20,6 +21,13 @@ COST_BREAKEVEN_CHECK_BARS = MAX_HOLD_BARS // 4
 COST_BREAKEVEN_BUFFER_MULT = 0.5
 TP_LEVELS = (1.2, 2.0, 3.0)
 TP_FRACTIONS = (0.40, 0.35, 0.25)
+
+# PnL 口径版本(2026-10-31 评审 P0):
+#   v1 -> 事件里的 net_pnl 只扣出场成本(建仓成本在开仓时一次性记入 realized_pnl,
+#         不出现在任何 PAPER_CLOSE/REDUCE 行里),分维度表因此与权益口径差一个建仓成本;
+#   v2 -> 额外落 entry_cost / exit_cost / net_pnl_full,使"分维度表合计 == 权益变动"
+#         可以直接用单行事件复算。旧字段一律保留,不改任何权益计算。
+PNL_SCHEMA_VERSION = 2
 
 
 def _resolve_stop_pct(
@@ -78,6 +86,9 @@ class PaperExitConfig:
     trailing_r_mult: float = 1.0
     early_breakeven_enabled: bool = False
     early_breakeven_trigger_r: float = 1.0
+    # 防御性覆盖层(Q3 减半 / Q4 全平)。pure_ladder 臂把它关掉,
+    # 以隔离"防御层"对 R 分布的影响(2026-10-31 实施)。
+    defensive_overlay: bool = True
     # 止损宽度上下限的单一来源:由 EntryChainConfig.min_stop_pct/max_stop_pct 传入,
     # 避免「建仓按 4% 算仓位、出场按 3% 止损」的口径分裂
     min_stop_pct: float = MIN_STOP_PCT
@@ -153,11 +164,14 @@ class PaperTradingLedger:
         if self.state_dir != self.output_dir:
             (self.state_dir / "paper_trades.jsonl").touch(exist_ok=True)
         self.initial_equity = initial_equity
+        self.derived_margin_backfill_count = 0
         self.positions: dict[str, PaperPosition] = self._load_positions()
         self.realized_pnl = 0.0
         self.realized_margin_pnl = 0.0
         self.closed_trade_pnls: list[float] = []
         self.closed_trade_margin_pnls: list[float] = []
+        # 保证金口径的"收益率"(净额 / 已用保证金),用于替代被杠杆双计的 margin_pnl
+        self.closed_trade_margin_returns: list[float] = []
         self.equity_peak = initial_equity
         self.max_drawdown = 0.0
         self._load_equity()
@@ -311,12 +325,13 @@ class PaperTradingLedger:
         else:
             _update_q4_streak(position, decision_payload)
             _apply_q2_stop_tightening(position, decision_payload)
-            if _q4_defensive_exit(position, close):
+            overlay = self._position_exit_config(position).defensive_overlay
+            if overlay and _q4_defensive_exit(position, close):
                 net = self._close_fraction(position, timestamp, close, position.remaining_fraction, "Q4_DEFENSIVE_EXIT")
                 events.append(f"PAPER_CLOSE:{symbol}:Q4_DEFENSIVE_EXIT:{net:.4f}")
                 self.positions.pop(symbol, None)
                 return events
-            if _q3_defensive_reduce(position, decision_payload):
+            if overlay and _q3_defensive_reduce(position, decision_payload):
                 fraction = min(position.remaining_fraction, 0.5)
                 net = self._close_fraction(position, timestamp, close, fraction, "Q3_DEFENSIVE_REDUCE")
                 position.q3_reduced = True
@@ -357,6 +372,7 @@ class PaperTradingLedger:
             trailing_r_mult=self.exit_config.trailing_r_mult,
             early_breakeven_enabled=self.exit_config.early_breakeven_enabled,
             early_breakeven_trigger_r=self.exit_config.early_breakeven_trigger_r,
+            defensive_overlay=self.exit_config.defensive_overlay,
         )
 
     def _close_fraction(self, position: PaperPosition, timestamp: int, price: float, fraction: float, reason: str) -> float:
@@ -366,6 +382,10 @@ class PaperTradingLedger:
         exit_fee = fee(exit_notional, FEE_BPS)
         exit_slippage = fee(exit_notional, SLIPPAGE_BPS)
         net = gross - exit_fee - exit_slippage
+        # 建仓成本按本次平仓比例摊分,使 net_pnl_full 成为"这一笔交易在这个仓位上的
+        # 完整盈亏",可以直接按任意维度加总后与权益变动对齐(2026-10-31 评审 P0-1)。
+        entry_share = (position.entry_fee + position.entry_slippage) * fraction
+        net_full = net - entry_share
         margin_net = net * max(1, int(position.leverage))
         position.realized_pnl += net
         position.realized_margin_pnl += margin_net
@@ -375,6 +395,9 @@ class PaperTradingLedger:
         if position.remaining_fraction <= 0:
             self.closed_trade_pnls.append(position.realized_pnl)
             self.closed_trade_margin_pnls.append(position.realized_margin_pnl)
+            margin_used_total = _margin_used(position.notional, position.leverage)
+            if margin_used_total > 0:
+                self.closed_trade_margin_returns.append(position.realized_pnl / margin_used_total)
         self._append_trade_event(
             {
                 "timestamp": timestamp,
@@ -392,6 +415,10 @@ class PaperTradingLedger:
                 "slippage": exit_slippage,
                 "net_pnl": net,
                 "notional_pnl": net,
+                "entry_cost": entry_share,
+                "exit_cost": exit_fee + exit_slippage,
+                "net_pnl_full": net_full,
+                "pnl_schema_version": PNL_SCHEMA_VERSION,
                 "margin_pnl": margin_net,
                 "position_realized_pnl": position.realized_pnl,
                 "position_margin_realized_pnl": position.realized_margin_pnl,
@@ -448,6 +475,8 @@ class PaperTradingLedger:
                 "max_drawdown": self.max_drawdown,
                 "open_positions": len(self.positions),
                 "pnl_accounting_mode": "notional_primary_margin_reporting",
+                "pnl_schema_version": PNL_SCHEMA_VERSION,
+                "margin_pnl_status": "deprecated_leverage_double_count",
             },
         )
         self._write_json("paper_summary.json", self.summary(timestamp, equity, updated_at=updated_at))
@@ -499,6 +528,13 @@ class PaperTradingLedger:
             ),
             "exit_mode": self.exit_config.mode,
             "pnl_accounting_mode": "notional_primary_margin_reporting",
+            "pnl_schema_version": PNL_SCHEMA_VERSION,
+            "margin_pnl_status": "deprecated_leverage_double_count",
+            # 保证金口径的收益率:逐笔 (净额 / 已用保证金) 之和,非复利、非组合收益率。
+            # 用它替代被杠杆双计的 realized_margin_pnl 做"保证金视角"的展示。
+            "realized_margin_return": sum(self.closed_trade_margin_returns),
+            "closed_trade_margin_returns_n": len(self.closed_trade_margin_returns),
+            "derived_margin_backfill_count": int(getattr(self, "derived_margin_backfill_count", 0)),
         }
 
     def recent_closed_trades(
@@ -620,13 +656,20 @@ class PaperTradingLedger:
             return {}
         data = json.loads(path.read_text(encoding="utf-8"))
         positions: dict[str, PaperPosition] = {}
+        derived = 0
         for symbol, payload in data.items():
             values = dict(payload)
             values.setdefault("tp_consumed", [])
             values.setdefault("best_price", values.get("last_price", values.get("entry_price", 0.0)))
             values.setdefault("max_favorable_r_observed", 0.0)
             values.setdefault("last_processed_kline_ts", values.get("entry_time", 0))
-            values.setdefault("realized_margin_pnl", float(values.get("realized_pnl") or 0.0) * max(1, int(values.get("leverage") or 1)))
+            if "realized_margin_pnl" not in values:
+                # 2026-10-31 评审 D2:旧实现用 realized_pnl * leverage 静默造数,
+                # 与 _close_fraction 的 margin_net 叠加后把保证金口径放大两遍。
+                # 这里只做同额回填(保证金口径本就该是 USDT 绝对额),并计数上报,
+                # 不再乘杠杆。计数会写进 health/summary,便于发现状态文件缺字段。
+                values["realized_margin_pnl"] = float(values.get("realized_pnl") or 0.0)
+                derived += 1
             values.setdefault("exit_mode", values.get("exit_mode") or self.exit_config.mode)
             values.setdefault("scout_mission", None)
             values.setdefault("experiment_id", None)
@@ -635,6 +678,13 @@ class PaperTradingLedger:
             values.setdefault("q3_reduced", False)
             values.setdefault("q4_streak", 0)
             positions[symbol] = PaperPosition(**values)
+        self.derived_margin_backfill_count = derived
+        if derived:
+            print(
+                f"[paper_trading] WARN restored {derived} position(s) without realized_margin_pnl; "
+                "filled with realized_pnl (no leverage multiplication) and counted in summary",
+                file=sys.stderr,
+            )
         return positions
 
     def _load_equity(self) -> None:

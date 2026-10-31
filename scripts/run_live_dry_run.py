@@ -607,7 +607,7 @@ def paper_exit_config(config: EntryChainConfig, *, scout: bool, mode_override: s
 
 
 def build_paper_exit_ab_ledgers(output_dir: Path, state_dir: Path, config: EntryChainConfig) -> dict[str, PaperTradingLedger]:
-    return {
+    ledgers = {
         "legacy": PaperTradingLedger(
             output_dir / "paper_ab" / "legacy",
             state_dir=state_dir / "paper_ab" / "legacy",
@@ -625,6 +625,15 @@ def build_paper_exit_ab_ledgers(output_dir: Path, state_dir: Path, config: Entry
             ),
         ),
     }
+    if getattr(config, "paper_ab_pure_ladder_enabled", False):
+        # 第三条臂:同 mode,仅关掉防御性覆盖层(Q3 减半 / Q4 全平),
+        # 用于隔离"防御层"对 R 分布的贡献。不改动 legacy / trend_capture 的行为。
+        ledgers["pure_ladder"] = PaperTradingLedger(
+            output_dir / "paper_ab" / "pure_ladder",
+            state_dir=state_dir / "paper_ab" / "pure_ladder",
+            exit_config=PaperExitConfig(mode="legacy", defensive_overlay=False),
+        )
+    return ledgers
 
 
 def paper_ab_state_dir(state_dir: Path) -> Path:
@@ -668,22 +677,46 @@ def paper_exit_ab_summary(ab_ledgers: Mapping[str, PaperTradingLedger], timestam
 
 def paper_ab_closed_stats(ledger: PaperTradingLedger) -> dict[str, Any]:
     closed = [row for row in ledger.trade_events() if row.get("event") == "PAPER_CLOSE"]
-    pnls = [float(row.get("position_margin_realized_pnl") or row.get("position_realized_pnl") or row.get("net_pnl") or 0.0) for row in closed]
-    wins = [item for item in pnls if item > 0.0]
-    losses = [item for item in pnls if item < 0.0]
-    gross_profit = sum(wins)
-    gross_loss = abs(sum(losses))
-    avg_win = gross_profit / len(wins) if wins else 0.0
-    avg_loss = gross_loss / len(losses) if losses else 0.0
-    return {
-        "closed_trades": len(pnls),
-        "realized_margin_pnl": sum(pnls),
-        "win_rate": len(wins) / len(pnls) if pnls else 0.0,
-        "avg_win": avg_win,
-        "avg_loss": avg_loss,
-        "actual_payoff_ratio": avg_win / avg_loss if avg_loss > 0.0 else (avg_win if avg_win > 0.0 else 0.0),
-        "profit_factor": gross_profit / gross_loss if gross_loss > 0.0 else (gross_profit if gross_profit > 0.0 else 0.0),
-    }
+    # 2026-10-31 评审 P0:改读 net_pnl_full(全成本口径,建仓+出场)。
+    # 旧实现读 position_margin_realized_pnl,那是 net*leverage 的双计值;
+    # 虽然 PF/胜率对统一乘数不变,但跨笔杠杆不同会扭曲加权。
+    def _pnl(row: Mapping[str, Any]) -> float:
+        return float(
+            row.get("net_pnl_full")
+            or row.get("position_realized_pnl")
+            or row.get("net_pnl")
+            or 0.0
+        )
+
+    def _stats(pnls: list[float]) -> dict[str, Any]:
+        wins = [item for item in pnls if item > 0.0]
+        losses = [item for item in pnls if item < 0.0]
+        gross_profit = sum(wins)
+        gross_loss = abs(sum(losses))
+        avg_win = gross_profit / len(wins) if wins else 0.0
+        avg_loss = gross_loss / len(losses) if losses else 0.0
+        return {
+            "closed_trades": len(pnls),
+            "realized_pnl": sum(pnls),
+            "win_rate": len(wins) / len(pnls) if pnls else 0.0,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "actual_payoff_ratio": avg_win / avg_loss if avg_loss > 0.0 else (avg_win if avg_win > 0.0 else 0.0),
+            "profit_factor": gross_profit / gross_loss if gross_loss > 0.0 else (gross_profit if gross_profit > 0.0 else 0.0),
+        }
+
+    pnls = [_pnl(row) for row in closed]
+    # 2026-10-31 评审 D5:mirror_ab_sample 以固定 50 USDT 名义记录,54 笔里占 45 笔,
+    # 会把 AB 统计的重心从真实决策挪到小额镜像样本。这里并列给出剔除镜像后的口径,
+    # 自动切臂仍用全样本(保持原有行为),但报告必须两边都看。
+    real_pnls = [_pnl(row) for row in closed if row.get("entry_channel") != "mirror_ab_sample"]
+    result = _stats(pnls)
+    # 兼容旧键名(有下游读 realized_margin_pnl),但值现在是全成本 notional 口径
+    result["realized_margin_pnl"] = result["realized_pnl"]
+    result["pnl_basis"] = "net_pnl_full"
+    result["excluding_mirror"] = _stats(real_pnls)
+    result["excluding_mirror"]["mirror_trades"] = len(pnls) - len(real_pnls)
+    return result
 
 
 def maybe_write_paper_ab_auto_report(
@@ -1735,7 +1768,10 @@ def _experiment_pnl(
                 continue
             if until_ts is not None and ts > until_ts:
                 continue
-            total += float(row.get("margin_pnl") or row.get("net_pnl") or 0.0)
+            # 2026-10-31 评审 P0:实验亏损熔断读 margin_pnl 时,该字段被 net*leverage
+            # 放大 3-4 倍,导致 experiment_*_loss_limit(-150/-200) 实际在真实亏
+            # 40-50 USDT 时就触发。改用全成本绝对额。
+            total += float(row.get("net_pnl_full") or row.get("net_pnl") or 0.0)
     return total
 
 

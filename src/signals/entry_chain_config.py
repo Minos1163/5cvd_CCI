@@ -136,6 +136,11 @@ class EntryChainConfig:
     paper_ab_auto_switch_min_reports: int = 2
     paper_ab_auto_switch_min_closed_trades: int = 40
     paper_ab_auto_switch_payoff_mult: float = 1.3
+    # 2026-10-31:第三条 AB 臂。只保留静态止损 + TP 阶梯 + 32 根上限,
+    # 关掉 Q3_DEFENSIVE_REDUCE / Q4_DEFENSIVE_EXIT(防御性覆盖层)。
+    # 动机:6 天 51 笔里,防御层触发过的 35 笔相对"纯阶梯"回放平均差 -0.2R,
+    # 未触发的 16 笔差 +0.009R(引擎可复现账本)。需要并行收集样本,不改现有两臂。
+    paper_ab_pure_ladder_enabled: bool = False
     dry_run_q1_green_channel_enabled: bool = False
     dry_run_q1_green_channel_notional_mult: float = 0.5
     dry_run_q1_green_channel_min_score: float = 85.0
