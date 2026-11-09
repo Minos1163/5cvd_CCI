@@ -11,15 +11,15 @@
   "max_single_trade_risk_pct": 0.0075,
   "max_total_exposure_pct": 1.6,
   "max_same_direction_exposure_pct": 1.1,
-  "margin_buffer_pct": 0.30,
+  "margin_buffer_pct": 0.3,
   "use_ema_architecture": true,
   "use_fib_pa_architecture": true,
   "five_factor_shadow_enabled": true,
   "ema200_gate_mode": "soft",
   "ema200_buffer_pct": 0.003,
   "ema200_min_bars_stable": 3,
-  "ema50_min_for_direct": 0.60,
-  "ema50_min_for_probe": 0.40,
+  "ema50_min_for_direct": 0.6,
+  "ema50_min_for_probe": 0.4,
   "disable_probe": false,
   "probe_conditions": {
     "enabled": true,
@@ -52,14 +52,65 @@
   "dry_run_rank_start": 3,
   "dry_run_rank_end": 25,
   "dry_run_warmup_15m_bars": 240,
-  "dry_run_symbols": ["BNBUSDT", "XRPUSDT", "SOLUSDT", "TRXUSDT", "HYPEUSDT", "DOGEUSDT", "ZECUSDT", "XLMUSDT", "ADAUSDT", "XMRUSDT", "LINKUSDT", "CCUSDT", "LABUSDT", "TONUSDT"],
-  "blacklist_symbols": ["XRPUSDT", "ZECUSDT"],
-  "watch_only_symbols": ["ADAUSDT", "XMRUSDT"],
-  "observation_only_symbols": ["XLMUSDT", "TONUSDT"],
-  "scout_micro_symbols": ["XLMUSDT", "CCUSDT", "XMRUSDT", "ADAUSDT", "LINKUSDT", "LABUSDT", "HYPEUSDT", "DOGEUSDT", "SOLUSDT", "BNBUSDT", "BCHUSDT"],
-  "scout_micro_rr_gap_block_symbols": ["XLMUSDT"],
-  "scout_micro_targeted_long_symbols": ["LINKUSDT", "LABUSDT", "HYPEUSDT", "DOGEUSDT", "CCUSDT", "XLMUSDT", "SOLUSDT", "BNBUSDT", "BCHUSDT"],
-  "scout_micro_scout_only_symbols": ["XMRUSDT", "ADAUSDT"],
+  "dry_run_symbols": [
+    "BNBUSDT",
+    "XRPUSDT",
+    "SOLUSDT",
+    "TRXUSDT",
+    "HYPEUSDT",
+    "DOGEUSDT",
+    "ZECUSDT",
+    "XLMUSDT",
+    "ADAUSDT",
+    "XMRUSDT",
+    "LINKUSDT",
+    "CCUSDT",
+    "LABUSDT",
+    "TONUSDT"
+  ],
+  "blacklist_symbols": [
+    "XRPUSDT",
+    "ZECUSDT"
+  ],
+  "watch_only_symbols": [
+    "ADAUSDT",
+    "XMRUSDT"
+  ],
+  "observation_only_symbols": [
+    "XLMUSDT",
+    "TONUSDT"
+  ],
+  "scout_micro_symbols": [
+    "XLMUSDT",
+    "CCUSDT",
+    "XMRUSDT",
+    "ADAUSDT",
+    "LINKUSDT",
+    "LABUSDT",
+    "HYPEUSDT",
+    "DOGEUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "BCHUSDT"
+  ],
+  "scout_micro_rr_gap_block_symbols": [
+    "XLMUSDT"
+  ],
+  "scout_micro_targeted_long_symbols": [
+    "LINKUSDT",
+    "LABUSDT",
+    "HYPEUSDT",
+    "DOGEUSDT",
+    "CCUSDT",
+    "XLMUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "BCHUSDT"
+  ],
+  "scout_micro_scout_only_symbols": [
+    "XMRUSDT",
+    "ADAUSDT"
+  ],
   "scout_micro_min_score": 82.0,
   "scout_micro_non_rr_min_score": 85.0,
   "scout_micro_targeted_long_min_score": 82.0,
@@ -74,7 +125,10 @@
   "scout_micro_high_score_long_offset_min_fib_score": 15.0,
   "scout_micro_high_score_long_offset_min_cvd_score": 14.0,
   "scout_micro_high_score_long_offset_min_rr_score": 2.0,
-  "scout_micro_high_score_long_offset_quadrants": ["Q1", "Q3"],
+  "scout_micro_high_score_long_offset_quadrants": [
+    "Q1",
+    "Q3"
+  ],
   "scout_micro_fib_continuation_min_score": 82.0,
   "scout_micro_fib_continuation_min_ema_score": 16.0,
   "scout_micro_fib_continuation_min_cvd_score": 14.0,
@@ -104,8 +158,8 @@
   "dry_run_q1_trend_launch_min_fib_score": 15.0,
   "dry_run_q1_trend_launch_min_cvd_score": 16.0,
   "dry_run_q1_trend_launch_min_rr_score": 0.5,
-  "dry_run_q1_trend_launch_extreme_ratio_min": 0.20,
-  "dry_run_q1_trend_launch_extreme_ratio_max": 0.80,
+  "dry_run_q1_trend_launch_extreme_ratio_min": 0.2,
+  "dry_run_q1_trend_launch_extreme_ratio_max": 0.8,
   "dry_run_q1_trend_launch_base_exposure_pct": 0.025,
   "dry_run_q1_trend_launch_exit_mode": "trend_capture",
   "dry_run_q1_trend_launch_allow_degraded_data": false,
@@ -189,5 +243,7 @@
   "leverage_5x_fib_min": 13.0,
   "leverage_5x_pa_min": 9.0,
   "leverage_5x_cci_min": 7.0,
-  "leverage_5x_rr_min": 4.0
+  "leverage_5x_rr_min": 4.0,
+  "regime_overlay": "shadow",
+  "score_core": "s1_shadow"
 }

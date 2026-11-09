@@ -1,3 +1,5 @@
+import json
+import re
 from pathlib import Path
 
 from src.signals.entry_chain_config import load_entry_chain_config
@@ -14,9 +16,21 @@ def test_dry_run_config_tiers_are_parseable_and_ordered():
 
 
 def test_default_dry_run_config_matches_conservative_tier():
-    default = Path("configs/entry_chain.dry_run.json").read_text(encoding="utf-8")
-    conservative = Path("configs/entry_chain.dry_run_conservative.json").read_text(encoding="utf-8")
+    """The `run_live_dry_run --config` default must exist and stay on the conservative tier.
 
+    `configs/entry_chain.dry_run.json` — the historical default — was deleted from the working
+    tree; it was value-identical (0 key/value diffs) to the explicitly named conservative tier.
+    This guards the default against silently pointing at a missing file again.
+    """
+    source = Path("scripts/run_live_dry_run.py").read_text(encoding="utf-8")
+    match = re.search(r'"--config",\s*default="([^"]+)"', source)
+    assert match is not None, "run_live_dry_run.parse_args no longer declares a --config default"
+
+    default_path = Path(match.group(1))
+    assert default_path.exists(), f"--config default points at a missing file: {default_path}"
+
+    default = json.loads(default_path.read_text(encoding="utf-8"))
+    conservative = json.loads(Path("configs/entry_chain.dry_run_conservative.json").read_text(encoding="utf-8"))
     assert default == conservative
 
 

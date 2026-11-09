@@ -446,7 +446,9 @@ def run(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run AI300 entry-chain in dry-run mode without exchange mutation.")
-    parser.add_argument("--config", default="configs/entry_chain.dry_run.json")
+    # configs/entry_chain.dry_run.json was deleted from the working tree; it was value-identical
+    # to the conservative tier, so this default keeps the exact same behaviour as before.
+    parser.add_argument("--config", default="configs/entry_chain.dry_run_conservative.json")
     parser.add_argument("--output-dir")
     parser.add_argument("--log-root", default="reports/dry_run/local")
     parser.add_argument("--log-date")

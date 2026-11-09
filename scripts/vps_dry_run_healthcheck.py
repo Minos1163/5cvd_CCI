@@ -44,7 +44,9 @@ def main() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate AI300 VPS dry-run deployment prerequisites.")
-    parser.add_argument("--config", default="configs/entry_chain.dry_run.json")
+    # configs/entry_chain.dry_run.json was deleted from the working tree; it was value-identical
+    # to the conservative tier, so this default keeps the exact same behaviour as before.
+    parser.add_argument("--config", default="configs/entry_chain.dry_run_conservative.json")
     parser.add_argument("--output-dir")
     return parser.parse_args()
 

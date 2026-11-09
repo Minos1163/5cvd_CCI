@@ -149,12 +149,15 @@ def append_close_row(path: Path, *, timestamp: int, symbol: str, pnl: float, rea
 
 
 def test_live_dry_run_once_writes_audit_files(tmp_path):
+    # Conservative tier: this test asserts scout_micro_exit_mode == "legacy" and that the
+    # synthetic BNBUSDT bar reaches PROBE. fib_pa_v12 deliberately uses "trend_capture" and
+    # scores that bar to NO_TRADE, so it cannot stand in here.
     result = subprocess.run(
         [
             sys.executable,
             "scripts/run_live_dry_run.py",
             "--config",
-            "configs/entry_chain.dry_run.json",
+            "configs/entry_chain.dry_run_conservative.json",
             "--once",
             "--output-dir",
             str(tmp_path),
@@ -2091,13 +2094,45 @@ def test_experiment_entry_circuit_blocks_after_war_fund_loss(tmp_path):
     ) is True
 
 
+def test_live_dry_run_once_with_research_config_v12(tmp_path):
+    """The research config (fib_pa_v12, pure_ladder on) must still run a full cycle.
+
+    The two harness tests around this one are calibrated to the conservative tier, so without
+    this case nothing exercises v12's decision chain at all -- only config loading.
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_live_dry_run.py",
+            "--config",
+            "configs/entry_chain.dry_run_fib_pa_v12.json",
+            "--once",
+            "--output-dir",
+            str(tmp_path),
+            "--symbols",
+            "BNBUSDT",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "dry_run_completed" in result.stdout
+    assert (tmp_path / "decisions.jsonl").exists()
+    assert (tmp_path / "summary.json").exists()
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["dry_run_assumptions"]["scout_micro_exit_mode"] == "trend_capture"
+
+
 def test_live_dry_run_paper_ledger_records_open_position_when_draft_is_approved(tmp_path):
+    # Conservative tier: fib_pa_v12 scores the synthetic BNBUSDT bar to NO_TRADE, so no
+    # position would open and this test's precondition would silently disappear.
     subprocess.run(
         [
             sys.executable,
             "scripts/run_live_dry_run.py",
             "--config",
-            "configs/entry_chain.dry_run.json",
+            "configs/entry_chain.dry_run_conservative.json",
             "--once",
             "--output-dir",
             str(tmp_path),
@@ -2873,7 +2908,7 @@ def test_vps_healthcheck_accepts_dry_run_config():
             sys.executable,
             "scripts/vps_dry_run_healthcheck.py",
             "--config",
-            "configs/entry_chain.dry_run.json",
+            "configs/entry_chain.dry_run_fib_pa_v12.json",
         ],
         check=True,
         capture_output=True,

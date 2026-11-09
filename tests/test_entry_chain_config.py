@@ -312,7 +312,9 @@ def test_unknown_config_key_is_rejected(tmp_path):
 
 
 def test_dry_run_config_is_conservative_and_parseable():
-    config = load_entry_chain_config(Path("configs/entry_chain.dry_run.json"))
+    # configs/entry_chain.dry_run.json was deleted from the working tree; it was value-identical
+    # to the explicitly named conservative tier, which is what this test's assertions describe.
+    config = load_entry_chain_config(Path("configs/entry_chain.dry_run_conservative.json"))
 
     assert config.direct_threshold >= 85
     assert config.daily_max_trades_base <= 3
