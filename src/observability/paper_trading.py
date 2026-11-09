@@ -29,6 +29,11 @@ TP_FRACTIONS = (0.40, 0.35, 0.25)
 #         可以直接用单行事件复算。旧字段一律保留,不改任何权益计算。
 PNL_SCHEMA_VERSION = 2
 
+# 口径声明的**唯一**字面量。四处事件/汇总原本各抄一遍同一字符串，
+# 任一处改错都会让"同一批交易对不上账"变成静默错误。引用此常量后，
+# tests/test_run_manifest.py::test_pnl_accounting_mode_is_single_sourced 会守住它。
+PNL_ACCOUNTING_MODE = "notional_primary_margin_reporting"
+
 
 def _resolve_stop_pct(
     decision_payload: Mapping[str, Any],
@@ -273,7 +278,7 @@ class PaperTradingLedger:
                 "slippage": position.entry_slippage,
                 "notional_pnl": position.realized_pnl,
                 "margin_pnl": position.realized_margin_pnl,
-                "pnl_accounting_mode": "notional_primary_margin_reporting",
+                "pnl_accounting_mode": PNL_ACCOUNTING_MODE,
                 "score": position.score,
                 "reasons": position.reasons,
                 "stop_pct": stop_pct,
@@ -422,7 +427,7 @@ class PaperTradingLedger:
                 "margin_pnl": margin_net,
                 "position_realized_pnl": position.realized_pnl,
                 "position_margin_realized_pnl": position.realized_margin_pnl,
-                "pnl_accounting_mode": "notional_primary_margin_reporting",
+                "pnl_accounting_mode": PNL_ACCOUNTING_MODE,
                 "remaining_fraction": position.remaining_fraction,
                 "stop_pct": position.stop_pct,
                 "stop_price": position.stop_price,
@@ -474,7 +479,7 @@ class PaperTradingLedger:
                 "equity_peak": self.equity_peak,
                 "max_drawdown": self.max_drawdown,
                 "open_positions": len(self.positions),
-                "pnl_accounting_mode": "notional_primary_margin_reporting",
+                "pnl_accounting_mode": PNL_ACCOUNTING_MODE,
                 "pnl_schema_version": PNL_SCHEMA_VERSION,
                 "margin_pnl_status": "deprecated_leverage_double_count",
             },
@@ -527,7 +532,7 @@ class PaperTradingLedger:
                 else (sum(margin_wins) if margin_wins else 0.0)
             ),
             "exit_mode": self.exit_config.mode,
-            "pnl_accounting_mode": "notional_primary_margin_reporting",
+            "pnl_accounting_mode": PNL_ACCOUNTING_MODE,
             "pnl_schema_version": PNL_SCHEMA_VERSION,
             "margin_pnl_status": "deprecated_leverage_double_count",
             # 保证金口径的收益率:逐笔 (净额 / 已用保证金) 之和,非复利、非组合收益率。

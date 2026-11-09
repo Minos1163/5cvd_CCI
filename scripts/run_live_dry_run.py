@@ -7,7 +7,7 @@ import os
 import sys
 import time
 import traceback
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from datetime import UTC, datetime
 from typing import Any, Mapping, Sequence
@@ -23,7 +23,8 @@ from src.execution.live_entry_chain_adapter import build_live_entry_order_draft
 from src.backtest.engine import BacktestBar
 from src.observability.decision_audit import DecisionAuditWriter
 from src.observability.dry_run_summary import DryRunSummary, write_summary
-from src.observability.paper_trading import FEE_BPS, SLIPPAGE_BPS, TP_FRACTIONS, TP_LEVELS, PaperExitConfig, PaperTradingLedger, PortfolioStateSnapshot
+from src.observability.paper_trading import FEE_BPS, PNL_ACCOUNTING_MODE, PNL_SCHEMA_VERSION, SLIPPAGE_BPS, TP_FRACTIONS, TP_LEVELS, PaperExitConfig, PaperTradingLedger, PortfolioStateSnapshot
+from src.observability.run_manifest import build_run_manifest
 from src.risk.net_beta_exposure_model import (
     NET_BETA_EXPOSURE_CAP_PCT,
     NET_BETA_EXPOSURE_MODEL_NAME,
@@ -133,6 +134,11 @@ def run(args: argparse.Namespace) -> None:
         render_startup_log(args, startup_ts, symbols, symbol_meta, warmup_state, config.dry_run_warmup_15m_bars),
         timestamp=startup_ts,
     )
+    # P0 Task 1:运行事实落盘。必须在符号解析之后(需要 resolved_symbols),
+    # 且只写文件——manifest 不参与任何后续判定。
+    manifest_path = write_run_manifest(args, config, symbols, symbol_meta, startup_ts, startup_output_dir)
+    if manifest_path is not None:
+        write_runtime_log(startup_output_dir, [f"run_manifest: {manifest_path}"], timestamp=startup_ts)
     try:
         while True:
             # 周期级 data_health 重置(08-13 修复):一次 Binance 拉取抖动不再
@@ -2287,6 +2293,52 @@ def resolve_output_dir(args: argparse.Namespace, *, timestamp: int | None = None
         day = datetime.now(UTC).date()
     month = day.strftime("%Y-%m")
     return Path(args.log_root) / month / day.isoformat()
+
+
+def write_run_manifest(
+    args: argparse.Namespace,
+    config: EntryChainConfig,
+    symbols: Sequence[str],
+    symbol_meta: Mapping[str, Any],
+    startup_ts: int,
+    output_dir: Path,
+) -> Path | None:
+    """落盘本次运行的 `run_manifest-<run_id>.json`。
+
+    **纯观测**：P0 不改任何判定，本函数的返回值也不参与后续控制流。
+    写盘失败按 fail-open 处理——一次磁盘/权限问题不该杀掉 dry-run 主循环，
+    但必须在日志里留痕，使该轮结论可以被判为 INCONCLUSIVE，而不是"假装有 manifest"。
+    """
+    try:
+        manifest = build_run_manifest(
+            root=ROOT,
+            config_path=args.config,
+            resolved_config=asdict(config),
+            cli_args=dict(vars(args)),
+            target_tier=str(args.target_tier),
+            post_close_delay_seconds=float(args.post_close_delay_seconds),
+            kline_align=bool(args.align_to_kline_close),
+            base_timeframe_seconds=int(args.kline_interval_seconds),
+            universe_source=str(symbol_meta.get("source") or "unknown"),
+            universe_version=None,
+            resolved_symbols=tuple(symbols),
+            pnl_schema_version=PNL_SCHEMA_VERSION,
+            pnl_accounting_mode=PNL_ACCOUNTING_MODE,
+            fee_bps=FEE_BPS,
+            slippage_bps=SLIPPAGE_BPS,
+            exit_mode=str(config.paper_exit_mode),
+            paper_or_backtest_mode="paper",
+            started_at_utc=datetime.fromtimestamp(startup_ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        return manifest.write(output_dir / f"run_manifest-{manifest.run_id}.json")
+    except OSError as exc:
+        message = f"RUN_MANIFEST_WRITE_FAILED: {exc}"
+        print(message)
+        try:
+            write_runtime_log(output_dir, [message], timestamp=startup_ts)
+        except OSError:
+            pass
+        return None
 
 
 def resolve_paper_state_dir(args: argparse.Namespace) -> Path:
