@@ -35,6 +35,7 @@ from src.signals.entry_chain import EntryChainContext, EntryChainDecision, _noti
 from src.signals.entry_chain_config import EntryChainConfig, load_entry_chain_config
 from src.signals.decision_provenance import annotate_replacement
 from src.signals.entry_chain_scoring import resolve_architecture
+from src.signals.sizing_contract import assert_sizing_trace, summarize_sizing_trace
 from src.signals.entry_gate import EntryGate, build_gate_features
 from src.signals.entry_chain_gates import symbol_exposure_cap
 from src.signals.entry_chain_features import (
@@ -339,6 +340,9 @@ def run(args: argparse.Namespace) -> None:
                         None,
                         None,
                     )
+                # P0 Task 6:仓位轨迹。放在两分支汇合后、闸门之前——
+                # 闸门只改 action，不改 cap 数值，这里取的正是"决定名义的那一刻"。
+                decision_payload = _attach_sizing_trace(decision, decision_payload)
                 decision, decision_payload = _record_gate_adjustment(
                     decision,
                     decision_payload,
@@ -2348,6 +2352,38 @@ def resolve_output_dir(args: argparse.Namespace, *, timestamp: int | None = None
         day = datetime.now(UTC).date()
     month = day.strftime("%Y-%m")
     return Path(args.log_root) / month / day.isoformat()
+
+
+def _attach_sizing_trace(
+    decision: EntryChainDecision,
+    decision_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """把仓位三 cap 与 binding 写进 payload。
+
+    **不重算**：`entry_chain._build_decision` 已经在 metadata["risk_budget"] 里算过一次
+    （`entry_chain.py:790-792` 调用、`:823` 落盘），q1 通道路径同构。这里只读。
+
+    断言只告警不拦单：P0 是"加观测"，不是"加风控"。
+    `leverage_reason` 取 `decision.reasons`——这是唯一现成的理由载体；为空写
+    `NOT_RECORDED`，不编造理由字符串。
+    """
+    merged = dict(decision_payload)
+    budget = dict((getattr(decision, "metadata", None) or {}).get("risk_budget") or {})
+    if not budget:
+        return merged
+    reasons = tuple(getattr(decision, "reasons", ()) or ())
+    trace = {
+        **budget,
+        "leverage": int(budget.get("selected_leverage") or 0),
+        "leverage_reason": "|".join(reasons) if reasons else "NOT_RECORDED",
+    }
+    try:
+        assert_sizing_trace(trace)
+    except AssertionError as exc:
+        print(f"SIZING_TRACE_ASSERT: {exc}")
+        merged["sizing_trace_assert"] = str(exc)
+    merged["sizing_trace"] = summarize_sizing_trace(trace)
+    return merged
 
 
 def _record_gate_adjustment(
