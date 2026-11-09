@@ -33,6 +33,7 @@ from src.risk.net_beta_exposure_model import (
 from src.risk.stress_simulator import stress_decision
 from src.signals.entry_chain import EntryChainContext, EntryChainDecision, _notional_cap_diagnostics, evaluate_entry_chain
 from src.signals.entry_chain_config import EntryChainConfig, load_entry_chain_config
+from src.signals.entry_chain_scoring import resolve_architecture
 from src.signals.entry_gate import EntryGate, build_gate_features
 from src.signals.entry_chain_gates import symbol_exposure_cap
 from src.signals.entry_chain_features import (
@@ -114,6 +115,11 @@ def main() -> None:
 
 def run(args: argparse.Namespace) -> None:
     config = load_entry_chain_config(args.config)
+    # P0 Task 4:架构解析单值化。两开关同 true 时 reasons 带 ARCHITECTURE_FLAGS_BOTH_TRUE,
+    # 但仍按 fib_pa 执行（与改动前的短路顺序完全一致）。
+    # 注意:若两开关都为 false,架构按当根 bar 的 atr_pct 动态选择;此处的声明值按
+    # atr_pct=0.0 算出,仅用于启动日志;逐笔的权威记录是 payload["active_architecture"]。
+    architecture_name, architecture_reasons = resolve_architecture(config)
     symbols, symbol_meta = resolve_runtime_symbols(args, config)
     warmup_state = warmup_symbols(symbols, args, config) if args.market_data_source == "public-binance" else synthetic_warmup_state(symbols, config)
     orders_submitted = 0
@@ -139,6 +145,15 @@ def run(args: argparse.Namespace) -> None:
     manifest_path = write_run_manifest(args, config, symbols, symbol_meta, startup_ts, startup_output_dir)
     if manifest_path is not None:
         write_runtime_log(startup_output_dir, [f"run_manifest: {manifest_path}"], timestamp=startup_ts)
+    write_runtime_log(
+        startup_output_dir,
+        [
+            f"active_architecture={architecture_name} "
+            f"reasons={','.join(architecture_reasons) or 'NONE'} "
+            f"flags(fib_pa={config.use_fib_pa_architecture},ema={config.use_ema_architecture})"
+        ],
+        timestamp=startup_ts,
+    )
     try:
         while True:
             # 周期级 data_health 重置(08-13 修复):一次 Binance 拉取抖动不再
@@ -330,6 +345,11 @@ def run(args: argparse.Namespace) -> None:
                     decision_payload["action"] = _action
                     decision_payload["notional_hint"] = _notional
                     decision_payload["reasons"] = list(_reasons)
+                # P0 Task 4:把"这套配置在跑哪套评分架构"写进逐笔记录。
+                # 只加键，不改判定；放在所有改写（通道替换/闸门/overlay）之后，
+                # 确保每条账本行都带得到，而不是只有主路径有。
+                decision_payload["active_architecture"] = architecture_name
+                decision_payload["active_architecture_reasons"] = list(architecture_reasons)
                 audit.write_decision(decision_payload)
                 summary.record_decision(decision_payload)
                 if near_miss is not None:
