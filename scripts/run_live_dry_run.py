@@ -33,6 +33,7 @@ from src.risk.net_beta_exposure_model import (
 from src.risk.stress_simulator import stress_decision
 from src.signals.entry_chain import EntryChainContext, EntryChainDecision, _notional_cap_diagnostics, evaluate_entry_chain
 from src.signals.entry_chain_config import EntryChainConfig, load_entry_chain_config
+from src.signals.decision_provenance import annotate_replacement
 from src.signals.entry_chain_scoring import resolve_architecture
 from src.signals.entry_gate import EntryGate, build_gate_features
 from src.signals.entry_chain_gates import symbol_exposure_cap
@@ -274,6 +275,9 @@ def run(args: argparse.Namespace) -> None:
                     daily_ledgers=[paper, scout_paper],
                 )
                 entry_near_miss = None if experiment_circuit_active else near_miss
+                # P0 Task 5:留主决策原件。通道一旦替换,账本里就再也查不到"原本是什么"。
+                primary_decision = decision
+                primary_payload = dict(decision_payload)
                 green_channel_decision = build_q1_green_channel_decision(
                     base_decision=decision,
                     near_miss=entry_near_miss,
@@ -301,6 +305,15 @@ def run(args: argparse.Namespace) -> None:
                         ),
                         config,
                     )
+                    # P0 Task 5:通道替换留痕。此时 payload 已由控件后的 decision 重建，
+                    # 标注不会与 decision 错位。else 分支不替换，保持 decision_origin=primary。
+                    decision, decision_payload = annotate_replacement(
+                        primary_decision,
+                        primary_payload,
+                        decision,
+                        decision_payload,
+                        origin="q1_green_channel",
+                    )
                 else:
                     q1_policy_reason = q1_symbol_policy_rejection_reason(near_miss, config)
                     if q1_policy_reason is not None and decision_quadrant(near_miss, config) == "Q1":
@@ -317,18 +330,35 @@ def run(args: argparse.Namespace) -> None:
                             ),
                             config,
                         )
-                decision, decision_payload = apply_experimental_quadrant_entry_rules(
-                    decision=decision,
-                    decision_payload=decision_payload,
-                    paper=paper,
+                    # P0 Task 5:未替换也要标记 decision_origin=primary，否则账本里
+                    # "没有这个键"和"是主决策"无法区分。传当前 decision/payload 而非原件，
+                    # 避免把本分支刚加的 q1_policy_reason 回滚掉。
+                    decision, decision_payload = annotate_replacement(
+                        decision,
+                        decision_payload,
+                        None,
+                        None,
+                    )
+                decision, decision_payload = _record_gate_adjustment(
+                    decision,
+                    decision_payload,
+                    *apply_experimental_quadrant_entry_rules(
+                        decision=decision,
+                        decision_payload=decision_payload,
+                        paper=paper,
+                    ),
                 )
-                decision, decision_payload = apply_entry_gates(
-                    decision=decision,
-                    decision_payload=decision_payload,
-                    config=config,
-                    context=context,
-                    scores=debug.get("scores", {}),
-                    kline=debug.get("kline", {}),
+                decision, decision_payload = _record_gate_adjustment(
+                    decision,
+                    decision_payload,
+                    *apply_entry_gates(
+                        decision=decision,
+                        decision_payload=decision_payload,
+                        config=config,
+                        context=context,
+                        scores=debug.get("scores", {}),
+                        kline=debug.get("kline", {}),
+                    ),
                 )
                 # 组合层仓位上限:目标仓位 0 时拦截新开仓(只降级,不平已持仓)
                 _overlay = decision_payload.get("regime_overlay") or {}
@@ -340,11 +370,16 @@ def run(args: argparse.Namespace) -> None:
                     reasons=tuple(decision.reasons),
                 )
                 if _blocked:
+                    _overlay_from_action = str(decision.action)
                     decision = replace(decision, action=_action, notional_hint=_notional,
                                        reasons=_reasons)
                     decision_payload["action"] = _action
                     decision_payload["notional_hint"] = _notional
                     decision_payload["reasons"] = list(_reasons)
+                    # P0 Task 5:组合层 cap 只降级、不平仓；降级留痕（action 未变则不写）
+                    if _overlay_from_action != str(_action):
+                        decision_payload["gate_adjusted_from"] = _overlay_from_action
+                        decision_payload["gate_adjusted_to"] = str(_action)
                 # P0 Task 4:把"这套配置在跑哪套评分架构"写进逐笔记录。
                 # 只加键，不改判定；放在所有改写（通道替换/闸门/overlay）之后，
                 # 确保每条账本行都带得到，而不是只有主路径有。
@@ -2313,6 +2348,27 @@ def resolve_output_dir(args: argparse.Namespace, *, timestamp: int | None = None
         day = datetime.now(UTC).date()
     month = day.strftime("%Y-%m")
     return Path(args.log_root) / month / day.isoformat()
+
+
+def _record_gate_adjustment(
+    before_decision: EntryChainDecision,
+    before_payload: Mapping[str, Any],
+    after_decision: EntryChainDecision,
+    after_payload: Mapping[str, Any],
+) -> tuple[EntryChainDecision, dict[str, Any]]:
+    """如果某道闸门改写了 action，把"从什么改到什么"记进 payload。
+
+    P0 只加键、不改判据：本函数**不参与任何决定**，返回的决策与传入的完全一致。
+    当前四套配置都没有 `entry_gates` 键，`apply_entry_gates` 会直接返回，
+    所以这条路径现在不会触发——它是为将来启用闸门预留的，验收记 N/A。
+    """
+    merged = dict(after_payload)
+    before_action = str(getattr(before_decision, "action", ""))
+    after_action = str(getattr(after_decision, "action", ""))
+    if before_action != after_action:
+        merged["gate_adjusted_from"] = before_action
+        merged["gate_adjusted_to"] = after_action
+    return after_decision, merged
 
 
 def write_run_manifest(
