@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from src.backtest.fee_model import fee
+from src.observability.exit_spec import CANONICAL_EXIT_SPEC
 
 
 INITIAL_EQUITY = 10_000.0
@@ -16,11 +17,13 @@ SLIPPAGE_BPS = 5.0
 ATR_STOP_MULT = 1.5
 MIN_STOP_PCT = 0.005
 MAX_STOP_PCT = 0.03
-MAX_HOLD_BARS = 32
+# 出场三段参数收敛到唯一 spec（src/observability/exit_spec.py）。
+# 保留模块级别名，既有引用点（TP_LEVELS[0] / COST_BREAKEVEN_CHECK_BARS 等）全部不变。
+MAX_HOLD_BARS = CANONICAL_EXIT_SPEC.max_hold_bars
 COST_BREAKEVEN_CHECK_BARS = MAX_HOLD_BARS // 4
 COST_BREAKEVEN_BUFFER_MULT = 0.5
-TP_LEVELS = (1.2, 2.0, 3.0)
-TP_FRACTIONS = (0.40, 0.35, 0.25)
+TP_LEVELS = CANONICAL_EXIT_SPEC.tp_levels
+TP_FRACTIONS = CANONICAL_EXIT_SPEC.tp_fractions
 
 # PnL 口径版本(2026-10-31 评审 P0):
 #   v1 -> 事件里的 net_pnl 只扣出场成本(建仓成本在开仓时一次性记入 realized_pnl,
@@ -98,6 +101,11 @@ class PaperExitConfig:
     # 避免「建仓按 4% 算仓位、出场按 3% 止损」的口径分裂
     min_stop_pct: float = MIN_STOP_PCT
     max_stop_pct: float = MAX_STOP_PCT
+    # P0 Task 7:出场三段参数改为可按仓位注入，默认取 canonical spec
+    # （== 原模块常量，故默认行为逐字段不变）。
+    tp_levels: tuple[float, float, float] = CANONICAL_EXIT_SPEC.tp_levels
+    tp_fractions: tuple[float, float, float] = CANONICAL_EXIT_SPEC.tp_fractions
+    max_hold_bars: int = CANONICAL_EXIT_SPEC.max_hold_bars
 
 
 @dataclass
@@ -223,7 +231,7 @@ class PaperTradingLedger:
         )
         risk_distance = price * stop_pct
         stop_price = price - risk_distance if side == "LONG" else price + risk_distance
-        tp_prices = [price + risk_distance * level if side == "LONG" else price - risk_distance * level for level in TP_LEVELS]
+        tp_prices = [price + risk_distance * level if side == "LONG" else price - risk_distance * level for level in self.exit_config.tp_levels]
         notional = price * quantity
         position_id = f"{symbol}:{int(timestamp)}:{side}"
         position = PaperPosition(
@@ -236,7 +244,7 @@ class PaperTradingLedger:
             leverage=int(decision_payload.get("leverage") or 1),
             stop_price=stop_price,
             tp_prices=tp_prices,
-            tp_fractions=list(TP_FRACTIONS),
+            tp_fractions=list(self.exit_config.tp_fractions),
             tp_consumed=[],
             remaining_fraction=1.0,
             realized_pnl=-(fee(notional, FEE_BPS) + fee(notional, SLIPPAGE_BPS)),
@@ -315,7 +323,7 @@ class PaperTradingLedger:
 
         position.last_price = close
         _update_best_price(position, high, low)
-        _update_max_favorable_r_observed(position)
+        _update_max_favorable_r_observed(position, self.exit_config.tp_levels[0])
         _apply_early_breakeven(position, self._position_exit_config(position))
         if position.tp_consumed:
             _apply_post_tp_stop(position, self._position_exit_config(position))
@@ -360,17 +368,18 @@ class PaperTradingLedger:
                     break
             if position.remaining_fraction <= 0:
                 self.positions.pop(symbol, None)
-            elif _cost_breakeven_timeout(position, close):
+            elif _cost_breakeven_timeout(position, close, check_bars=max(1, self.exit_config.max_hold_bars // 4)):
                 net = self._close_fraction(position, timestamp, close, position.remaining_fraction, "COST_BREAKEVEN_TIMEOUT")
                 events.append(f"PAPER_CLOSE:{symbol}:COST_BREAKEVEN_TIMEOUT:{net:.4f}")
                 self.positions.pop(symbol, None)
-            elif position.hold_bars >= MAX_HOLD_BARS:
+            elif position.hold_bars >= self.exit_config.max_hold_bars:
                 net = self._close_fraction(position, timestamp, close, position.remaining_fraction, "MAX_HOLD_EXIT")
                 events.append(f"PAPER_CLOSE:{symbol}:MAX_HOLD_EXIT:{net:.4f}")
                 self.positions.pop(symbol, None)
         return events
 
     def _position_exit_config(self, position: PaperPosition) -> PaperExitConfig:
+        # 必须逐字段透传：漏一个字段就会让"按仓位覆盖"被静默还原成默认值。
         return PaperExitConfig(
             mode=position.exit_mode or self.exit_config.mode,
             trend_trigger_r=self.exit_config.trend_trigger_r,
@@ -378,6 +387,11 @@ class PaperTradingLedger:
             early_breakeven_enabled=self.exit_config.early_breakeven_enabled,
             early_breakeven_trigger_r=self.exit_config.early_breakeven_trigger_r,
             defensive_overlay=self.exit_config.defensive_overlay,
+            min_stop_pct=self.exit_config.min_stop_pct,
+            max_stop_pct=self.exit_config.max_stop_pct,
+            tp_levels=self.exit_config.tp_levels,
+            tp_fractions=self.exit_config.tp_fractions,
+            max_hold_bars=self.exit_config.max_hold_bars,
         )
 
     def _close_fraction(self, position: PaperPosition, timestamp: int, price: float, fraction: float, reason: str) -> float:
@@ -757,8 +771,17 @@ def _gross_pnl(side: str, entry_price: float, exit_price: float, quantity: float
     return (exit_price - entry_price) * quantity
 
 
-def _cost_breakeven_timeout(position: PaperPosition, close: float) -> bool:
-    if position.hold_bars < COST_BREAKEVEN_CHECK_BARS or position.tp_consumed:
+def _cost_breakeven_timeout(
+    position: PaperPosition, close: float, *, check_bars: int | None = None
+) -> bool:
+    """成本保本超时判定。
+
+    `check_bars` 允许调用方传入 `max_hold_bars // 4`（P0 Task 7）。默认 None 时
+    回落到模块常量，与改动前逐字节一致。`max(1, ...)` 不能省：`max_hold_bars`
+    若被配成 1-3，整除会得 0，timeout 会退化成"开仓即检查"。
+    """
+    limit = COST_BREAKEVEN_CHECK_BARS if check_bars is None else max(1, int(check_bars))
+    if position.hold_bars < limit or position.tp_consumed:
         return False
     fraction = max(0.0, position.remaining_fraction)
     quantity = position.quantity * fraction
@@ -781,8 +804,10 @@ def _update_best_price(position: PaperPosition, high: float, low: float) -> None
         position.best_price = max(position.best_price, high)
 
 
-def _update_max_favorable_r_observed(position: PaperPosition) -> None:
-    risk_distance = _initial_risk_distance(position)
+def _update_max_favorable_r_observed(
+    position: PaperPosition, tp0_level: float | None = None
+) -> None:
+    risk_distance = _initial_risk_distance(position, tp0_level)
     if risk_distance <= 0:
         return
     favorable_r = abs(position.best_price - position.entry_price) / risk_distance
@@ -863,7 +888,7 @@ def _apply_post_tp_stop(position: PaperPosition, config: PaperExitConfig) -> Non
     if config.mode != "trend_capture":
         position.stop_price = _breakeven_stop(position)
         return
-    risk_distance = _initial_risk_distance(position)
+    risk_distance = _initial_risk_distance(position, config.tp_levels[0])
     if risk_distance <= 0:
         position.stop_price = _breakeven_stop(position)
         return
@@ -884,10 +909,19 @@ def _breakeven_stop(position: PaperPosition) -> float:
     return position.entry_price * (1.001 if position.side == "LONG" else 0.999)
 
 
-def _initial_risk_distance(position: PaperPosition) -> float:
+def _initial_risk_distance(position: PaperPosition, tp0_level: float | None = None) -> float:
+    """从 tp_prices[0] 反解初始风险距离（tp_prices[0] = entry ± risk × tp_levels[0]）。
+
+    注意函数名是 `_initial_risk_distance`，仓库里**没有** `_r_multiple`。
+    `tp0_level` 由调用方传入仓位的实际 tp_levels[0]；默认 None 时用模块常量，
+    保证未注入配置时行为不变。
+    """
     if not position.tp_prices:
         return 0.0
-    return abs(position.tp_prices[0] - position.entry_price) / TP_LEVELS[0]
+    level = TP_LEVELS[0] if tp0_level is None else float(tp0_level)
+    if level <= 0:
+        return 0.0
+    return abs(position.tp_prices[0] - position.entry_price) / level
 
 
 def _margin_used(notional: float, leverage: int) -> float:

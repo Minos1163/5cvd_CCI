@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
+from src.observability.exit_spec import ExitSpec
+
 
 class ExitBar(Protocol):
     timestamp: int
@@ -41,6 +43,20 @@ class AtrTpExitConfig:
     time_reduce_bars: int = 12
     time_reduce_min_profit_r: float = 0.3
     time_reduce_fraction: float = 0.5
+
+    @classmethod
+    def from_spec(cls, spec: ExitSpec) -> "AtrTpExitConfig":
+        """用显式 `ExitSpec` 覆盖出场三段参数。
+
+        P0 刻意**不改本类的默认值**（仍是 legacy 的 1.0R/16 根）：改成 canonical
+        会让所有历史离线回测结论静默换口径，且 `tests/test_lifecycle_exit.py`
+        有 6 处用例的高点恰卡在 1.0R/2.0R/3.0R。收敛动作在 P1-E8。
+        """
+        return cls(
+            tp_levels=spec.tp_levels,
+            tp_fractions=spec.tp_fractions,
+            max_hold_bars=spec.max_hold_bars,
+        )
 
 
 @dataclass(frozen=True)
