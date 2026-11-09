@@ -1,0 +1,4729 @@
+{
+  "schema": "config-wiring-audit/v1",
+  "generated_on": "2026-11-09",
+  "root_label": "AI300-fwdlib",
+  "commit": "5e2a2e0989534adc083470329cbfc096e50eb5b8",
+  "git_dirty": true,
+  "class_name": "EntryChainConfig",
+  "fields_total": 201,
+  "live_read": 181,
+  "dynamic_read": 4,
+  "readable_total": 185,
+  "declared_only": 16,
+  "unknown_keys": 0,
+  "unknown_key_details": {},
+  "files_scanned": 203,
+  "config_files": [
+    "entry_chain.dry_run - 副本.json",
+    "entry_chain.dry_run_aggressive.json",
+    "entry_chain.dry_run_balanced.json",
+    "entry_chain.dry_run_conservative.json",
+    "entry_chain.dry_run_ema_hard.json",
+    "entry_chain.dry_run_ema_soft.json",
+    "entry_chain.dry_run_ema_soft_lifecycle_hardened.json",
+    "entry_chain.dry_run_fib_pa_v1.json",
+    "entry_chain.dry_run_fib_pa_v12.json",
+    "entry_chain.dry_run_highest_win.json",
+    "entry_chain.dry_run_no_rsi.json",
+    "entry_chain.dry_run_regime_shadow.json",
+    "entry_chain.dry_run_risk_first.json",
+    "entry_chain.dry_run_s1_shadow.json",
+    "entry_chain.dry_run_v4_side_split.json",
+    "entry_chain.dry_run_v4_side_symbol_bucket.json",
+    "entry_chain.dry_run_v5_long_context_discount.json",
+    "entry_chain.dry_run_v5_symbol_bucket_long_context.json",
+    "entry_chain.dry_run_v5_symbol_bucket_only.json"
+  ],
+  "excluded_paths": [
+    "src/signals/entry_chain_config.py"
+  ],
+  "scan_roots": [
+    "src",
+    "scripts"
+  ],
+  "read_rules": [
+    "Attribute: <holder>.<field> 且 holder 标识符以 cfg/config 结尾 -> LIVE_READ",
+    "Call: <holder>.get(\"<field>\") -> LIVE_READ",
+    "Subscript: <any>[\"<field>\"] -> LIVE_READ(不校验持有者)",
+    "Call: getattr(<holder>, \"<field>\", ...) -> DYNAMIC_READ",
+    "Call: vars(<holder>).get(\"<field>\") -> DYNAMIC_READ"
+  ],
+  "limitations": [
+    "动态读取只能标记为 DYNAMIC_READ:静态可见其存在,运行时是否命中取决于数据",
+    "持有者变量名必须以便以 cfg/config 结尾,否则漏检(如 self.entry_chain.x)",
+    "下标读取不校验持有者,与配置键同名的无关 dict 会被算作读取点(偏保守,宁漏报死键)",
+    "**cfg 展开、asdict(cfg) 后按键取值无法逐一归属,映射到全部字段 -> 不在此表",
+    "DECLARED_ONLY 表示'静态与动态两遍都不可见',不等于'确定未使用',需人工确认"
+  ],
+  "fields": [
+    {
+      "name": "base_direct_exposure_pct",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "blacklist_symbols",
+      "status": "LIVE_READ",
+      "read_count": 6,
+      "locations": [
+        "scripts/audit_entry_gate_controls.py:134",
+        "scripts/audit_entry_gate_controls.py:135",
+        "scripts/audit_entry_gate_controls.py:235",
+        "scripts/audit_q1_trend_launch_hits.py:84",
+        "scripts/run_live_dry_run.py:1141"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_entry_gate_controls.py:134",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/audit_entry_gate_controls.py:135",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/audit_entry_gate_controls.py:235",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/audit_q1_trend_launch_hits.py:84",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1141",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "daily_max_trades_base",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/run_live_dry_run.py:551",
+        "scripts/vps_dry_run_healthcheck.py:37",
+        "src/signals/entry_chain.py:269",
+        "src/signals/entry_chain_gates.py:76"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:551",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/vps_dry_run_healthcheck.py:37",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:269",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain_gates.py:76",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "direct_liquidity_ratio",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:156"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:156",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "direct_risk_pct",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:545",
+        "src/signals/entry_chain.py:723"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:545",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:723",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "direct_threshold",
+      "status": "LIVE_READ",
+      "read_count": 6,
+      "locations": [
+        "scripts/audit_entry_gate_controls.py:262",
+        "scripts/replay_atom_chain.py:88",
+        "scripts/replay_symbol_chain.py:98",
+        "scripts/vps_dry_run_healthcheck.py:35",
+        "src/signals/entry_chain.py:175"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_entry_gate_controls.py:262",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_atom_chain.py:88",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_symbol_chain.py:98",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/vps_dry_run_healthcheck.py:35",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:175",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "disable_probe",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:352"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:352",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_green_channel_base_exposure_pct",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:608"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:608",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_green_channel_enabled",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:603"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:603",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_green_channel_exit_mode",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:609"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:609",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_green_channel_min_cvd_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:607"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:607",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_green_channel_min_pa_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:606"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:606",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_green_channel_min_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:605"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:605",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_green_channel_notional_mult",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:604"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:604",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_trend_launch_allow_degraded_data",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:591",
+        "scripts/run_live_dry_run.py:1159"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:591",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1159",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_trend_launch_base_exposure_pct",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:589",
+        "scripts/run_live_dry_run.py:1024"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:589",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1024",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_trend_launch_enabled",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:583",
+        "scripts/run_live_dry_run.py:1155"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:583",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1155",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_trend_launch_exit_mode",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:590",
+        "scripts/run_live_dry_run.py:1054"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:590",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1054",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_trend_launch_extreme_ratio_max",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/audit_q1_trend_launch_hits.py:85",
+        "scripts/run_live_dry_run.py:1184"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_q1_trend_launch_hits.py:85",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1184",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_trend_launch_extreme_ratio_min",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/audit_q1_trend_launch_hits.py:85",
+        "scripts/run_live_dry_run.py:1182"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_q1_trend_launch_hits.py:85",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1182",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_trend_launch_min_cvd_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/audit_q1_trend_launch_hits.py:89",
+        "scripts/run_live_dry_run.py:587",
+        "scripts/run_live_dry_run.py:1198"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_q1_trend_launch_hits.py:89",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:587",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1198",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_trend_launch_min_fib_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/audit_q1_trend_launch_hits.py:88",
+        "scripts/run_live_dry_run.py:586",
+        "scripts/run_live_dry_run.py:1197"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_q1_trend_launch_hits.py:88",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:586",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1197",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_trend_launch_min_pa_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/audit_q1_trend_launch_hits.py:87",
+        "scripts/run_live_dry_run.py:585",
+        "scripts/run_live_dry_run.py:1196"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_q1_trend_launch_hits.py:87",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:585",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1196",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_trend_launch_min_rr_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/audit_q1_trend_launch_hits.py:90",
+        "scripts/run_live_dry_run.py:588",
+        "scripts/run_live_dry_run.py:1199"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_q1_trend_launch_hits.py:90",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:588",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1199",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_q1_trend_launch_min_score",
+      "status": "LIVE_READ",
+      "read_count": 5,
+      "locations": [
+        "scripts/audit_q1_trend_launch_hits.py:86",
+        "scripts/run_live_dry_run.py:584",
+        "scripts/run_live_dry_run.py:1195",
+        "scripts/verify_q1_trend_launch_fix.py:149",
+        "scripts/verify_q1_trend_launch_fix.py:171"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_q1_trend_launch_hits.py:86",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:584",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1195",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/verify_q1_trend_launch_fix.py:149",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/verify_q1_trend_launch_fix.py:171",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_rank_end",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/run_live_dry_run.py:2473",
+        "scripts/run_live_dry_run.py:2478",
+        "scripts/run_live_dry_run.py:2488"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2473",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2478",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2488",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_rank_start",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/run_live_dry_run.py:2473",
+        "scripts/run_live_dry_run.py:2477",
+        "scripts/run_live_dry_run.py:2487"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2473",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2477",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2487",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_symbol_source",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2471"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2471",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_symbols",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/run_live_dry_run.py:2469",
+        "scripts/run_live_dry_run.py:2484",
+        "scripts/run_live_dry_run.py:2492"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2469",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2484",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2492",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "dry_run_warmup_15m_bars",
+      "status": "LIVE_READ",
+      "read_count": 6,
+      "locations": [
+        "scripts/run_live_dry_run.py:142",
+        "scripts/run_live_dry_run.py:198",
+        "scripts/run_live_dry_run.py:475",
+        "scripts/run_live_dry_run.py:2764",
+        "scripts/run_live_dry_run.py:2787"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:142",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:198",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:475",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2764",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2787",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2853",
+          "via": "getattr"
+        }
+      ],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "ema200_buffer_pct",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "ema200_gate_mode",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/run_live_dry_run.py:2640",
+        "scripts/run_live_dry_run.py:2871",
+        "scripts/run_offline_backtest.py:310",
+        "src/signals/entry_chain.py:372"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2640",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2871",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_offline_backtest.py:310",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:372",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "ema200_min_bars_stable",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "ema50_min_for_direct",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:391"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:391",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "ema50_min_for_probe",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:395"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:395",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "enable_long_context_discounts",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "src/signals/entry_chain.py:141",
+        "src/signals/entry_chain.py:328"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:141",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:328",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "entry_gates",
+      "status": "DYNAMIC_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:1218"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1218",
+          "via": "getattr"
+        }
+      ],
+      "dynamic_evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1218",
+          "via": "getattr"
+        }
+      ],
+      "via": [
+        "getattr"
+      ]
+    },
+    {
+      "name": "experiment_daily_loss_limit",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:611",
+        "scripts/run_live_dry_run.py:1814"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:611",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1814",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "experiment_war_fund_loss_limit",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/run_live_dry_run.py:610",
+        "scripts/run_live_dry_run.py:1426",
+        "scripts/run_live_dry_run.py:1813"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:610",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1426",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1813",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "explicit_watchlist",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "fib_extension_exhaustion_mult",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "fib_level_tolerance_atr_mult",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "fib_min_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:445"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:445",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "fib_swing_fractal_k",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "fib_swing_lookback_15m",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "fib_swing_lookback_1h",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "fib_swing_min_atr_mult",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "fib_swing_min_spacing_bars",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "five_factor_shadow_enabled",
+      "status": "DYNAMIC_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2832"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2832",
+          "via": "getattr"
+        }
+      ],
+      "dynamic_evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2832",
+          "via": "getattr"
+        }
+      ],
+      "via": [
+        "getattr"
+      ]
+    },
+    {
+      "name": "high_vol_atr_pct",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain_scoring.py:87"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain_scoring.py:87",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "leverage_5x_cci_min",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:649"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:649",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "leverage_5x_fib_min",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:647"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:647",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "leverage_5x_pa_min",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:648"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:648",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "leverage_5x_rr_min",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:650"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:650",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "long_chase_trigger_mult",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:338"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:338",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "long_chase_watch_enabled",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:129"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:129",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "long_cvd_weak_mult",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:341"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:341",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "long_cvd_weak_threshold",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/run_live_dry_run.py:2902",
+        "scripts/run_offline_backtest.py:338",
+        "src/signals/entry_chain.py:340"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2902",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_offline_backtest.py:338",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:340",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "long_min_cvd_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:414"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:414",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "long_min_direction_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:411"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:411",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "long_min_quality_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:412"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:412",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "long_min_trigger_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:413"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:413",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "long_overextension_quality_mult",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "src/signals/entry_chain.py:331",
+        "src/signals/entry_chain.py:332"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:331",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:332",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "long_overextension_watch_enabled",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:128"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:128",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "long_threshold_offset",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/replay_atom_chain.py:90",
+        "scripts/replay_symbol_chain.py:100",
+        "src/signals/entry_chain.py:302",
+        "src/signals/entry_chain.py:314"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/replay_atom_chain.py:90",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_symbol_chain.py:100",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:302",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:314",
+          "via": "subscript"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute",
+        "subscript"
+      ]
+    },
+    {
+      "name": "long_upper_wick_trigger_mult",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:335"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:335",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "low_vol_atr_pct",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain_scoring.py:90"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain_scoring.py:90",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "macro_daily_drop_block_pct",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:145"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:145",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "macro_weekly_drop_block_pct",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/audit_entry_gate_controls.py:150",
+        "src/signals/entry_chain.py:233",
+        "src/signals/entry_chain_gates.py:44"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_entry_gate_controls.py:150",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:233",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain_gates.py:44",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "margin_buffer_pct",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/audit_entry_gate_controls.py:240",
+        "src/signals/entry_chain.py:253",
+        "src/signals/entry_chain.py:731",
+        "src/signals/entry_chain_gates.py:64"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_entry_gate_controls.py:240",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:253",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:731",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain_gates.py:64",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "max_active_symbols",
+      "status": "LIVE_READ",
+      "read_count": 5,
+      "locations": [
+        "scripts/audit_entry_gate_controls.py:166",
+        "scripts/audit_entry_gate_controls.py:237",
+        "scripts/run_live_dry_run.py:547",
+        "src/signals/entry_chain.py:241",
+        "src/signals/entry_chain_gates.py:52"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_entry_gate_controls.py:166",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/audit_entry_gate_controls.py:237",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:547",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:241",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain_gates.py:52",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "max_high_beta_exposure_pct",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "src/signals/entry_chain.py:617",
+        "src/signals/entry_chain_gates.py:97"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:617",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain_gates.py:97",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "max_large_cap_exposure_pct",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "src/signals/entry_chain.py:613",
+        "src/signals/entry_chain_gates.py:93"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:613",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain_gates.py:93",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "max_mainstream_exposure_pct",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "src/signals/entry_chain.py:615",
+        "src/signals/entry_chain.py:618",
+        "src/signals/entry_chain_gates.py:95",
+        "src/signals/entry_chain_gates.py:98"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:615",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:618",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain_gates.py:95",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain_gates.py:98",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "max_same_direction_exposure_pct",
+      "status": "LIVE_READ",
+      "read_count": 6,
+      "locations": [
+        "scripts/audit_entry_gate_controls.py:191",
+        "scripts/audit_entry_gate_controls.py:239",
+        "scripts/run_live_dry_run.py:549",
+        "scripts/run_live_dry_run.py:953",
+        "src/signals/entry_chain.py:251"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_entry_gate_controls.py:191",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/audit_entry_gate_controls.py:239",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:549",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:953",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:251",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "max_single_trade_risk_pct",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "src/signals/entry_chain.py:728",
+        "src/signals/entry_chain.py:737"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:728",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:737",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "max_stop_pct",
+      "status": "LIVE_READ",
+      "read_count": 10,
+      "locations": [
+        "scripts/run_live_dry_run.py:665",
+        "scripts/run_live_dry_run.py:672",
+        "scripts/run_live_dry_run.py:2897",
+        "scripts/run_offline_backtest.py:333",
+        "src/backtest/engine.py:648"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:665",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:672",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2897",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_offline_backtest.py:333",
+          "via": "attribute"
+        },
+        {
+          "location": "src/backtest/engine.py:648",
+          "via": "dict_get"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute",
+        "dict_get",
+        "subscript"
+      ]
+    },
+    {
+      "name": "max_symbol_trades_per_day",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/audit_entry_gate_controls.py:176",
+        "scripts/run_live_dry_run.py:550",
+        "src/signals/entry_chain.py:245",
+        "src/signals/entry_chain_gates.py:56"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_entry_gate_controls.py:176",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:550",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:245",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain_gates.py:56",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "max_total_exposure_pct",
+      "status": "LIVE_READ",
+      "read_count": 6,
+      "locations": [
+        "scripts/audit_entry_gate_controls.py:186",
+        "scripts/audit_entry_gate_controls.py:238",
+        "scripts/run_live_dry_run.py:548",
+        "scripts/run_live_dry_run.py:952",
+        "src/signals/entry_chain.py:249"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_entry_gate_controls.py:186",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/audit_entry_gate_controls.py:238",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:548",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:952",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:249",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "min_cvd_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:406"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:406",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "min_cvd_probe_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:385"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:385",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "min_daily_trades",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/run_live_dry_run.py:552",
+        "src/signals/entry_chain.py:268",
+        "src/signals/entry_chain_gates.py:75"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:552",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:268",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain_gates.py:75",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "min_direction_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:403"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:403",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "min_direction_probe_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:382"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:382",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "min_quality_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:404"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:404",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "min_quality_probe_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:383"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:383",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "min_stop_pct",
+      "status": "LIVE_READ",
+      "read_count": 10,
+      "locations": [
+        "scripts/run_live_dry_run.py:664",
+        "scripts/run_live_dry_run.py:671",
+        "scripts/run_live_dry_run.py:2897",
+        "scripts/run_offline_backtest.py:333",
+        "src/backtest/engine.py:647"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:664",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:671",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2897",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_offline_backtest.py:333",
+          "via": "attribute"
+        },
+        {
+          "location": "src/backtest/engine.py:647",
+          "via": "dict_get"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute",
+        "dict_get",
+        "subscript"
+      ]
+    },
+    {
+      "name": "min_trigger_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:405"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:405",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "min_trigger_probe_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:384"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:384",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "mirror_ab_allowed_reasons",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:595",
+        "scripts/run_live_dry_run.py:1986"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:595",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1986",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "mirror_ab_enabled",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:592",
+        "scripts/run_live_dry_run.py:1976"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:592",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1976",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "mirror_ab_include_q1_watch",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:596",
+        "scripts/run_live_dry_run.py:1989"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:596",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1989",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "mirror_ab_min_score",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:593",
+        "scripts/run_live_dry_run.py:1978"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:593",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1978",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "mirror_ab_mode",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:271"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:271",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "mirror_ab_notional",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:594",
+        "scripts/run_live_dry_run.py:2009"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:594",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2009",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "mirror_ab_payoff_early_breakeven_trigger_r",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:691"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:691",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "mirror_ab_payoff_pilot_enabled",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:688",
+        "scripts/run_live_dry_run.py:690"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:688",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:690",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "mirror_ab_payoff_trend_trigger_r",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:688"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:688",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "observation_only_symbols",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:1145",
+        "scripts/run_live_dry_run.py:2167"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1145",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2167",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "pa_min_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:444"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:444",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "paper_ab_auto_report_enabled",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/run_live_dry_run.py:597",
+        "scripts/run_live_dry_run.py:797",
+        "scripts/run_live_dry_run.py:818"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:597",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:797",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:818",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "paper_ab_auto_switch_enabled",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/run_live_dry_run.py:599",
+        "scripts/run_live_dry_run.py:736",
+        "scripts/run_live_dry_run.py:819",
+        "scripts/run_live_dry_run.py:863"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:599",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:736",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:819",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:863",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "paper_ab_auto_switch_min_closed_trades",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/run_live_dry_run.py:601",
+        "scripts/run_live_dry_run.py:821",
+        "scripts/run_live_dry_run.py:866"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:601",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:821",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:866",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "paper_ab_auto_switch_min_reports",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/run_live_dry_run.py:600",
+        "scripts/run_live_dry_run.py:820",
+        "scripts/run_live_dry_run.py:868",
+        "scripts/run_live_dry_run.py:880"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:600",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:820",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:868",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:880",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "paper_ab_auto_switch_payoff_mult",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/run_live_dry_run.py:602",
+        "scripts/run_live_dry_run.py:822",
+        "scripts/run_live_dry_run.py:881",
+        "scripts/run_live_dry_run.py:898"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:602",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:822",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:881",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:898",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "paper_ab_pure_ladder_enabled",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/analysis/verify_pure_ladder_arm.py:70"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/analysis/verify_pure_ladder_arm.py:70",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [
+        {
+          "location": "scripts/analysis/verify_pure_ladder_arm.py:69",
+          "via": "getattr"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:695",
+          "via": "getattr"
+        }
+      ],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "paper_ab_report_closed_trade_interval",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:598",
+        "scripts/run_live_dry_run.py:801"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:598",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:801",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "paper_exit_mode",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/run_live_dry_run.py:559",
+        "scripts/run_live_dry_run.py:668",
+        "scripts/run_live_dry_run.py:738",
+        "scripts/run_live_dry_run.py:2441"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:559",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:668",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:738",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2441",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "paper_exit_trailing_r_mult",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/run_live_dry_run.py:561",
+        "scripts/run_live_dry_run.py:670",
+        "scripts/run_live_dry_run.py:689"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:561",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:670",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:689",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "paper_exit_trend_trigger_r",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/run_live_dry_run.py:560",
+        "scripts/run_live_dry_run.py:669",
+        "scripts/run_live_dry_run.py:688"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:560",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:669",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:688",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "portfolio_daily_loss_circuit_enabled",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2307"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2307",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "portfolio_daily_loss_limit",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2313"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2313",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "portfolio_stop_circuit_count",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2290"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2290",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "portfolio_stop_circuit_enabled",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2288"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2288",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "portfolio_stop_circuit_hours",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2291"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2291",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "post_initial_stop_cooldown_enabled",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2246"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2246",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "post_initial_stop_cooldown_hours",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2248"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2248",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "probe_conditions",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/run_live_dry_run.py:1535",
+        "src/signals/entry_chain.py:136",
+        "src/signals/entry_chain.py:309",
+        "src/signals/entry_chain.py:465"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1535",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:136",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:309",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:465",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "probe_fraction",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "probe_liquidity_ratio",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:154"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:154",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "probe_risk_pct",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:546",
+        "src/signals/entry_chain.py:723"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:546",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:723",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "probe_threshold",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/audit_entry_gate_controls.py:263",
+        "scripts/vps_dry_run_healthcheck.py:36",
+        "src/signals/entry_chain.py:288"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_entry_gate_controls.py:263",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/vps_dry_run_healthcheck.py:36",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:288",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "quadrant_cci_min",
+      "status": "LIVE_READ",
+      "read_count": 5,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:62",
+        "scripts/replay_atom_chain.py:128",
+        "scripts/replay_symbol_chain.py:145",
+        "scripts/run_live_dry_run.py:569",
+        "scripts/run_live_dry_run.py:1624"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:62",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_atom_chain.py:128",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_symbol_chain.py:145",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:569",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1624",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "quadrant_flow_cvd_min",
+      "status": "LIVE_READ",
+      "read_count": 5,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:61",
+        "scripts/replay_atom_chain.py:127",
+        "scripts/replay_symbol_chain.py:144",
+        "scripts/run_live_dry_run.py:568",
+        "scripts/run_live_dry_run.py:1623"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:61",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_atom_chain.py:127",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_symbol_chain.py:144",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:568",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1623",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "quadrant_pending_state_enabled",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/run_live_dry_run.py:177",
+        "scripts/run_live_dry_run.py:477",
+        "scripts/run_live_dry_run.py:582"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:177",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:477",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:582",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "quadrant_price_action_min",
+      "status": "LIVE_READ",
+      "read_count": 5,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:60",
+        "scripts/replay_atom_chain.py:126",
+        "scripts/replay_symbol_chain.py:143",
+        "scripts/run_live_dry_run.py:567",
+        "scripts/run_live_dry_run.py:1620"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:60",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_atom_chain.py:126",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_symbol_chain.py:143",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:567",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1620",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "quadrant_trend_ema_min",
+      "status": "LIVE_READ",
+      "read_count": 5,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:59",
+        "scripts/replay_atom_chain.py:125",
+        "scripts/replay_symbol_chain.py:142",
+        "scripts/run_live_dry_run.py:566",
+        "scripts/run_live_dry_run.py:1619"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:59",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_atom_chain.py:125",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_symbol_chain.py:142",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:566",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1619",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "regime_overlay",
+      "status": "LIVE_READ",
+      "read_count": 5,
+      "locations": [
+        "scripts/run_live_dry_run.py:243",
+        "scripts/run_live_dry_run.py:368",
+        "scripts/run_live_dry_run.py:2677"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:243",
+          "via": "subscript"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:368",
+          "via": "dict_get"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2677",
+          "via": "subscript"
+        }
+      ],
+      "dynamic_evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:370",
+          "via": "getattr"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2670",
+          "via": "getattr"
+        }
+      ],
+      "via": [
+        "dict_get",
+        "subscript"
+      ]
+    },
+    {
+      "name": "risk_first_sizing_enabled",
+      "status": "DYNAMIC_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:724"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:724",
+          "via": "getattr"
+        }
+      ],
+      "dynamic_evidence": [
+        {
+          "location": "src/signals/entry_chain.py:724",
+          "via": "getattr"
+        }
+      ],
+      "via": [
+        "getattr"
+      ]
+    },
+    {
+      "name": "rolling_symbol_cooldown_enabled",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2267"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2267",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "rolling_symbol_cooldown_hours",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2270"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2270",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "rolling_symbol_cooldown_stop_threshold",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2277"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2277",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "rolling_symbol_cooldown_window_hours",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2269"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2269",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "rr_min_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:446"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:446",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "score_core",
+      "status": "DYNAMIC_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2687"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2687",
+          "via": "getattr"
+        }
+      ],
+      "dynamic_evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2687",
+          "via": "getattr"
+        }
+      ],
+      "via": [
+        "getattr"
+      ]
+    },
+    {
+      "name": "scout_micro_allow_degraded_data",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:615",
+        "scripts/run_live_dry_run.py:1349"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:615",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1349",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_exit_mode",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:562",
+        "scripts/run_live_dry_run.py:661"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:562",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:661",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_exit_trailing_r_mult",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:564",
+        "scripts/run_live_dry_run.py:663"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:564",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:663",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_exit_trend_trigger_r",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:563",
+        "scripts/run_live_dry_run.py:662"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:563",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:662",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_fib_continuation_min_cvd_score",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:125",
+        "scripts/run_live_dry_run.py:1523"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:125",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1523",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_fib_continuation_min_ema_score",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:124",
+        "scripts/run_live_dry_run.py:1522"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:124",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1522",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_fib_continuation_min_pa_score",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:126",
+        "scripts/run_live_dry_run.py:1524"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:126",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1524",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_fib_continuation_min_score",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:123",
+        "scripts/run_live_dry_run.py:1521"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:123",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1521",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_high_score_long_offset_min_cvd_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/diagnose_high_score_long_offset_probe.py:69",
+        "scripts/diagnose_scout_mission_reachability.py:117",
+        "scripts/run_live_dry_run.py:1510"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_high_score_long_offset_probe.py:69",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:117",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1510",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_high_score_long_offset_min_fib_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/diagnose_high_score_long_offset_probe.py:68",
+        "scripts/diagnose_scout_mission_reachability.py:116",
+        "scripts/run_live_dry_run.py:1509"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_high_score_long_offset_probe.py:68",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:116",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1509",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_high_score_long_offset_min_pa_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/diagnose_high_score_long_offset_probe.py:67",
+        "scripts/diagnose_scout_mission_reachability.py:115",
+        "scripts/run_live_dry_run.py:1508"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_high_score_long_offset_probe.py:67",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:115",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1508",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_high_score_long_offset_min_rr_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/diagnose_high_score_long_offset_probe.py:70",
+        "scripts/diagnose_scout_mission_reachability.py:118",
+        "scripts/run_live_dry_run.py:1511"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_high_score_long_offset_probe.py:70",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:118",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1511",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_high_score_long_offset_min_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/diagnose_high_score_long_offset_probe.py:66",
+        "scripts/diagnose_scout_mission_reachability.py:114",
+        "scripts/run_live_dry_run.py:1507"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_high_score_long_offset_probe.py:66",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:114",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1507",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_high_score_long_offset_quadrants",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/diagnose_high_score_long_offset_probe.py:94",
+        "scripts/diagnose_scout_mission_reachability.py:111",
+        "scripts/run_live_dry_run.py:1497"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_high_score_long_offset_probe.py:94",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:111",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1497",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_initial_stop_cooldown_hours",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:1563"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1563",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_leverage",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:1914",
+        "scripts/run_live_dry_run.py:1936"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1914",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1936",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_min_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:1360"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1360",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_mission_stop_circuit_count",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:613",
+        "scripts/run_live_dry_run.py:1585"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:613",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1585",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_mission_stop_circuit_enabled",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/run_live_dry_run.py:612",
+        "scripts/run_live_dry_run.py:1414",
+        "scripts/run_live_dry_run.py:1583"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:612",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1414",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1583",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_mission_stop_circuit_hours",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:614",
+        "scripts/run_live_dry_run.py:1586"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:614",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1586",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_non_rr_min_score",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "scout_micro_notional",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:1897"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1897",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q1_rr_gap_enabled",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:107",
+        "scripts/run_live_dry_run.py:571",
+        "scripts/run_live_dry_run.py:1650"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:107",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:571",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1650",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q1_rr_gap_min_cvd_score",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:573",
+        "scripts/run_live_dry_run.py:1658"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:573",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1658",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q1_rr_gap_min_score",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:572",
+        "scripts/run_live_dry_run.py:1657"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:572",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1657",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q2_pending_confirm_bars",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:580",
+        "scripts/run_live_dry_run.py:1714"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:580",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1714",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q2_pending_confirm_cci_score",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:581",
+        "scripts/run_live_dry_run.py:1777"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:581",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1777",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q2_pending_enabled",
+      "status": "LIVE_READ",
+      "read_count": 5,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:99",
+        "scripts/run_live_dry_run.py:577",
+        "scripts/run_live_dry_run.py:1672",
+        "scripts/run_live_dry_run.py:1703",
+        "scripts/run_live_dry_run.py:1763"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:99",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:577",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1672",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1703",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1763",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q2_pending_min_pa_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/counterfactual_q2_pending.py:50",
+        "scripts/run_live_dry_run.py:579",
+        "scripts/run_live_dry_run.py:1712"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/counterfactual_q2_pending.py:50",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:579",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1712",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q2_pending_min_score",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/counterfactual_q2_pending.py:49",
+        "scripts/run_live_dry_run.py:249",
+        "scripts/run_live_dry_run.py:578",
+        "scripts/run_live_dry_run.py:1710"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/counterfactual_q2_pending.py:49",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:249",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:578",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1710",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q3_to_q1_confirm_bars",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:576",
+        "scripts/run_live_dry_run.py:1691"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:576",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1691",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q3_to_q1_confirm_pa_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:1746"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1746",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q3_to_q1_enabled",
+      "status": "LIVE_READ",
+      "read_count": 5,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:103",
+        "scripts/run_live_dry_run.py:574",
+        "scripts/run_live_dry_run.py:1664",
+        "scripts/run_live_dry_run.py:1680",
+        "scripts/run_live_dry_run.py:1732"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:103",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:574",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1664",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1680",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1732",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q3_to_q1_min_cvd_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:1689"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1689",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_q3_to_q1_min_score",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:575",
+        "scripts/run_live_dry_run.py:1687"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:575",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1687",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_reversal_pivot_enabled",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:89",
+        "scripts/run_live_dry_run.py:616",
+        "scripts/run_live_dry_run.py:1465"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:89",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:616",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1465",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_reversal_pivot_max_cci_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:96",
+        "scripts/run_live_dry_run.py:619",
+        "scripts/run_live_dry_run.py:1478"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:96",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:619",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1478",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_reversal_pivot_max_cvd_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:95",
+        "scripts/run_live_dry_run.py:618",
+        "scripts/run_live_dry_run.py:1477"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:95",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:618",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1477",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_reversal_pivot_min_score",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:91",
+        "scripts/run_live_dry_run.py:617",
+        "scripts/run_live_dry_run.py:1470"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:91",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:617",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1470",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_reversal_pivot_notional",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:620",
+        "scripts/run_live_dry_run.py:1897"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:620",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1897",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_rr_gap_block_symbols",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:1449"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1449",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_same_side_cooldown_hours",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:1568"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1568",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_scout_only_min_fib_score",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:132",
+        "scripts/diagnose_scout_mission_reachability.py:139",
+        "scripts/run_live_dry_run.py:1537",
+        "scripts/run_live_dry_run.py:1548"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:132",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:139",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1537",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1548",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_scout_only_min_pa_score",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:133",
+        "scripts/diagnose_scout_mission_reachability.py:140",
+        "scripts/run_live_dry_run.py:1538",
+        "scripts/run_live_dry_run.py:1549"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:133",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:140",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1538",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1549",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_scout_only_min_rr_score",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:134",
+        "scripts/diagnose_scout_mission_reachability.py:141",
+        "scripts/run_live_dry_run.py:1539",
+        "scripts/run_live_dry_run.py:1550"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:134",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:141",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1539",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1550",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_scout_only_min_score",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:138",
+        "scripts/run_live_dry_run.py:1547"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:138",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1547",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_scout_only_symbols",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:137",
+        "scripts/run_live_dry_run.py:1544"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:137",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1544",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_symbols",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/run_live_dry_run.py:1347",
+        "scripts/run_live_dry_run.py:2115"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:1347",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2115",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_targeted_long_min_pa_score",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "scout_micro_targeted_long_min_rr_score",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "scout_micro_targeted_long_min_score",
+      "status": "DECLARED_ONLY",
+      "read_count": 0,
+      "locations": [],
+      "evidence": [],
+      "dynamic_evidence": [],
+      "via": []
+    },
+    {
+      "name": "scout_micro_targeted_long_symbols",
+      "status": "LIVE_READ",
+      "read_count": 3,
+      "locations": [
+        "scripts/diagnose_high_score_long_offset_probe.py:65",
+        "scripts/diagnose_scout_mission_reachability.py:110",
+        "scripts/run_live_dry_run.py:1495"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_high_score_long_offset_probe.py:65",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:110",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1495",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "scout_micro_watch_only_promotion_min_score",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "scripts/diagnose_scout_mission_reachability.py:131",
+        "scripts/run_live_dry_run.py:1533"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:131",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1533",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "short_min_cvd_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:424"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:424",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "short_min_direction_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:421"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:421",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "short_min_quality_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:422"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:422",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "short_min_trigger_direct_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "src/signals/entry_chain.py:423"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:423",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "short_threshold_offset",
+      "status": "LIVE_READ",
+      "read_count": 2,
+      "locations": [
+        "src/signals/entry_chain.py:304",
+        "src/signals/entry_chain.py:316"
+      ],
+      "evidence": [
+        {
+          "location": "src/signals/entry_chain.py:304",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:316",
+          "via": "subscript"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute",
+        "subscript"
+      ]
+    },
+    {
+      "name": "use_ema_architecture",
+      "status": "LIVE_READ",
+      "read_count": 10,
+      "locations": [
+        "scripts/run_live_dry_run.py:155",
+        "scripts/run_live_dry_run.py:2639",
+        "scripts/run_live_dry_run.py:2787",
+        "scripts/run_live_dry_run.py:2870",
+        "scripts/run_offline_backtest.py:309"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:155",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2639",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2787",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2870",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_offline_backtest.py:309",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "use_fib_pa_architecture",
+      "status": "LIVE_READ",
+      "read_count": 14,
+      "locations": [
+        "scripts/run_live_dry_run.py:155",
+        "scripts/run_live_dry_run.py:2610",
+        "scripts/run_live_dry_run.py:2641",
+        "scripts/run_live_dry_run.py:2872",
+        "scripts/run_live_dry_run.py:2875"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:155",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2610",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2641",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2872",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:2875",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "watch_only_symbols",
+      "status": "LIVE_READ",
+      "read_count": 7,
+      "locations": [
+        "scripts/audit_entry_gate_controls.py:139",
+        "scripts/audit_entry_gate_controls.py:140",
+        "scripts/audit_entry_gate_controls.py:236",
+        "scripts/diagnose_scout_mission_reachability.py:129",
+        "scripts/run_live_dry_run.py:1143"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_entry_gate_controls.py:139",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/audit_entry_gate_controls.py:140",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/audit_entry_gate_controls.py:236",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/diagnose_scout_mission_reachability.py:129",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/run_live_dry_run.py:1143",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "watch_threshold",
+      "status": "LIVE_READ",
+      "read_count": 4,
+      "locations": [
+        "scripts/audit_entry_gate_controls.py:264",
+        "scripts/replay_atom_chain.py:89",
+        "scripts/replay_symbol_chain.py:99",
+        "src/signals/entry_chain.py:289"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/audit_entry_gate_controls.py:264",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_atom_chain.py:89",
+          "via": "attribute"
+        },
+        {
+          "location": "scripts/replay_symbol_chain.py:99",
+          "via": "attribute"
+        },
+        {
+          "location": "src/signals/entry_chain.py:289",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "weak_edge_direct_max_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2324"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2324",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "weak_edge_direct_min_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2324"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2324",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "weak_edge_probe_max_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2338"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2338",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    },
+    {
+      "name": "weak_edge_probe_min_score",
+      "status": "LIVE_READ",
+      "read_count": 1,
+      "locations": [
+        "scripts/run_live_dry_run.py:2338"
+      ],
+      "evidence": [
+        {
+          "location": "scripts/run_live_dry_run.py:2338",
+          "via": "attribute"
+        }
+      ],
+      "dynamic_evidence": [],
+      "via": [
+        "attribute"
+      ]
+    }
+  ]
+}
