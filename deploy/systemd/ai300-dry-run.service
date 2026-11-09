@@ -1,15 +1,28 @@
+# AI300 dry-run 生产单元（纸面交易，只写日志与独立账本，不提交任何交易所订单）。
+#
+# 本文件必须与 VPS 实跑口径逐字一致；口径变更时同步改这里和 docs/audit 基线。
+# 唯一事实基线是启动日志里的 process_start 块（config / target_tier / post_close_delay）。
+#
+# 口径事实（2026-11-09 核对）：
+#   工作目录  /root/AIBOT
+#   解释器    /root/anaconda3/bin/python（VPS 无 venv）
+#   config    configs/entry_chain.dry_run_regime_shadow.json
+#   tier      未传 --target-tier，走 CLI 默认 conservative
+#   延迟      --post-close-delay-seconds 10
+
 [Unit]
-Description=AI300 dry-run strategy observer
+Description=AI300 dry-run (Binance USDT perp 15m, paper only)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/root/AIBOT
-Environment=PYTHONUNBUFFERED=1
-ExecStart=/root/AIBOT/.venv/bin/python scripts/run_live_dry_run.py --config configs/entry_chain.dry_run_highest_win.json --target-tier aggressive --market-data-source public-binance --log-root /root/AIBOT/logs --align-to-kline-close --post-close-delay-seconds 5
+ExecStart=/root/anaconda3/bin/python scripts/run_live_dry_run.py --config configs/entry_chain.dry_run_regime_shadow.json --market-data-source public-binance --log-root /root/AIBOT/logs --align-to-kline-close --post-close-delay-seconds 10
 Restart=always
-RestartSec=10
+RestartSec=15
+# 说明：解释器是 VPS 上的 conda python，不是仓库 README 假设的 .venv。
+# 若换机器且建了 venv，改这一行为 /root/AIBOT/.venv/bin/python 即可。
 
 [Install]
 WantedBy=multi-user.target

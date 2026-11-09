@@ -83,7 +83,11 @@ def discover(ledger: str, logs_root: Path, since_ts: int | None, until_ts: int |
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="从 paper 账本事件流生成可复核的度量报告")
-    ap.add_argument("--logs-root", default=str(ROOT / "logs"))
+    ap.add_argument(
+        "--logs-root",
+        default="logs",
+        help="日志根目录，其下应为 <YYYY-MM>/<YYYY-MM-DD>/（默认 logs，相对当前目录）",
+    )
     ap.add_argument("--ledger", default="main", choices=sorted(LEDGER_PATHS))
     ap.add_argument("--since", default=None, help="窗口起点（含），按建仓时间")
     ap.add_argument("--until", default=None, help="窗口终点（含），按建仓时间")
@@ -94,7 +98,10 @@ def main() -> int:
 
     since_ts = parse_ts(args.since)
     until_ts = parse_ts(args.until)
-    logs_root = Path(args.logs_root)
+    logs_root = Path(args.logs_root).expanduser()
+    if not logs_root.is_absolute():
+        # 相对路径按当前工作目录解释；在仓库根运行时与旧默认 ROOT/logs 完全等价
+        logs_root = (Path.cwd() / logs_root).resolve()
 
     files = discover(args.ledger, logs_root, since_ts, until_ts)
     if not files:

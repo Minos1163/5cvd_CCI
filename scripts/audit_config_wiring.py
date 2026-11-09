@@ -249,10 +249,16 @@ def discover_sources(root: Path) -> dict[str, str]:
     return sources
 
 
-def load_config_payloads(root: Path) -> dict[str, Any]:
-    """读取 configs/entry_chain*.json(顶层键)。解析失败的文件跳过并记录。"""
+def load_config_payloads(root: Path, configs_dir: Path | None = None) -> dict[str, Any]:
+    """读取 configs 目录下 entry_chain*.json(顶层键)。解析失败的文件跳过并记录。
+
+    ``configs_dir`` 缺省为 ``<root>/configs``；相对路径按 ``root`` 解释。
+    """
+    base = Path(configs_dir) if configs_dir is not None else root / "configs"
+    if not base.is_absolute():
+        base = root / base
     payloads: dict[str, Any] = {}
-    for path in sorted((root / "configs").glob(CONFIG_GLOB)):
+    for path in sorted(base.glob(CONFIG_GLOB)):
         if not path.is_file():
             continue
         try:
@@ -454,6 +460,11 @@ def render_markdown(report: Mapping[str, Any]) -> str:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="静态审计 EntryChainConfig 字段是否被读取")
     parser.add_argument("--root", default=None, help="仓库根目录(默认自动探测)")
+    parser.add_argument(
+        "--configs-dir",
+        default=None,
+        help="配置文件目录(默认 <root>/configs;相对路径按 root 解释)",
+    )
     parser.add_argument("--out-dir", default="docs/audit", help="报告输出目录(相对仓库根)")
     parser.add_argument(
         "--fail-on-unknown-key",
@@ -477,7 +488,7 @@ def main(argv: list[str] | None = None) -> int:
 
     class_source = class_path.read_text(encoding="utf-8")
     sources = discover_sources(root)
-    payloads = load_config_payloads(root)
+    payloads = load_config_payloads(root, Path(args.configs_dir) if args.configs_dir else None)
     report = build_report(root, class_source, sources, payloads)
 
     out_dir = root / args.out_dir
