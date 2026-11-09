@@ -6,7 +6,6 @@ from src.backtest.lifecycle_exit import AtrTpExitConfig as BacktestExitConfig
 from src.observability import paper_trading
 from src.observability.exit_spec import (
     CANONICAL_EXIT_SPEC,
-    KNOWN_EXIT_SPEC_DIVERGENCE,
     LEGACY_BACKTEST_EXIT_SPEC,
     ExitSpec,
 )
@@ -23,21 +22,19 @@ def test_legacy_spec_is_visibly_different():
     assert LEGACY_BACKTEST_EXIT_SPEC.max_hold_bars != CANONICAL_EXIT_SPEC.max_hold_bars
 
 
-def test_backtest_default_stays_legacy():
-    """P0 阶段**故意不切**回测默认值。
-
-    切默认会让所有历史离线结论静默换口径（tests/test_lifecycle_exit.py
-    有 6 处用例隐式依赖 (1.0,2.0,3.0) 默认值）。P0 只登记差异，P1 重跑后才切。
-    """
+def test_backtest_default_is_canonical():
+    """2026-11-09（P1-E8）已把回测默认值收敛到 canonical，与 paper 主账本同构。"""
     config = BacktestExitConfig()
-    assert config.tp_levels == LEGACY_BACKTEST_EXIT_SPEC.tp_levels
-    assert config.max_hold_bars == LEGACY_BACKTEST_EXIT_SPEC.max_hold_bars
+    assert config.tp_levels == CANONICAL_EXIT_SPEC.tp_levels
+    assert config.tp_fractions == CANONICAL_EXIT_SPEC.tp_fractions
+    assert config.max_hold_bars == CANONICAL_EXIT_SPEC.max_hold_bars
 
 
-def test_divergence_is_registered_not_hidden():
-    assert "paper" in KNOWN_EXIT_SPEC_DIVERGENCE
-    assert "backtest" in KNOWN_EXIT_SPEC_DIVERGENCE
-    assert "P1" in KNOWN_EXIT_SPEC_DIVERGENCE
+def test_legacy_spec_still_reproducible():
+    """legacy spec 保留，用于复现 2026-10-31 之前的离线结论。"""
+    config = BacktestExitConfig.from_spec(LEGACY_BACKTEST_EXIT_SPEC)
+    assert config.tp_levels == (1.0, 2.0, 3.0)
+    assert config.max_hold_bars == 16
 
 
 def test_canonical_requires_explicit_opt_in():

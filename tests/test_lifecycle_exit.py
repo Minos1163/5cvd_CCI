@@ -1,5 +1,25 @@
 from src.backtest.engine import BacktestBar
 from src.backtest.lifecycle_exit import AtrTpExitConfig, simulate_atr_tp_exit
+from src.observability.exit_spec import LEGACY_BACKTEST_EXIT_SPEC
+
+
+def legacy_cfg(**overrides):
+    """显式 legacy 口径（TP 1.0/2.0/3.0、max_hold 16）。
+
+    本文件的用例高点卡在 1.0R/2.0R/3.0R（如 101.1 / 102.1 / 103.2），
+    测的是 legacy 阶梯语义。切换到 canonical 默认值后必须显式声明，
+    否则用例会因为"打不到 1.2R"而假红。
+    """
+    base = dict(
+        atr_stop_mult=1.0,
+        min_stop_pct=0.01,
+        max_stop_pct=0.01,
+        tp_levels=LEGACY_BACKTEST_EXIT_SPEC.tp_levels,
+        tp_fractions=LEGACY_BACKTEST_EXIT_SPEC.tp_fractions,
+        max_hold_bars=LEGACY_BACKTEST_EXIT_SPEC.max_hold_bars,
+    )
+    base.update(overrides)
+    return AtrTpExitConfig(**base)
 
 
 def bar(timestamp, *, high, low, close=None, volume=10.0):
@@ -18,7 +38,7 @@ def test_long_hits_tp_ladder_weighted_exit():
             bar(2700, high=103.2, low=102.4),
         ],
         atr_pct=0.01,
-        config=AtrTpExitConfig(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01),
+        config=legacy_cfg(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01),
     )
 
     assert result is not None
@@ -46,7 +66,7 @@ def test_short_hits_tp_ladder_weighted_exit():
             bar(2700, high=97.4, low=96.8),
         ],
         atr_pct=0.01,
-        config=AtrTpExitConfig(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01),
+        config=legacy_cfg(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01),
     )
 
     assert result is not None
@@ -62,7 +82,7 @@ def test_initial_stop_closes_remaining_position():
         entry_price=100.0,
         bars_after_entry=[bar(900, high=100.2, low=98.8)],
         atr_pct=0.01,
-        config=AtrTpExitConfig(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01),
+        config=legacy_cfg(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01),
     )
 
     assert result is not None
@@ -78,7 +98,7 @@ def test_same_bar_stop_and_tp_uses_conservative_stop_first():
         entry_price=100.0,
         bars_after_entry=[bar(900, high=101.5, low=98.8)],
         atr_pct=0.01,
-        config=AtrTpExitConfig(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01),
+        config=legacy_cfg(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01),
     )
 
     assert result is not None
@@ -96,7 +116,7 @@ def test_tp1_moves_stop_to_breakeven_for_remaining_position():
             bar(1800, high=100.5, low=99.9),
         ],
         atr_pct=0.01,
-        config=AtrTpExitConfig(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01),
+        config=legacy_cfg(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01),
     )
 
     assert result is not None
@@ -117,7 +137,7 @@ def test_breakeven_price_includes_fee_buffer_for_short():
             bar(1800, high=100.2, low=99.5),
         ],
         atr_pct=0.01,
-        config=AtrTpExitConfig(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01),
+        config=legacy_cfg(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01),
     )
 
     assert result is not None
@@ -136,7 +156,7 @@ def test_timeout_closes_remaining_at_last_close():
             bar(1800, high=100.5, low=99.9, close=100.4),
         ],
         atr_pct=0.01,
-        config=AtrTpExitConfig(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01, max_hold_bars=2),
+        config=legacy_cfg(atr_stop_mult=1.0, min_stop_pct=0.01, max_stop_pct=0.01, max_hold_bars=2),
     )
 
     assert result is not None
@@ -156,7 +176,13 @@ def test_atr_falls_back_to_default_when_signal_value_is_invalid():
         entry_price=100.0,
         bars_after_entry=[bar(900, high=101.6, low=100.0)],
         atr_pct=0.0,
-        config=AtrTpExitConfig(default_atr_pct=0.01, atr_stop_mult=1.5, max_hold_bars=1),
+        config=legacy_cfg(
+            default_atr_pct=0.01,
+            atr_stop_mult=1.5,
+            max_hold_bars=1,
+            min_stop_pct=0.005,
+            max_stop_pct=0.03,
+        ),
     )
 
     assert result is not None
@@ -173,7 +199,7 @@ def test_adverse_volume_spike_reduces_half_before_stop():
             bar(1800, high=99.7, low=98.8, close=99.0, volume=20.0),
         ],
         atr_pct=0.01,
-        config=AtrTpExitConfig(
+        config=legacy_cfg(
             atr_stop_mult=1.0,
             min_stop_pct=0.01,
             max_stop_pct=0.01,
@@ -202,7 +228,7 @@ def test_time_reduce_closes_half_when_trade_stalls_before_tp1():
             bar(1800, high=100.2, low=99.9, close=100.15),
         ],
         atr_pct=0.01,
-        config=AtrTpExitConfig(
+        config=legacy_cfg(
             atr_stop_mult=1.0,
             min_stop_pct=0.01,
             max_stop_pct=0.01,

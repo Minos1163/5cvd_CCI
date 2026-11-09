@@ -25,13 +25,20 @@ class PartialExit:
 
 @dataclass(frozen=True)
 class AtrTpExitConfig:
+    """ATR 止盈止损出场参数。
+
+    默认值 = `CANONICAL_EXIT_SPEC`（TP 1.2/2.0/3.0、max_hold 32 根），与
+    paper 主账本同构。复现 2026-10-31 之前的离线结论必须显式用
+    `from_spec(LEGACY_BACKTEST_EXIT_SPEC)`。
+    """
+
     atr_stop_mult: float = 1.5
     min_stop_pct: float = 0.005
     max_stop_pct: float = 0.03
     default_atr_pct: float = 0.010
-    tp_levels: tuple[float, float, float] = (1.0, 2.0, 3.0)
+    tp_levels: tuple[float, float, float] = (1.2, 2.0, 3.0)
     tp_fractions: tuple[float, float, float] = (0.40, 0.35, 0.25)
-    max_hold_bars: int = 16
+    max_hold_bars: int = 32
     breakeven_after_tp1: bool = True
     breakeven_buffer_pct: float = 0.001
     adverse_reduce_enabled: bool = False
@@ -48,9 +55,9 @@ class AtrTpExitConfig:
     def from_spec(cls, spec: ExitSpec) -> "AtrTpExitConfig":
         """用显式 `ExitSpec` 覆盖出场三段参数。
 
-        P0 刻意**不改本类的默认值**（仍是 legacy 的 1.0R/16 根）：改成 canonical
-        会让所有历史离线回测结论静默换口径，且 `tests/test_lifecycle_exit.py`
-        有 6 处用例的高点恰卡在 1.0R/2.0R/3.0R。收敛动作在 P1-E8。
+        默认值已在 2026-11-09（P1-E8）收敛到 `CANONICAL_EXIT_SPEC`，与 paper
+        主账本同构。要复现 2026-10-31 之前的离线结论，显式传
+        `from_spec(LEGACY_BACKTEST_EXIT_SPEC)`。
         """
         return cls(
             tp_levels=spec.tp_levels,

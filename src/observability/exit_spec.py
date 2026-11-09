@@ -3,10 +3,10 @@
 **叶子模块**：不 import `paper_trading`，也不 import `lifecycle_exit`——两个方向都由
 它们反向 import 本模块，否则会循环 import。
 
-为什么要有这个文件：paper 主账本用 `TP 1.2/2.0/3.0 + max_hold 32`，回测默认用
+为什么要有这个文件：paper 主账本用 `TP 1.2/2.0/3.0 + max_hold 32`，回测默认曾用
 `TP 1.0/2.0/3.0 + max_hold 16`。同一策略给出两套结论，根因就是这两组默认值从未
-被放在一处对照过。P0 只把差异**显式化并登记**，不切换回测默认值（切换会让所有
-历史离线结论静默换口径）。切换动作在 P1-E8。
+被放在一处对照过。2026-11-09（P1-E8）已切换，两侧默认值一致；
+`LEGACY_BACKTEST_EXIT_SPEC` 仅为复现旧结论保留。
 """
 
 from __future__ import annotations
@@ -40,11 +40,4 @@ LEGACY_BACKTEST_EXIT_SPEC = ExitSpec(
     tp_levels=(1.0, 2.0, 3.0),
     tp_fractions=(0.40, 0.35, 0.25),
     max_hold_bars=16,
-)
-
-# P0 阶段**不切换**回测默认值：改默认会让所有历史离线结论静默换口径。
-# 本常量是"已知分歧"的显式登记，P1 重跑完历史结论后才允许移除。
-KNOWN_EXIT_SPEC_DIVERGENCE = (
-    "paper=canonical(TP 1.2/2.0/3.0, max_hold 32) "
-    "backtest=legacy(TP 1.0/2.0/3.0, max_hold 16); converge in P1 after re-running prior backtests"
 )
