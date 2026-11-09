@@ -1,0 +1,132 @@
+[
+  {
+    "name": "trend_ema_context",
+    "kind": "component",
+    "status": "LIVE_FEATURE",
+    "weight": 20.0,
+    "read_point": "src/signals/entry_chain_features.py:116",
+    "source_field": null,
+    "timeframe": "15m/1h",
+    "note": "EMA200 方向闸在 soft 模式下只扣分，hard 模式才 veto。"
+  },
+  {
+    "name": "flow_cvd_confirmation",
+    "kind": "component",
+    "status": "LIVE_FEATURE",
+    "weight": 18.0,
+    "read_point": "src/signals/entry_chain_features.py:282",
+    "source_field": "candle_signed_volume_flow",
+    "timeframe": "15m",
+    "note": "不是真主动买卖流。取值仅 {0.0,0.2,0.5,1.0}，乘权重 18 后只可能得 {0,3.6,9.0,18.0}，实际只有 3 个有效档位。"
+  },
+  {
+    "name": "cci_momentum_quality",
+    "kind": "component",
+    "status": "LIVE_FEATURE",
+    "weight": 14.0,
+    "read_point": "src/signals/entry_chain_features.py:108",
+    "source_field": null,
+    "timeframe": "15m",
+    "note": "离散档位 14/10/7/3/0 先除 14 归一到 0-1，再乘权重。"
+  },
+  {
+    "name": "price_action_structure",
+    "kind": "component",
+    "status": "LIVE_FEATURE",
+    "weight": 22.0,
+    "read_point": "src/signals/entry_chain_features.py:109",
+    "source_field": null,
+    "timeframe": "15m",
+    "note": "PA 原始分 0-22，除 22 归一到 0-1。"
+  },
+  {
+    "name": "fibonacci_location",
+    "kind": "component",
+    "status": "LIVE_FEATURE",
+    "weight": 18.0,
+    "read_point": "src/signals/entry_chain_features.py:110",
+    "source_field": null,
+    "timeframe": "15m",
+    "note": "交易层 fib 参数取函数默认值，配置键未被读取。"
+  },
+  {
+    "name": "risk_reward_geometry",
+    "kind": "component",
+    "status": "LIVE_FEATURE",
+    "weight": 8.0,
+    "read_point": "src/signals/entry_chain_features.py:111",
+    "source_field": null,
+    "timeframe": "15m",
+    "note": "净 TP1 R 的计算在 risk_reward_geometry_detail，net_tp1_r 于该函数内求得。"
+  },
+  {
+    "name": "rsi14",
+    "kind": "indicator",
+    "status": "IMPLEMENTED",
+    "weight": null,
+    "read_point": null,
+    "source_field": null,
+    "timeframe": "15m",
+    "note": "src/indicators/rsi.py 可算；_build_rsi_result 无调用点，live 评分链不读 RSI。"
+  },
+  {
+    "name": "macd",
+    "kind": "indicator",
+    "status": "SPEC_ONLY",
+    "weight": null,
+    "read_point": null,
+    "source_field": null,
+    "timeframe": "15m",
+    "note": "仅存在于 src/indicators/indicator_spec.py 的规格与 indicator_engine 的计算；不进 fib_pa 六分量。"
+  },
+  {
+    "name": "boll",
+    "kind": "indicator",
+    "status": "SPEC_ONLY",
+    "weight": null,
+    "read_point": null,
+    "source_field": null,
+    "timeframe": "15m",
+    "note": "同上；无 live 读取点。"
+  },
+  {
+    "name": "taker_flow_cvd",
+    "kind": "indicator",
+    "status": "COMPUTED",
+    "weight": null,
+    "read_point": "src/indicators/cvd.py:6",
+    "source_field": "taker_buy_base_volume",
+    "timeframe": "15m",
+    "note": "真 CVD，用 taker_buy_volume 减卖出量；live 评分不读它，评分用的是 candle_signed_volume_flow。"
+  },
+  {
+    "name": "five_factor_shadow",
+    "kind": "model",
+    "status": "LOGGED_ONLY",
+    "weight": null,
+    "read_point": "src/signals/orthogonal_factors.py:491",
+    "source_field": null,
+    "timeframe": null,
+    "note": "只写 component_points_v2 与 meta，不参与 total_score/象限/通道/杠杆。"
+  },
+  {
+    "name": "net_beta_exposure",
+    "kind": "model",
+    "status": "RISK_INPUT",
+    "weight": null,
+    "read_point": "src/risk/net_beta_exposure_model.py:28",
+    "source_field": null,
+    "timeframe": null,
+    "note": "命名即 observation_only；cap 值不参与下单阻断。"
+  },
+  {
+    "name": "stress_simulation",
+    "kind": "model",
+    "status": "LOGGED_ONLY",
+    "weight": null,
+    "read_point": "src/risk/stress_simulator.py:8",
+    "source_field": null,
+    "timeframe": null,
+    "note": "stress 的 action 无代码据此拦单。"
+  }
+]

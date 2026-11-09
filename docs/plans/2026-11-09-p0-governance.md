@@ -187,6 +187,8 @@ git commit -m "docs(p0): 记录 BASE_SHA（P0 起点）"
 
 **验收：** `docs/audit/2026-11-09-p0-baseline.md` 非空且含基线四段输出与 `BASE_SHA=`；分支为 `p0-governance`。
 
+> 状态：DONE / 2026-11-09 / `0bd66ff（含基线 commit 36e2f0c、现状快照 e1e3b74）`
+
 ---
 
 ## 4. Task 1：Run Manifest（运行事实单一来源）
@@ -534,6 +536,8 @@ git commit -m "feat(obs): 新增 run_manifest 落盘（运行事实单一来源�
 ```
 
 **验收：** `tests/test_run_manifest.py` 全绿；`tests/test_live_dry_run.py` 全绿；主循环中 `run_manifest.json` 的路径可见于启动日志。
+
+> 状态：DONE / 2026-11-09 / `0dc4922`
 
 ---
 
@@ -928,6 +932,8 @@ git commit -m "feat(signals): 指标接线矩阵 + 唯一名源守卫；修正 0
 
 **验收：** pytest `0 failed`；registry 权重合计 100；RSI=IMPLEMENTED 且无 read_point；MACD/BOLL=SPEC_ONLY；真 CVD=COMPUTED 且与伪 CVD 命名分离。
 
+> 状态：DONE / 2026-11-09 / `55e0b80`
+
 ---
 
 ## 6. Task 3：账本对账固化为回归测试
@@ -1048,6 +1054,8 @@ git commit -m "test(ledger): 锁死 10-31→11-08 主账本对账口径（33.762
 
 **验收：** 5 条断言全绿；`test_cross_day_summation_would_be_wrong` 明确禁掉跨天求和这条错误做法。
 
+> 状态：DONE / 2026-11-09 / `0fea3bb`
+
 ---
 
 ## 7. Task 4：评分架构单值化
@@ -1166,6 +1174,8 @@ git commit -m "refactor(scoring): 架构解析单值化（双开关同时 true �
 ```
 
 **验收：** 双 true 时返回 `fib_pa` 且带 `ARCHITECTURE_FLAGS_BOTH_TRUE`；启动日志可见 `active_architecture=fib_pa`。
+
+> 状态：DONE / 2026-11-09 / `d44d7ef`
 
 ---
 
@@ -1430,6 +1440,8 @@ git commit -m "feat(decisions): 记录 decision_origin 与 replaced_snapshot（�
 
 **验收：** 替换发生时 payload 含 `decision_origin=q1_green_channel`、`replaced_decision_id`、`replaced_snapshot`（6 字段 + quadrant）；未替换时为 `primary`；输入字典不被就地修改。
 
+> 状态：DONE / 2026-11-09 / `e7dd604`
+
 ---
 
 ## 9. Task 6：仓位计算单次化与全字段轨迹
@@ -1629,6 +1641,8 @@ git commit -m "feat(risk): 仓位轨迹契约（三 cap + binding + 杠杆理由
 ```
 
 **验收：** 7 键齐全；`final == min(caps)` 与 `binding_cap` 指向最小者有断言；生产路径只告警不拦单。
+
+> 状态：DONE / 2026-11-09 / `391895b`
 
 ---
 
@@ -1888,6 +1902,8 @@ git commit -m "refactor(exit): 出场参数收进 ExitSpec；paper 与 backtest 
 ```
 
 **验收：** canonical 与 paper 常量逐项相等；回测默认仍为 legacy 且分歧已登记（`KNOWN_EXIT_SPEC_DIVERGENCE`）；canonical 必须显式 `from_spec` 才能用于回测；`tests/test_lifecycle_exit.py` 全绿。
+
+> 状态：DONE / 2026-11-09 / `4bf3ae0`
 
 ---
 
