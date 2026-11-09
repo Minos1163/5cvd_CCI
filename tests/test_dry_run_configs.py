@@ -193,6 +193,9 @@ def test_fib_pa_dry_run_config_loads_and_is_dry_run_safe():
     )
     assert config.scout_micro_scout_only_symbols == ("XMRUSDT", "ADAUSDT")
     assert config.scout_micro_min_score == 82.0
+    # 2026-11-09：这四个字段无任何读取点（模型不消费它们），已从配置文件删除。
+    # 下面的断言实际断的是 dataclass 默认值，不再是"配置里写了什么"。
+    # 保留断言是为了锁住默认值不被顺手改掉；语义变化见 tests/test_dead_config_keys.py。
     assert config.scout_micro_non_rr_min_score == 85.0
     assert config.scout_micro_targeted_long_min_score == 82.0
     assert config.scout_micro_targeted_long_min_pa_score == 18.0

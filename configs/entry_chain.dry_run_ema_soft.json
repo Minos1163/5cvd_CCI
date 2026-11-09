@@ -12,8 +12,6 @@
   "margin_buffer_pct": 0.30,
   "use_ema_architecture": true,
   "ema200_gate_mode": "soft",
-  "ema200_buffer_pct": 0.003,
-  "ema200_min_bars_stable": 3,
   "ema50_min_for_direct": 0.60,
   "ema50_min_for_probe": 0.40
 }

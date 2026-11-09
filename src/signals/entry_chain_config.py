@@ -6,6 +6,34 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
+# 2026-11-09：以下字段声明保留但**无任何读取点**（静态审计 + 人工 grep 双重确认，
+# 见 scripts/audit_config_wiring.py 与 docs/audit/config-wiring-20261109.json）。
+#
+# 为什么保留声明而不是删除：`from_mapping` 对未知键会 raise，删除字段会让仍带这些
+# 键的历史配置（含 VPS 生产配置）启动失败。保留声明 + 从配置文件中清理，是唯一
+# 既能清理又不破坏兼容的路径。
+#
+# 为什么不接线：这些参数分别影响 fib 摆动点识别、EMA200 闸门与 scout 门槛；接线
+# 等于改变信号、改变交易，属于“改策略参数”，不在本次治理范围。
+DEAD_CONFIG_KEYS: frozenset[str] = frozenset({
+    "base_direct_exposure_pct",
+    "probe_fraction",
+    "ema200_buffer_pct",
+    "ema200_min_bars_stable",
+    "fib_extension_exhaustion_mult",
+    "fib_level_tolerance_atr_mult",
+    "fib_swing_fractal_k",
+    "fib_swing_lookback_15m",
+    "fib_swing_lookback_1h",
+    "fib_swing_min_atr_mult",
+    "fib_swing_min_spacing_bars",
+    "scout_micro_non_rr_min_score",
+    "scout_micro_targeted_long_min_score",
+    "scout_micro_targeted_long_min_pa_score",
+    "scout_micro_targeted_long_min_rr_score",
+})
+
+
 @dataclass(frozen=True)
 class ExplicitWatchlistEntry:
     """显式白名单条目(评审 7.2 规格):新增符号一律先 scout_only,达标后 promotion。"""
@@ -48,19 +76,19 @@ class EntryChainConfig:
     max_same_direction_exposure_pct: float = 1.20
     max_total_exposure_pct: float = 1.50
     margin_buffer_pct: float = 0.20
-    base_direct_exposure_pct: float = 0.20
+    base_direct_exposure_pct: float = 0.20  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
     max_large_cap_exposure_pct: float = 0.30
     max_mainstream_exposure_pct: float = 0.20
     max_high_beta_exposure_pct: float = 0.10
-    probe_fraction: float = 0.25
+    probe_fraction: float = 0.25  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
     direct_risk_pct: float = 0.008
     probe_risk_pct: float = 0.003
     min_stop_pct: float = 0.005
     max_stop_pct: float = 0.04
     use_ema_architecture: bool = False
     ema200_gate_mode: str = "hard"
-    ema200_buffer_pct: float = 0.003
-    ema200_min_bars_stable: int = 3
+    ema200_buffer_pct: float = 0.003  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
+    ema200_min_bars_stable: int = 3  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
     ema50_min_for_direct: float = 0.60
     ema50_min_for_probe: float = 0.40
     disable_probe: bool = False
@@ -73,10 +101,10 @@ class EntryChainConfig:
     scout_micro_targeted_long_symbols: tuple[str, ...] = ()
     scout_micro_scout_only_symbols: tuple[str, ...] = ()
     scout_micro_min_score: float = 82.0
-    scout_micro_non_rr_min_score: float = 85.0
-    scout_micro_targeted_long_min_score: float = 82.0
-    scout_micro_targeted_long_min_pa_score: float = 18.0
-    scout_micro_targeted_long_min_rr_score: float = 3.0
+    scout_micro_non_rr_min_score: float = 85.0  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
+    scout_micro_targeted_long_min_score: float = 82.0  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
+    scout_micro_targeted_long_min_pa_score: float = 18.0  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
+    scout_micro_targeted_long_min_rr_score: float = 3.0  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
     scout_micro_scout_only_min_score: float = 85.0
     scout_micro_scout_only_min_fib_score: float = 12.0
     scout_micro_scout_only_min_pa_score: float = 10.0
@@ -176,13 +204,13 @@ class EntryChainConfig:
     dry_run_rank_end: int = 25
     dry_run_warmup_15m_bars: int = 240
     use_fib_pa_architecture: bool = False
-    fib_swing_fractal_k: int = 2
-    fib_swing_min_atr_mult: float = 1.2
-    fib_swing_min_spacing_bars: int = 6
-    fib_swing_lookback_15m: int = 50
-    fib_swing_lookback_1h: int = 30
-    fib_extension_exhaustion_mult: float = 1.618
-    fib_level_tolerance_atr_mult: float = 0.5
+    fib_swing_fractal_k: int = 2  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
+    fib_swing_min_atr_mult: float = 1.2  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
+    fib_swing_min_spacing_bars: int = 6  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
+    fib_swing_lookback_15m: int = 50  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
+    fib_swing_lookback_1h: int = 30  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
+    fib_extension_exhaustion_mult: float = 1.618  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
+    fib_level_tolerance_atr_mult: float = 0.5  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
     pa_min_direct_score: float = 6.0
     fib_min_direct_score: float = 6.0
     rr_min_direct_score: float = 2.0
