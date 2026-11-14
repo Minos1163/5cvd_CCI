@@ -73,6 +73,20 @@ def component_scores(
     ema200_gate_mode: str = "hard",
     use_fib_pa_architecture: bool = False,
 ) -> dict[str, float]:
+    """四类结构分 + 波动/流动性/regime 基础分，外加 ema 子项与 fib_pa 六因子的**观测值**。
+
+    ema 子项（`ema_200_gate` / `ema_50_quality` / `ema_momentum`）**无条件计算**，
+    与"是否用它加权"解耦：这三个键是 ema 子项的原始观测，`use_ema_architecture` 只决定
+    `dynamic_weights` 走不走 `EMA_WEIGHTS`（即是否把它们乘进总分），不决定要不要记下来。
+    2026-11-14 之前它们是条件产出的，于是关掉 `use_ema_architecture` 会让
+    `decisions.jsonl` 的 `debug.scores` 少三个键、`scripts/analysis/fwdlib/features.py`
+    的 FEATURE_KEYS 相应取到 NaN——那等于悄悄改了观测口径。现改为无条件产出（成本是
+    每次多算一次 `ema_context_from_bars`，相对 14 标的×96 根/天可忽略）。
+
+    注意：`use_ema_architecture` 形参保留只为**签名兼容**（调用方仍在传），本函数不再用它
+    做分支；读它的闸门（EMA200 硬闸 / EMA50 最小值）在 `entry_chain.py` 里另有自己的
+    `cfg.use_ema_architecture` 判定，行为未变。
+    """
     scores = {
         "background_4h": agreement_score(side, completed.get("4h", []), 3),
         "direction_1h": agreement_score(side, completed.get("1h", []), 4),
@@ -83,21 +97,20 @@ def component_scores(
         "liquidity_execution": 1.0,
         "market_regime": 0.8,
     }
-    if use_ema_architecture:
-        ema_context = ema_context_from_bars(completed.get("15m", []))
-        if ema_context is None:
-            scores["ema_200_gate"] = 0.0
+    ema_context = ema_context_from_bars(completed.get("15m", []))
+    if ema_context is None:
+        scores["ema_200_gate"] = 0.0
+        scores["ema_50_quality"] = 0.0
+        scores["ema_momentum"] = 0.0
+    else:
+        gate = ema_direction_gate(side, ema_context, mode=ema200_gate_mode)
+        scores["ema_200_gate"] = 1.0 if gate.allowed else 0.0
+        if gate.allowed:
+            scores["ema_50_quality"] = max(0.0, score_ema50_quality(side, ema_context) + gate.penalty)
+            scores["ema_momentum"] = score_ema_momentum(side, ema_context)
+        else:
             scores["ema_50_quality"] = 0.0
             scores["ema_momentum"] = 0.0
-        else:
-            gate = ema_direction_gate(side, ema_context, mode=ema200_gate_mode)
-            scores["ema_200_gate"] = 1.0 if gate.allowed else 0.0
-            if gate.allowed:
-                scores["ema_50_quality"] = max(0.0, score_ema50_quality(side, ema_context) + gate.penalty)
-                scores["ema_momentum"] = score_ema_momentum(side, ema_context)
-            else:
-                scores["ema_50_quality"] = 0.0
-                scores["ema_momentum"] = 0.0
     if use_fib_pa_architecture:
         scores.update(fib_pa_component_scores(side, completed, atr_pct_value, ema200_gate_mode=ema200_gate_mode))
     return scores
