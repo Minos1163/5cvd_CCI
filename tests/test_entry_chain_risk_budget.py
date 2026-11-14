@@ -233,3 +233,80 @@ def test_invalid_equity_and_non_executable_action_return_zero():
     assert _notional_hint("DIRECT", 85.0, _ctx(stop_pct=0.012, account_equity=-1.0), cfg, 0.2, 4) == 0.0
     assert _notional_hint("NO_TRADE", 50.0, _ctx(stop_pct=0.012), cfg, 0.2, 4) == 0.0
     assert _notional_hint("WATCH", 50.0, _ctx(stop_pct=0.012), cfg, 0.2, 4) == 0.0
+
+
+# --- P0 A4：风险反算与 shadow 诊断（2026-11-14 评审 §13）---
+
+RISK_DIAGNOSTIC_KEYS = (
+    "expected_stop_loss",
+    "risk_budget_pct_configured",
+    "risk_budget_pct_effective",
+    "risk_first_shadow_notional",
+)
+
+
+@pytest.mark.parametrize(
+    ("action", "stop_pct", "leverage", "risk_pct"),
+    [
+        ("DIRECT", 0.012, 4, 0.006),
+        ("DIRECT", 0.03, 1, 0.006),
+        ("PROBE", 0.012, 2, 0.0015),
+        ("PROBE", 0.02, 3, 0.0015),
+    ],
+)
+def test_risk_diagnostics_are_consistent_and_do_not_move_final_notional(
+    action: str, stop_pct: float, leverage: int, risk_pct: float
+):
+    """四键只是反算，不参与 min()：final_notional / binding_cap 必须与三 cap 自洽。"""
+    cfg = EntryChainConfig(direct_risk_pct=0.006, probe_risk_pct=0.0015, max_single_trade_risk_pct=0.0075)
+    ctx = _ctx(stop_pct=stop_pct)
+    diagnostics = _notional_cap_diagnostics(action, 85.0, ctx, cfg, 0.2, leverage)
+
+    for key in RISK_DIAGNOSTIC_KEYS:
+        assert key in diagnostics, key
+
+    caps = {
+        "raw_notional": diagnostics["raw_notional"],
+        "leveraged_cap_notional": diagnostics["leveraged_cap_notional"],
+        "remaining_exposure_notional": diagnostics["remaining_exposure_notional"],
+    }
+    assert diagnostics["final_notional"] == pytest.approx(min(caps.values()), abs=1e-4)
+    assert caps[diagnostics["binding_cap"]] == pytest.approx(min(caps.values()), abs=1e-4)
+
+    # 反算恒等式
+    expected_stop_loss = min(caps.values()) * stop_pct
+    assert diagnostics["expected_stop_loss"] == pytest.approx(expected_stop_loss, abs=1e-3)
+    assert diagnostics["risk_budget_pct_configured"] == pytest.approx(risk_pct)
+    assert diagnostics["risk_budget_pct_effective"] == pytest.approx(expected_stop_loss / EQUITY, abs=1e-6)
+
+
+def test_risk_first_shadow_notional_uses_risk_first_formula():
+    """shadow 名义 = equity × min(risk_pct, max_single_trade_risk_pct) / stop_pct。"""
+    cfg = EntryChainConfig(direct_risk_pct=0.02, max_single_trade_risk_pct=0.0075)
+    ctx = _ctx(stop_pct=0.012)
+
+    diagnostics = _notional_cap_diagnostics("DIRECT", 90.0, ctx, cfg, 0.5, 4)
+
+    assert diagnostics["risk_first_shadow_notional"] == pytest.approx(EQUITY * 0.0075 / 0.012, abs=1e-3)
+    # 旧口径下 raw 用的是未封顶的 0.02，所以 shadow 必须**更小**（这正是要观测的差）
+    assert diagnostics["risk_first_shadow_notional"] < diagnostics["raw_notional"]
+
+
+def test_risk_first_shadow_notional_untouched_by_risk_first_flag():
+    """开关本身不改 shadow 值：shadow 是"新口径长什么样"，与是否启用无关。"""
+    ctx = _ctx(stop_pct=0.012)
+    off = _notional_cap_diagnostics("DIRECT", 90.0, ctx, EntryChainConfig(risk_first_sizing_enabled=False), 0.5, 4)
+    on = _notional_cap_diagnostics("DIRECT", 90.0, ctx, EntryChainConfig(risk_first_sizing_enabled=True), 0.5, 4)
+
+    assert off["risk_first_shadow_notional"] == on["risk_first_shadow_notional"]
+    # 但 final_notional 会因开关而不同——这正是"只记录不启用"的意义
+    assert off["final_notional"] != on["final_notional"]
+
+
+@pytest.mark.parametrize("action", ["NO_TRADE", "WATCH"])
+def test_risk_diagnostics_absent_on_non_entry_path(action: str):
+    """豁免路径（binding_cap="none"）不写这四键，与现有豁免逻辑一致。"""
+    diagnostics = _notional_cap_diagnostics(action, 50.0, _ctx(stop_pct=0.012), EntryChainConfig(), 0.2, 4)
+
+    assert diagnostics["binding_cap"] == "none"
+    assert not set(RISK_DIAGNOSTIC_KEYS) & set(diagnostics)

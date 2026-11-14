@@ -167,7 +167,14 @@ class PaperTradingLedger:
         state_dir: str | Path | None = None,
         initial_equity: float = INITIAL_EQUITY,
         exit_config: PaperExitConfig | None = None,
+        ledger_id: str = "main",
     ) -> None:
+        # 账本标识（2026-11-14 评审 §14 P0 A6）：主账本 "main"，AB 三臂各自命名，
+        # scout_micro 单独一本。只写进 PAPER_* 事件的 `ledger_id` 字段，纯新增，
+        # 读取侧不依赖；不参与任何盈亏/仓位计算。
+        # 动机：五本账本共用同一套事件 schema，合并分析时只能靠目录名区分，
+        # 一旦文件被拷出目录（或从 VPS 汇总到本地）就无法判断某行属于哪本账。
+        self.ledger_id = str(ledger_id or "main")
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.state_dir = Path(state_dir) if state_dir is not None else self.output_dir
@@ -740,6 +747,10 @@ class PaperTradingLedger:
 
     def _append_trade_event(self, row: Mapping[str, Any]) -> None:
         payload = dict(row)
+        # P0 A6:每条 PAPER_* 事件都带账本标识。放在唯一写入口而不是每个
+        # PAPER_OPEN/REDUCE/CLOSE 字面量里——三个事件共用这里,漏写一处就会
+        # 让合并分析悄悄少一类行。`setdefault` 保证调用方显式指定时不被覆盖。
+        payload.setdefault("ledger_id", self.ledger_id)
         payload.setdefault("recorded_at", int(time.time()))
         line = json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
         for directory in self._write_dirs():

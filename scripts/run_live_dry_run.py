@@ -33,7 +33,7 @@ from src.risk.net_beta_exposure_model import (
 from src.risk.stress_simulator import stress_decision
 from src.signals.entry_chain import EntryChainContext, EntryChainDecision, _notional_cap_diagnostics, evaluate_entry_chain
 from src.signals.entry_chain_config import EntryChainConfig, load_entry_chain_config
-from src.signals.decision_provenance import annotate_replacement
+from src.signals.decision_provenance import annotate_replacement, annotate_shadow_decision
 from src.signals.entry_chain_scoring import resolve_architecture
 from src.signals.sizing_contract import assert_sizing_trace, summarize_sizing_trace
 from src.signals.entry_gate import EntryGate, build_gate_features
@@ -182,6 +182,7 @@ def run(args: argparse.Namespace) -> None:
                     output_dir / "scout_micro",
                     state_dir=paper_state_dir / "scout_micro",
                     exit_config=paper_exit_config(config, scout=True),
+                    ledger_id="scout_micro",  # P0 A6:账本标识
                 )
                 paper_exit_ab_ledgers = build_paper_exit_ab_ledgers(output_dir, paper_state_dir, config)
             assert output_dir is not None
@@ -306,15 +307,27 @@ def run(args: argparse.Namespace) -> None:
                         ),
                         config,
                     )
-                    # P0 Task 5:通道替换留痕。此时 payload 已由控件后的 decision 重建，
-                    # 标注不会与 decision 错位。else 分支不替换，保持 decision_origin=primary。
-                    decision, decision_payload = annotate_replacement(
-                        primary_decision,
-                        primary_payload,
-                        decision,
-                        decision_payload,
-                        origin="q1_green_channel",
-                    )
+                    if config.q1_trend_launch_shadow_only:
+                        # P0 A5:实验通道只记录不覆盖。返回值第一项就是 primary_decision,
+                        # 主决策的 action/score/leverage/notional 因此机械不变;
+                        # payload 写 shadow_decision 而**不写** replaced_decision_id。
+                        decision, decision_payload = annotate_shadow_decision(
+                            primary_decision,
+                            primary_payload,
+                            decision,
+                            decision_payload,
+                            origin="q1_green_channel",
+                        )
+                    else:
+                        # P0 Task 5:通道替换留痕。此时 payload 已由控件后的 decision 重建，
+                        # 标注不会与 decision 错位。else 分支不替换，保持 decision_origin=primary。
+                        decision, decision_payload = annotate_replacement(
+                            primary_decision,
+                            primary_payload,
+                            decision,
+                            decision_payload,
+                            origin="q1_green_channel",
+                        )
                 else:
                     q1_policy_reason = q1_symbol_policy_rejection_reason(near_miss, config)
                     if q1_policy_reason is not None and decision_quadrant(near_miss, config) == "Q1":
@@ -679,6 +692,7 @@ def build_paper_exit_ab_ledgers(output_dir: Path, state_dir: Path, config: Entry
             output_dir / "paper_ab" / "legacy",
             state_dir=state_dir / "paper_ab" / "legacy",
             exit_config=PaperExitConfig(mode="legacy"),
+            ledger_id="ab_legacy",  # P0 A6
         ),
         "trend_capture": PaperTradingLedger(
             output_dir / "paper_ab" / "trend_capture",
@@ -690,6 +704,7 @@ def build_paper_exit_ab_ledgers(output_dir: Path, state_dir: Path, config: Entry
                 early_breakeven_enabled=config.mirror_ab_payoff_pilot_enabled,
                 early_breakeven_trigger_r=config.mirror_ab_payoff_early_breakeven_trigger_r,
             ),
+            ledger_id="ab_trend_capture",  # P0 A6
         ),
     }
     if getattr(config, "paper_ab_pure_ladder_enabled", False):
@@ -699,6 +714,7 @@ def build_paper_exit_ab_ledgers(output_dir: Path, state_dir: Path, config: Entry
             output_dir / "paper_ab" / "pure_ladder",
             state_dir=state_dir / "paper_ab" / "pure_ladder",
             exit_config=PaperExitConfig(mode="legacy", defensive_overlay=False),
+            ledger_id="ab_pure_ladder",  # P0 A6
         )
     return ledgers
 
@@ -2354,6 +2370,18 @@ def resolve_output_dir(args: argparse.Namespace, *, timestamp: int | None = None
     return Path(args.log_root) / month / day.isoformat()
 
 
+# P0 A4（2026-11-14 评审 §13）：风险反算诊断键。
+# 这四个键由 entry_chain._notional_cap_diagnostics 算出，**不参与** min()/binding_cap，
+# 因此不进 `sizing_trace`（那 7 键是对外契约，见 src/signals/sizing_contract.py），
+# 单独搬到 payload 的 `sizing_diagnostics`，让读日志的人一眼分清"决定量"与"诊断量"。
+RISK_DIAGNOSTIC_KEYS = (
+    "expected_stop_loss",
+    "risk_budget_pct_configured",
+    "risk_budget_pct_effective",
+    "risk_first_shadow_notional",
+)
+
+
 def _attach_sizing_trace(
     decision: EntryChainDecision,
     decision_payload: Mapping[str, Any],
@@ -2371,6 +2399,11 @@ def _attach_sizing_trace(
     budget = dict((getattr(decision, "metadata", None) or {}).get("risk_budget") or {})
     if not budget:
         return merged
+    # A4：诊断键与契约键分流。豁免路径（binding_cap="none"）里这四键可能缺省，
+    # 缺省时不写 sizing_diagnostics，保持与现有豁免逻辑一致。
+    diagnostics = {key: budget[key] for key in RISK_DIAGNOSTIC_KEYS if key in budget}
+    if diagnostics:
+        merged["sizing_diagnostics"] = diagnostics
     reasons = tuple(getattr(decision, "reasons", ()) or ())
     trace = {
         **budget,

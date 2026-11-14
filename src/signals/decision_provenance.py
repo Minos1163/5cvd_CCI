@@ -26,6 +26,9 @@ SNAPSHOT_FIELDS = (
     "entry_channel",
 )
 
+# `shadow_decision` 里额外记录的字段（在 SNAPSHOT_FIELDS + quadrant 之外）。
+SHADOW_EXTRA_FIELDS = ("reasons", "notional_hint", "risk_allowed")
+
 
 def _field(obj: Any, name: str) -> Any:
     """同时支持 Mapping 与对象（主循环里的 decision 是 EntryChainDecision 数据类）。"""
@@ -87,3 +90,45 @@ def annotate_replacement(
     merged["replaced_decision_id"] = decision_id(base_decision, base_payload)
     merged["replaced_snapshot"] = _snapshot(base_decision, base_payload)
     return new_decision, merged
+
+
+def annotate_shadow_decision(
+    base_decision: Any,
+    base_payload: Mapping[str, Any],
+    shadow_decision: Any | None,
+    shadow_payload: Mapping[str, Any] | None,
+    *,
+    origin: str = "q1_green_channel",
+) -> tuple[Any, dict[str, Any]]:
+    """实验通道**只记录、不覆盖**（P0 A5，开关 `q1_trend_launch_shadow_only`）。
+
+    与 `annotate_replacement` 的区别只有一条，但很关键：返回值的第一项**必须**是
+    `base_decision` 本身（同一个对象），因此 action / score / leverage / notional
+    与主决策完全一致——这是"零行为变化"的机械保证，不是靠调用方自觉。
+
+    payload 是 `base_payload` 的副本：
+    - ``decision_origin`` 恒为 ``"primary"``（主决策没被换掉）
+    - ``shadow_decision`` = 影子决策的快照（action/score/side/leverage/exit_mode/
+      entry_channel/reasons/notional_hint/risk_allowed/quadrant）+ ``origin``
+    - **不写** ``replaced_decision_id`` / ``replaced_snapshot``——因为没有替换，
+      写了会让"被替换"与"被记录"在账本里无法区分。
+
+    `shadow_decision` 为 None 时退化成"仅标 primary"，不写 shadow 键。
+    """
+    merged = dict(base_payload)
+    merged["decision_origin"] = "primary"
+    if shadow_decision is None:
+        return base_decision, merged
+
+    snapshot = _snapshot(shadow_decision, dict(shadow_payload or {}))
+    shadow_payload_map = dict(shadow_payload or {})
+    for field in SHADOW_EXTRA_FIELDS:
+        value = _field(shadow_decision, field)
+        if value is None:
+            value = shadow_payload_map.get(field)
+        if field == "reasons":
+            value = [str(item) for item in (value or ())]
+        snapshot[field] = value
+    snapshot["origin"] = origin
+    merged["shadow_decision"] = snapshot
+    return base_decision, merged

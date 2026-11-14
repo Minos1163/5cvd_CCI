@@ -756,12 +756,26 @@ def _notional_cap_diagnostics(
         }
     final_notional = max(0.0, min(limits.values()))
     binding_cap = min(limits, key=limits.get)
+    # 风险反算诊断（2026-11-14 评审 §13，P0 A4）：**只诊断，不参与 `limits` 的 min()**。
+    # 为什么必须独立键而不是扩进 `sizing_contract.SIZING_TRACE_KEYS`：
+    # 那 7 个键是"仓位由谁决定"的对外契约（`final_notional = min(三 cap)` 且
+    # `binding_cap` 必须指向最小值），被 tests/test_sizing_contract.py 锁死；扩契约会让
+    # 历史 sizing 摘要与新旧数据不可比，也会把"诊断量"混进"决定量"，读的人无法区分
+    # "这个数参与了决策" 还是 "这个数只是记录"。所以这四个键只进 metadata["risk_budget"]，
+    # 由 run_live_dry_run 单独搬到 payload 的 `sizing_diagnostics`。
+    expected_stop_loss = final_notional * stop_pct
+    risk_first_shadow_notional = equity * min(risk_pct, cfg.max_single_trade_risk_pct) / stop_pct
     return {
         "selected_leverage": leverage,
         "stop_pct": round(stop_pct, 6),
         **{key: round(value, 4) for key, value in limits.items()},
         "final_notional": round(final_notional, 4),
         "binding_cap": binding_cap,
+        # --- 以下四键为诊断（不参与 limits / min / binding_cap）---
+        "expected_stop_loss": round(expected_stop_loss, 4),
+        "risk_budget_pct_configured": round(risk_pct, 6),
+        "risk_budget_pct_effective": round(expected_stop_loss / equity, 6),
+        "risk_first_shadow_notional": round(risk_first_shadow_notional, 4),
     }
 
 

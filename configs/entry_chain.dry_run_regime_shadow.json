@@ -148,6 +148,7 @@
   "scout_micro_q2_pending_confirm_cci_score": 9.0,
   "quadrant_pending_state_enabled": true,
   "dry_run_q1_trend_launch_enabled": true,
+  "q1_trend_launch_shadow_only": false,
   "dry_run_q1_trend_launch_min_score": 82.0,
   "dry_run_q1_trend_launch_min_pa_score": 18.0,
   "dry_run_q1_trend_launch_min_fib_score": 15.0,

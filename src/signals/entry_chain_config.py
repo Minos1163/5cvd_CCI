@@ -168,6 +168,13 @@ class EntryChainConfig:
     dry_run_q1_trend_launch_base_exposure_pct: float = 0.025
     dry_run_q1_trend_launch_exit_mode: str = "trend_capture"
     dry_run_q1_trend_launch_allow_degraded_data: bool = False
+    # q1 通道降级为"只记录不覆盖"（2026-11-14 评审 §14 P0 A5）。默认 False = 现状：
+    # q1 通道返回非 None 就**替换**主决策（`annotate_replacement` 写 replaced_decision_id）。
+    # 置 True 时：主决策保持不动，q1 的决策只写进 payload 的 `shadow_decision`，
+    # `decision_origin` 仍为 primary，**不写** replaced_decision_id。
+    # 目的：先并行收集"q1 覆盖 vs 不覆盖"的样本差，再决定是否关闭通道；
+    # 默认关闭所以生产行为逐位不变。
+    q1_trend_launch_shadow_only: bool = False
     mirror_ab_enabled: bool = False
     mirror_ab_mode: str = "active"  # active | shadow_only(08-18 评审:mirror 降级 shadow,记录不计敞口/熔断)
     mirror_ab_payoff_pilot_enabled: bool = False
