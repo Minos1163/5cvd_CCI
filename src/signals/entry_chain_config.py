@@ -228,6 +228,12 @@ class EntryChainConfig:
     dry_run_symbol_source: str = "configured"
     dry_run_rank_start: int = 3
     dry_run_rank_end: int = 25
+    # 目标标的数：0 = 不限制（rank 区间内能取几个取几个，历史行为）。
+    # >0 时按市值排名从 rank_start 往下取，凑满该数量即停，rank_end 退化为上限保护。
+    # 为什么要有它：rank 区间是"范围"、不是"数量"，同一区间在不同日期取到的标的数
+    # 会随排名波动（实测 2026-11-14：rank 3-25 只命中 14 个可交易非稳定币）。
+    # 想要"固定 25 个标的"必须按数量收敛，否则标的池每天都在变。
+    dry_run_universe_size: int = 0
     dry_run_warmup_15m_bars: int = 240
     use_fib_pa_architecture: bool = False
     fib_swing_fractal_k: int = 2  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS

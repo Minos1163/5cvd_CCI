@@ -81,6 +81,17 @@ STABLE_SYMBOLS = {
     "BUSD",
     "USDP",
     "FRAX",
+    # 2026-11-14 扩充：市值排名靠前的其他美元/欧元锚定资产。
+    # 它们当前都没有 Binance USDT 永续（会被 tradable 过滤掉），补进来是为了
+    # 防止将来上合约后混进标的池——稳定币进趋势策略只会占着标的位不产生信号。
+    "RLUSD",
+    "USDG",
+    "USDY",
+    "USYC",
+    "USDF",
+    "USDD",
+    "BFUSD",
+    "EURSAFO",
 }
 STABLE_IDS = {
     "tether",
@@ -95,6 +106,14 @@ STABLE_IDS = {
     "binance-usd",
     "paxos-standard",
     "frax",
+    "ripple-usd",
+    "global-dollar",
+    "ondo-us-dollar-yield",
+    "hashnote-usyc",
+    "falcon-finance",
+    "usdd",
+    "bfusd",
+    "spiko-amundi-overnight-swap-fund-eur",
 }
 FOUR_QUADRANT_EXPERIMENT_ID = "four_quadrant_navigation_v1"
 COINGECKO_BASE_OVERRIDES = {
@@ -2505,12 +2524,16 @@ def resolve_runtime_symbols(args: argparse.Namespace, config) -> tuple[list[str]
         return symbols, {"source": "configured_synthetic", "rank_start": None, "rank_end": None, "fallback_used": False, "error": None}
     if config.dry_run_symbol_source == "market_cap_rank":
         try:
-            symbols, assets = resolve_market_cap_rank_symbols(config.dry_run_rank_start, config.dry_run_rank_end)
+            target_size = int(getattr(config, "dry_run_universe_size", 0) or 0)
+            symbols, assets = resolve_market_cap_rank_symbols(
+                config.dry_run_rank_start, config.dry_run_rank_end, target_size
+            )
             if symbols:
                 return symbols, {
                     "source": "market_cap_rank",
                     "rank_start": config.dry_run_rank_start,
                     "rank_end": config.dry_run_rank_end,
+                    "target_size": target_size,
                     "fallback_used": False,
                     "error": None,
                     "assets": assets,
@@ -2521,6 +2544,7 @@ def resolve_runtime_symbols(args: argparse.Namespace, config) -> tuple[list[str]
                 "source": "configured_fallback",
                 "rank_start": config.dry_run_rank_start,
                 "rank_end": config.dry_run_rank_end,
+                "target_size": int(getattr(config, "dry_run_universe_size", 0) or 0),
                 "fallback_used": True,
                 "error": exc.__class__.__name__,
             }
@@ -2534,25 +2558,20 @@ def resolve_symbols(value: str | None, config_symbols: Sequence[str]) -> list[st
     return symbols or ["BNBUSDT"]
 
 
-def resolve_market_cap_rank_symbols(rank_start: int, rank_end: int) -> tuple[list[str], list[dict[str, Any]]]:
-    markets = fetch_json(
-        COINGECKO_MARKETS_URL,
-        {
-            "vs_currency": "usd",
-            "order": "market_cap_desc",
-            "per_page": max(rank_end, 30),
-            "page": 1,
-            "sparkline": "false",
-        },
-    )
-    exchange_info = fetch_json(BINANCE_EXCHANGE_INFO_URL, {})
-    tradable = {
-        item["baseAsset"].upper(): item["symbol"]
-        for item in exchange_info.get("symbols", [])
-        if item.get("quoteAsset") == "USDT" and item.get("contractType") == "PERPETUAL" and item.get("status") == "TRADING"
-    }
-    assets: list[dict[str, Any]] = []
+def select_universe_assets(
+    markets: Sequence[Mapping[str, Any]],
+    tradable: Mapping[str, str],
+    rank_start: int,
+    rank_end: int,
+    target_size: int = 0,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """从 CoinGecko markets + Binance 可交易表里挑标的（纯函数，不联网，便于测试）。
+
+    过滤顺序：rank 区间 → 稳定币 → 该 base 在 Binance 有 USDT 永续。
+    ``target_size > 0`` 时凑满即停。
+    """
     symbols: list[str] = []
+    assets: list[dict[str, Any]] = []
     for asset in markets:
         rank = int(asset.get("market_cap_rank") or 0)
         if rank < rank_start or rank > rank_end:
@@ -2566,7 +2585,44 @@ def resolve_market_cap_rank_symbols(rank_start: int, rank_end: int) -> tuple[lis
             continue
         symbols.append(symbol)
         assets.append({"market_cap_rank": rank, "id": coin_id, "base_asset": base, "symbol": symbol})
+        if target_size > 0 and len(symbols) >= target_size:
+            break
     return symbols, assets
+
+
+def resolve_market_cap_rank_symbols(
+    rank_start: int,
+    rank_end: int,
+    target_size: int = 0,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """按市值排名取可交易的 USDT 永续标的。
+
+    ``target_size <= 0`` 时按 rank 区间全取（历史行为，标的数随排名波动）；
+    ``target_size > 0`` 时按排名从高市值往下取，凑满即停，``rank_end`` 退化为上限。
+
+    为什么要按数量收敛：rank 区间是范围不是数量。2026-11-14 实测 rank 3-25 共 23 个
+    排名，扣掉稳定币与"Binance 无 USDT 永续"的，只命中 14 个；想稳定拿到 25 个必须
+    放宽 rank_end（当日第 25 个可交易标的落在 rank 49）并按数量截断，否则标的池
+    每天随排名漂移。
+    """
+    markets = fetch_json(
+        COINGECKO_MARKETS_URL,
+        {
+            "vs_currency": "usd",
+            "order": "market_cap_desc",
+            # 按数量取时要翻得比 rank_end 更深，否则凑不满；100 是 CoinGecko 单页上限。
+            "per_page": 100 if target_size > 0 else max(rank_end, 30),
+            "page": 1,
+            "sparkline": "false",
+        },
+    )
+    exchange_info = fetch_json(BINANCE_EXCHANGE_INFO_URL, {})
+    tradable = {
+        item["baseAsset"].upper(): item["symbol"]
+        for item in exchange_info.get("symbols", [])
+        if item.get("quoteAsset") == "USDT" and item.get("contractType") == "PERPETUAL" and item.get("status") == "TRADING"
+    }
+    return select_universe_assets(markets, tradable, rank_start, rank_end, target_size)
 
 
 def fetch_json(url: str, params: Mapping[str, Any]) -> Any:
