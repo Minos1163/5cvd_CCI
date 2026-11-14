@@ -16,6 +16,7 @@ from src.signals.entry_chain_scoring import (
     SCORE_COMPONENTS,
     component_points as calculate_component_points,
     dynamic_weights as calculate_dynamic_weights,
+    resolve_architecture,
 )
 
 @dataclass(frozen=True)
@@ -363,7 +364,22 @@ def _apply_component_minimums(
     reasons: list[str],
 ) -> str:
     scores = context.component_scores
-    if cfg.use_fib_pa_architecture:
+    # F1（风控复核 2026-11-14）：架构判定**只有一个来源**——枚举解析，而不是布尔开关。
+    #
+    # 历史上这里读 `cfg.use_fib_pa_architecture`，而 `resolve_architecture` 读
+    # `scoring_architecture`，两个来源各管一段，冲突时静默脱钩。风控复现的后果：
+    # 同一根 K 线、同样 fib_pa 权重、score 都是 100.000，
+    #   enum=fib_pa + use_fib_pa=True  → DIRECT / lev=5 / notional=1000
+    #   enum=fib_pa + use_fib_pa=False → WATCH  / lev=0 / notional=0
+    # 即"配置里明确指定了 fib_pa，执行层却按另一套判定走"。
+    #
+    # 为什么 atr_pct 传 0.0 而不是 context.atr_pct：本行只问"是不是 fib_pa"。
+    # `resolve_architecture` 里 atr_pct **只**参与 high_vol_dynamic / low_vol_dynamic 的取舍，
+    # 而 fib_pa（以及显式 ema / base）在比较 atr_pct 之前就 return 了；这两个动态分支都
+    # 不等于 "fib_pa"。所以传任何 atr_pct 都不改变本行的结果。传 0.0 是把这个"与 atr 无关"
+    # 的事实写进代码，**不是漏传参数**——tests/test_architecture_single_source.py 用
+    # 17 份 tracked 配置 × atr 网格证明了这个不变性。
+    if resolve_architecture(cfg)[0] == "fib_pa":
         if action == "DIRECT":
             action = _apply_fib_pa_direct_minimums(action, scores, cfg, reasons)
         if action == "PROBE":

@@ -2371,9 +2371,11 @@ def resolve_output_dir(args: argparse.Namespace, *, timestamp: int | None = None
 
 
 # P0 A4（2026-11-14 评审 §13）：风险反算诊断键。
-# 这四个键由 entry_chain._notional_cap_diagnostics 算出，**不参与** min()/binding_cap，
-# 因此不进 `sizing_trace`（那 7 键是对外契约，见 src/signals/sizing_contract.py），
-# 单独搬到 payload 的 `sizing_diagnostics`，让读日志的人一眼分清"决定量"与"诊断量"。
+# 这四个键由 entry_chain._notional_cap_diagnostics 算出，**不参与** min()/binding_cap。
+# 它们**会**随 `{**budget}` 被展开进本函数内部的临时 `trace` dict（供
+# `assert_sizing_trace` 用），但 `summarize_sizing_trace` 只取固定的 6 个键，
+# 所以永远不会出现在 payload 的 `sizing_trace` 里——那 7 键是对外契约
+# （见 src/signals/sizing_contract.py），诊断量必须与决定量分开呈现。
 RISK_DIAGNOSTIC_KEYS = (
     "expected_stop_loss",
     "risk_budget_pct_configured",
@@ -2817,6 +2819,13 @@ def synthetic_warmup_state(symbols: Sequence[str], config) -> dict[str, dict[str
 
 
 def public_history_limit(args: argparse.Namespace, config) -> int:
+    # F5（P2，2026-11-14 风控复核）：`200 if use_ema else 240` 是**隐式耦合**。
+    # 下限之所以能降到 200，是因为 ema 架构下 `ema_context_from_bars` 的硬要求是 200 根；
+    # 其余架构要 240 根（含 fibonacci / 4h 对齐所需）。
+    # 当前所有配置的 `dry_run_warmup_15m_bars` 都 ≥ 240，`max()` 永远取左边，
+    # 所以这一行的分支**今天是死分支**；只有在 warmup < 240 时，关掉 use_ema 才会把下限
+    # 从 200 抬到 240（多预热 40 根、启动慢一个多小时）。改这条线前请看
+    # tests/test_dry_run_configs.py 里的 warmup 断言。
     required = max(int(config.dry_run_warmup_15m_bars), 200 if config.use_ema_architecture else 240)
     return max(int(args.public_kline_limit), required) + 1
 
