@@ -34,6 +34,12 @@ DEAD_CONFIG_KEYS: frozenset[str] = frozenset({
 })
 
 
+# `scoring_architecture` 的合法取值（见 EntryChainConfig 字段注释）。
+# "auto" = 按两个历史布尔开关推断；其余为显式架构。空串按 "auto" 处理（历史配置友好）。
+_AUTO_ARCHITECTURE = "auto"
+_SCORING_ARCHITECTURES = frozenset({_AUTO_ARCHITECTURE, "fib_pa", "ema", "base"})
+
+
 @dataclass(frozen=True)
 class ExplicitWatchlistEntry:
     """显式白名单条目(评审 7.2 规格):新增符号一律先 scout_only,达标后 promotion。"""
@@ -85,6 +91,19 @@ class EntryChainConfig:
     probe_risk_pct: float = 0.003
     min_stop_pct: float = 0.005
     max_stop_pct: float = 0.04
+    # 评分架构唯一枚举（2026-11-14 评审 §3.3）：`"auto" | "fib_pa" | "ema" | "base"`。
+    #
+    # 为什么需要它：历史上有两个布尔开关（`use_fib_pa_architecture` / `use_ema_architecture`），
+    # 两者同时为 true 时由 `dynamic_weights` 的短路顺序**隐式**决定用哪组权重——
+    # 配置里写着两个 true，却没人能从配置直接回答"这套到底按哪组权重打分"。
+    # 生产配置 `entry_chain.dry_run_regime_shadow.json` 正是这种状态。
+    #
+    # 语义：
+    # - `"auto"`（默认）：完全按两个布尔开关推断，**与引入本字段之前逐位一致**；
+    # - 显式值：以本字段为准，忽略两个布尔开关（两个开关仍参与冲突告警）。
+    #
+    # 默认 `"auto"` 保证所有历史配置（含 VPS 上在跑的那份）行为不变。
+    scoring_architecture: str = "auto"
     use_ema_architecture: bool = False
     ema200_gate_mode: str = "hard"
     ema200_buffer_pct: float = 0.003  # DEAD: 无读取点，见 DEAD_CONFIG_KEYS
@@ -306,6 +325,14 @@ class EntryChainConfig:
             if mode not in {"active", "shadow_only"}:
                 raise ValueError(f"invalid mirror_ab_mode '{mode}' (allowed: active, shadow_only)")
             values["mirror_ab_mode"] = mode
+        if "scoring_architecture" in values:
+            architecture = str(values["scoring_architecture"] or _AUTO_ARCHITECTURE).strip().lower()
+            if architecture not in _SCORING_ARCHITECTURES:
+                raise ValueError(
+                    f"invalid scoring_architecture '{architecture}' "
+                    f"(allowed: {sorted(_SCORING_ARCHITECTURES)})"
+                )
+            values["scoring_architecture"] = architecture
         if "dry_run_symbols" in values:
             values["dry_run_symbols"] = _normalize_symbols(values["dry_run_symbols"])
         if "explicit_watchlist" in values:

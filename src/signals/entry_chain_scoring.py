@@ -50,12 +50,24 @@ FIB_PA_WEIGHTS = {
 }
 
 
-# `resolve_architecture` 会为了可诊断性产出这两类标记，但它们**不是**权重来源的说明：
+# `resolve_architecture` 会为了可诊断性产出这几类标记，但它们**不是**权重来源的说明：
 # - ARCHITECTURE_FLAGS_BOTH_TRUE 是告警
 # - BASE_WEIGHTS 是"没走任何特化表"的标记，而动态权重函数历来对 base 返回空 reasons
-# 二者都不得进入 `dynamic_weights` 的返回值，否则会改写 decision.reasons →
+# - SCORING_ARCHITECTURE_EXPLICIT_* 是"架构由枚举字段显式指定"的出处说明；
+#   与之对应的**权重来源**说明仍由 FIB_PA_ARCHITECTURE_WEIGHTS / EMA_ARCHITECTURE_WEIGHTS
+#   给出，保持 `dynamic_weights` 的 reasons 与引入枚举前逐字相同。
+# 这些标记都不得进入 `dynamic_weights` 的返回值，否则会改写 decision.reasons →
 # payload.reasons → Task 6 的 leverage_reason，属于行为变更。
-_NON_WEIGHT_REASONS = frozenset({"ARCHITECTURE_FLAGS_BOTH_TRUE", "BASE_WEIGHTS"})
+_NON_WEIGHT_REASONS = frozenset({
+    "ARCHITECTURE_FLAGS_BOTH_TRUE",
+    "BASE_WEIGHTS",
+    "SCORING_ARCHITECTURE_EXPLICIT_FIB_PA",
+    "SCORING_ARCHITECTURE_EXPLICIT_EMA",
+    "SCORING_ARCHITECTURE_EXPLICIT_BASE",
+})
+
+_AUTO_SCORING_ARCHITECTURES = frozenset({"", "auto"})
+_AUTO_ARCHITECTURE = "auto"
 
 
 def resolve_architecture(
@@ -73,11 +85,31 @@ def resolve_architecture(
     - ``high_vol_dynamic`` / ``low_vol_dynamic`` / ``base`` —— 两个开关都关时按 atr_pct 决定
     - 两开关同 true 时 reasons 里带 ``ARCHITECTURE_FLAGS_BOTH_TRUE``（行为不变：
       仍然 fib_pa 优先，只是不再静默）
+
+    ``cfg.scoring_architecture`` 非 ``"auto"``（且非空）时**以它为准**，忽略两个布尔开关；
+    此时 reasons 里除 ``SCORING_ARCHITECTURE_EXPLICIT_<NAME>`` 外还带一条与 auto 路径
+    **完全相同**的权重来源标记，从而保证 `dynamic_weights` 的 reasons 不因改配置而变。
+    注意 ``"base"`` 显式值直接返回 ``base``，**不经过 atr_pct 的高/低波动分支**。
     """
     cfg = config or EntryChainConfig()
     reasons: list[str] = []
     if cfg.use_fib_pa_architecture and cfg.use_ema_architecture:
         reasons.append("ARCHITECTURE_FLAGS_BOTH_TRUE")
+    explicit = (cfg.scoring_architecture or _AUTO_ARCHITECTURE).strip().lower()
+    if explicit not in _AUTO_SCORING_ARCHITECTURES:
+        if explicit == "fib_pa":
+            reasons.append("SCORING_ARCHITECTURE_EXPLICIT_FIB_PA")
+            reasons.append("FIB_PA_ARCHITECTURE_WEIGHTS")
+            return "fib_pa", reasons
+        if explicit == "ema":
+            reasons.append("SCORING_ARCHITECTURE_EXPLICIT_EMA")
+            reasons.append("EMA_ARCHITECTURE_WEIGHTS")
+            return "ema", reasons
+        if explicit == "base":
+            reasons.append("SCORING_ARCHITECTURE_EXPLICIT_BASE")
+            reasons.append("BASE_WEIGHTS")
+            return "base", reasons
+        raise ValueError(f"unknown scoring_architecture: {explicit!r}")
     if cfg.use_fib_pa_architecture:
         reasons.append("FIB_PA_ARCHITECTURE_WEIGHTS")
         return "fib_pa", reasons

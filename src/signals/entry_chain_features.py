@@ -10,9 +10,41 @@ from src.signals.cci_quality import cci_series, score_cci_momentum_quality
 from src.signals.ema_scorer import EmaContext, ema_direction_gate, score_ema50_quality, score_ema_momentum
 from src.signals.fib_location import compute_fib_levels, detect_fractal_swings, score_fibonacci_location
 from src.signals.pa_structure import score_price_action_structure
+from src.signals.trade_geometry import TradeGeometry
 
 
 TP1_R_MULTIPLIER = 1.2
+
+# 评分侧实际扣掉的往返成本（10bps = close×0.001）。这是**历史口径**，
+# 只写进诊断字段 `cost_bps_used_by_score` 供对照，不参与任何计算。
+COST_BPS_USED_BY_SCORE = 10.0
+# 实盘往返成本更接近 20bps；20bps 口径的净 R 只作为 `net_tp1_r_at_20bps` 诊断输出。
+COST_BPS_LEDGER = 20.0
+GEOMETRY_VERSION = "1"
+
+RR_BAND_GE_1_3 = "GE_1_3"
+RR_BAND_GE_1_1 = "GE_1_1"
+RR_BAND_GE_0_9 = "GE_0_9"
+RR_BAND_LT_0_9 = "LT_0_9"
+
+# net_tp1_r 分档 → RR 得分。分档阈值与历史 if/elif 链**逐字相同**（1.3/1.1/0.9 → 5.0/3.5/2.0）。
+RR_SCORE_BY_BAND = {
+    RR_BAND_GE_1_3: 5.0,
+    RR_BAND_GE_1_1: 3.5,
+    RR_BAND_GE_0_9: 2.0,
+    RR_BAND_LT_0_9: 0.0,
+}
+
+
+def rr_band(net_tp1_r: float) -> str:
+    """把净 TP1 R 归入档位。与 `RR_SCORE_BY_BAND` 一一对应，是分档的唯一出处。"""
+    if net_tp1_r >= 1.3:
+        return RR_BAND_GE_1_3
+    if net_tp1_r >= 1.1:
+        return RR_BAND_GE_1_1
+    if net_tp1_r >= 0.9:
+        return RR_BAND_GE_0_9
+    return RR_BAND_LT_0_9
 
 
 def completed_bars(bars: Sequence[BacktestBar], timestamp: int) -> list[BacktestBar]:
@@ -158,6 +190,17 @@ def risk_reward_geometry_detail(
     atr_pct_value: float,
     swings: Sequence[object],
 ) -> dict[str, float | str | None]:
+    """RR 打分 + 几何诊断。
+
+    止损宽度由 `TradeGeometry` 给出（P0 A2：把散落三套口径收敛到一处），
+    但**算法与阈值全部保持原样**：`tp1_dist = stop_dist × 1.2`、
+    净 R 只扣 10bps（`close×0.001`）、分档阈值 1.3/1.1/0.9 → 5.0/3.5/2.0。
+    因此 `score` 与重构前逐位相同。
+
+    新增的三个诊断键（`geometry_version` / `net_tp1_r_at_20bps` /
+    `cost_bps_used_by_score`）与 `rr_band` **不参与打分**，只回答
+    "按真实往返成本算，这条 RR 到不到标"。
+    """
     if close <= 0 or atr_value <= 0:
         return {
             "score": 0.0,
@@ -166,18 +209,17 @@ def risk_reward_geometry_detail(
             "tp1_pct": 0.0,
             "opposition_dist_r": None,
             "rr_zero_reason": "INVALID_INPUT",
+            "rr_band": RR_BAND_LT_0_9,
+            "geometry_version": GEOMETRY_VERSION,
+            "net_tp1_r_at_20bps": 0.0,
+            "cost_bps_used_by_score": COST_BPS_USED_BY_SCORE,
         }
-    stop_dist = max(close * 0.005, min(close * 0.030, atr_value * 1.5))
+    geometry = TradeGeometry(entry_price=close, side=side, atr=atr_value)
+    stop_dist = geometry.stop_dist
     tp1_dist = stop_dist * TP1_R_MULTIPLIER
     net_tp1_r = (tp1_dist - close * 0.001) / stop_dist if stop_dist > 0 else 0.0
-    if net_tp1_r >= 1.3:
-        score = 5.0
-    elif net_tp1_r >= 1.1:
-        score = 3.5
-    elif net_tp1_r >= 0.9:
-        score = 2.0
-    else:
-        score = 0.0
+    band = rr_band(net_tp1_r)
+    score = RR_SCORE_BY_BAND[band]
 
     opposition = nearest_opposition_price(close, side, swings)
     opposition_too_close = False
@@ -223,6 +265,11 @@ def risk_reward_geometry_detail(
         "tp1_pct": round(tp1_dist / close, 4),
         "opposition_dist_r": round(opposition_dist_r, 3) if opposition_dist_r is not None else None,
         "rr_zero_reason": rr_zero_reason,
+        # --- 以下为诊断字段（不参与打分）---
+        "rr_band": band,
+        "geometry_version": GEOMETRY_VERSION,
+        "net_tp1_r_at_20bps": round(geometry.net_tp1_r(COST_BPS_LEDGER), 4),
+        "cost_bps_used_by_score": COST_BPS_USED_BY_SCORE,
     }
 
 
