@@ -42,6 +42,10 @@ _SCORING_ARCHITECTURES = frozenset({_AUTO_ARCHITECTURE, "fib_pa", "ema", "base"}
 # `scoring_repair_v2` 的合法取值（见 EntryChainConfig 字段注释）。空串按 "off" 处理。
 _SCORING_REPAIR_MODES = frozenset({"off", "shadow", "on"})
 
+# `log_profile` 的合法取值：full = 现有全部输出；lean = 停写无读取方的文件并精简
+# runtime 日志（见 src/observability/decision_audit.py 与 docs/plans/2026-11-21-log-slimming.md）。
+_LOG_PROFILES = frozenset({"full", "lean"})
+
 
 @dataclass(frozen=True)
 class ExplicitWatchlistEntry:
@@ -350,6 +354,17 @@ class EntryChainConfig:
     # 参数由预登记 walk-forward 选出(scripts/analysis/regime_overlay_wf_20261020.py),
     # 见 docs/analysis/overlay_on_majors_2026-10-20.md。默认 off,行为不变。
     regime_overlay: str = "off"
+    # 日志档位(2026-11-21 日志瘦身):"full"(默认,与改动前逐位一致) | "lean"。
+    # lean 下停写无读取方的 attribution/order_drafts/scout_decisions/gate_rejections.csv,
+    # 并对 decisions.jsonl 做字段瘦身、跳过每标的每根的明细 runtime 行。
+    # 代码默认 full，保证所有历史配置（含 VPS 生产配置）行为不变。
+    log_profile: str = "full"
+
+    def __post_init__(self) -> None:
+        if self.log_profile not in _LOG_PROFILES:
+            raise ValueError(
+                f"invalid log_profile '{self.log_profile}' (allowed: {sorted(_LOG_PROFILES)})"
+            )
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "EntryChainConfig":
@@ -406,6 +421,13 @@ class EntryChainConfig:
                 if not isinstance(item, dict):
                     raise ValueError("each entry_gates item must be an object")
             values["entry_gates"] = tuple(gates)
+        if "log_profile" in values:
+            profile = str(values["log_profile"] or "full").strip().lower()
+            if profile not in _LOG_PROFILES:
+                raise ValueError(
+                    f"invalid log_profile '{profile}' (allowed: {sorted(_LOG_PROFILES)})"
+                )
+            values["log_profile"] = profile
         return cls(**values)
 
 

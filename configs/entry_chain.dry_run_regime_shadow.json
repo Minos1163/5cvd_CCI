@@ -13,6 +13,7 @@
   "max_same_direction_exposure_pct": 1.1,
   "margin_buffer_pct": 0.3,
   "scoring_architecture": "fib_pa",
+  "log_profile": "lean",
   "use_ema_architecture": false,
   "use_fib_pa_architecture": true,
   "five_factor_shadow_enabled": true,

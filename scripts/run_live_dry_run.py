@@ -74,6 +74,54 @@ BINANCE_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 #: (klines 10s / 其他 15s)。代理链路或网络拥塞时调大,否则热身取数会 URLError
 #: 并**静默退化到 synthetic 数据**(日志里表现为 warmup.source=synthetic)。
 HTTP_TIMEOUT = 10.0
+
+
+# ---------------------------------------------------------------- 日志档位
+#
+# 2026-11-21 日志瘦身（docs/plans/2026-11-21-log-slimming.md）：
+# `log_profile="lean"` 时跳过"每标的每根"的明细行——这些内容在 decisions.jsonl
+# 的 kline / entry_context / score_detail / reasons 里都有结构化记录。
+# 过滤集中在 `filter_runtime_lines`，不要在 print 处散落判断。
+_LOG_PROFILE = "full"
+_LEAN_DETAIL_PREFIXES = (
+    "K线预热:",
+    "K线价格(15m):",
+    "风险检查:",
+    "评分明细:",
+    "规则上下文:",
+    "HOLD归因:",
+    "决策原因:",
+)
+# /root/AIBOT/logs 是排障唯一入口：含这些标记的行**永不**因 lean 被丢弃。
+_LEAN_KEEP_MARKERS = (
+    "WARN",
+    "ERROR",
+    "SIZING_TRACE_ASSERT",
+    "RUN_MANIFEST_WRITE_FAILED",
+    "Exception",
+    "Traceback",
+)
+
+
+def set_log_profile(profile: str) -> None:
+    global _LOG_PROFILE
+    _LOG_PROFILE = str(profile or "full").strip().lower()
+
+
+def should_write_runtime_line(line: str) -> bool:
+    if _LOG_PROFILE != "lean":
+        return True
+    if any(marker in line for marker in _LEAN_KEEP_MARKERS):
+        return True
+    return not line.strip().startswith(_LEAN_DETAIL_PREFIXES)
+
+
+def filter_runtime_lines(lines: Sequence[str]) -> list[str]:
+    if _LOG_PROFILE != "lean":
+        return list(lines)
+    return [line for line in lines if should_write_runtime_line(line)]
+
+
 STABLE_SYMBOLS = {
     "USDT",
     "USDC",
@@ -142,6 +190,7 @@ def main() -> None:
 
 def run(args: argparse.Namespace) -> None:
     config = load_entry_chain_config(args.config)
+    set_log_profile(config.log_profile)
     # P0 Task 4:架构解析单值化。两开关同 true 时 reasons 带 ARCHITECTURE_FLAGS_BOTH_TRUE,
     # 但仍按 fib_pa 执行（与改动前的短路顺序完全一致）。
     # 注意:若两开关都为 false,架构按当根 bar 的 atr_pct 动态选择;此处的声明值按
@@ -196,7 +245,7 @@ def run(args: argparse.Namespace) -> None:
                 if audit is not None:
                     audit.close()
                 output_dir = current_output_dir
-                audit = DecisionAuditWriter(output_dir)
+                audit = DecisionAuditWriter(output_dir, lean=config.log_profile == "lean")
                 paper_state_dir = resolve_paper_state_dir(args)
                 quadrant_pending_path = paper_state_dir / "quadrant_pending.json"
                 if config.quadrant_pending_state_enabled:
@@ -3361,6 +3410,9 @@ def write_health(
 
 def write_runtime_log(output_dir: Path, lines: Sequence[str], *, timestamp: int | None = None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    lines = filter_runtime_lines(lines)
+    if not lines:
+        return
     with (output_dir / runtime_log_name(int(time.time()) if timestamp is None else timestamp)).open("a", encoding="utf-8") as handle:
         for line in lines:
             handle.write(line)

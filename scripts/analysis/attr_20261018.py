@@ -56,27 +56,50 @@ def load_closes():
 
 
 def load_stops():
-    """Per-symbol median stop distance from decision logs."""
+    """Per-symbol median stop distance from decision logs.
+
+    2026-11-21: `attribution.jsonl` 已停写（它与 `decisions.jsonl` 的
+    `entry_context` 逐位同构，纯冗余副本）。这里优先读 `decisions.jsonl`，
+    该目录没有该文件（或没有任何有效样本，例如刚好截断）时回退到旧路径，
+    保证历史目录仍可分析。两份来源返回的中位数逐键相等。
+    """
     buckets = defaultdict(list)
     for _, d in day_dirs():
-        p = os.path.join(d, "attribution.jsonl")
-        if not os.path.exists(p):
-            continue
-        with open(p, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+        decisions_path = os.path.join(d, "decisions.jsonl")
+        attribution_path = os.path.join(d, "attribution.jsonl")
+        found = False
+        if os.path.exists(decisions_path):
+            for sym, s in _iter_stop_samples(decisions_path, source="decisions"):
+                buckets[sym].append(s)
+                found = True
+        if not found and os.path.exists(attribution_path):
+            for sym, s in _iter_stop_samples(attribution_path, source="attribution"):
+                buckets[sym].append(s)
+    return {k: statistics.median(v) for k, v in buckets.items()}
+
+
+def _iter_stop_samples(path, *, source):
+    """逐行产出 (symbol, stop_pct)；坏行/缺字段直接跳过。"""
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if source == "decisions":
+                # decisions.jsonl 的 symbol/entry_context 在顶层
+                sym = rec.get("symbol")
+                s = (rec.get("entry_context") or {}).get("stop_pct")
+            else:
+                # 旧 attribution.jsonl：decision.metadata.entry_context
                 dec = rec.get("decision") or {}
                 ec = (dec.get("metadata") or {}).get("entry_context") or {}
                 s, sym = ec.get("stop_pct"), dec.get("symbol")
-                if s and sym:
-                    buckets[sym].append(s)
-    return {k: statistics.median(v) for k, v in buckets.items()}
+            if s and sym:
+                yield sym, s
 
 
 def load_equity():
