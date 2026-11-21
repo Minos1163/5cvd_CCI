@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -218,3 +219,55 @@ def test_legacy_state_file_without_new_fields_still_loads(tmp_path) -> None:
     assert position.action == ""
     assert position.cost_timeout_bars == 0
     assert _position_cost_timeout_bars(position, 32) == 8
+
+
+# ---------------------------------------------------------------- 裁定 3：假设被否定的留痕
+
+
+def test_adaptive_formula_documents_that_the_hypothesis_was_disproven() -> None:
+    """**注释即交付物**：这条读 docstring，确认"假设被数据否定"的结论还在。
+
+    为什么要测注释：2026-11-21 的实测（14 笔 timeout 样本 cost_R 全在 0.112–0.181，
+    低于 0.19 标定点 → extra=0 → 一根都不放宽）说明这个开关覆盖不到真实死亡群体。
+    代码保留是为了记录"这条排除路径"，若有人删掉结论注释再顺手调参，就会重犯。
+    断言很松（只查关键字），但足以在注释被删时变红。
+    """
+    doc = adaptive_cost_timeout_bars.__doc__ or ""
+    assert "假设被数据否定" in doc
+    assert "0.112–0.181" in doc or "0.112-0.181" in doc
+    assert "不要调整" in doc or "不要在没有新证据前调整参数" in doc
+
+
+def test_config_field_carries_the_same_warning() -> None:
+    """配置字段注释同样要留痕：开关在 VPS 上可见，注释是唯一能拦住误启的地方。"""
+    source = (
+        Path(__file__).resolve().parents[1] / "src" / "signals" / "entry_chain_config.py"
+    ).read_text(encoding="utf-8")
+    assert "这个假设被数据否定" in source
+    assert "开关保留但不要启用" in source
+
+
+# ---------------------------------------------------------------- 裁定 3：假设被否定的留痕
+
+
+def test_adaptive_formula_documents_that_the_hypothesis_was_disproven() -> None:
+    """**注释即交付物**：这条读 docstring，确认"假设被数据否定"的结论还在。
+
+    为什么要测注释：2026-11-21 的实测（14 笔 timeout 样本 cost_R 全在 0.112–0.181，
+    低于 0.19 标定点 → extra=0 → 一根都不放宽）说明这个开关覆盖不到真实死亡群体。
+    代码保留是为了记录"这条排除路径"，若有人删掉结论注释再顺手调参，就会重犯。
+    断言很松（只查关键字），但足以在注释被删时变红。
+    """
+    doc = adaptive_cost_timeout_bars.__doc__ or ""
+    assert "假设被数据否定" in doc
+    assert "0.112–0.181" in doc or "0.112-0.181" in doc
+    assert "不要调整" in doc or "不要在没有新证据前调整参数" in doc
+
+
+def test_config_field_carries_the_same_warning() -> None:
+    """配置字段注释同样要留痕：开关在 VPS 上可见，注释是唯一能拦住误启的地方。"""
+    source = (
+        Path(__file__).resolve().parents[1] / "src" / "signals" / "entry_chain_config.py"
+    ).read_text(encoding="utf-8")
+    assert "这个假设被数据否定" in source
+    assert "开关保留但不要启用" in source

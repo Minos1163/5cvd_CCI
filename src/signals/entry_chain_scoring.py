@@ -49,18 +49,17 @@ FIB_PA_WEIGHTS = {
     "risk_reward_geometry": 8.0,
 }
 
-# 评分修复 v2 的权重表（2026-11-21 评审 P1-1）。与 V1 的差异只有三项：
-#   risk_reward_geometry   8 → 12（+4，RR 改成两段式、不再是止损宽度的纯代理）
+# 评分修复 v2 的权重表（2026-11-21 评审 P1-1；权重经 team-lead 2026-11-21 裁定修正）。
+# 与 V1 的差异只有三项：
+#   risk_reward_geometry   8 → 14（+6，RR 改成两段式、不再是止损宽度的纯代理）
 #   flow_cvd_confirmation 18 → 14（−4，成交量分量在成交样本上方差为 0）
 #   price_action_structure 22 → 20（−2）
-#
-# **已知未决（必须由评审裁定，不由回测侧擅自补平）**：三项增量净 −2，
-# 本表合计 **98** 而不是 100（V1 是 100）。后果：同一组分量下 V2 的总分比 V1 低约 2 分，
-# 因此 82/77/72 这套入场阈值**不能直接套用到 V2**。
-# 在裁定前 `scoring_repair_v2="on"` 只可用于离线对照，**不要上线**；
-# tests/test_scoring_repair_v2.py 里有一条断言把 98 钉住，改表时会被强制看见。
-# 补平的三种候选（都属评分决策，留给评审）：把 RR 提到 14（+6 净 0）、
-# 把 PA 回收成 22（不降）、或按比例把 6 项缩放到 100。
+# 其余三项不变（trend_ema 20 / cci 14 / fibonacci 18 = 52），
+# **合计 100**（14+14+20+52），因此 `total_score` 与 V1 同尺度、82/77/72 这套阈值仍可比。
+# 初版任务书写成 RR→12 使合计 98，已由 team-lead 裁定改为 14（见 commit body）；
+# tests/test_scoring_repair_v2.py 里有一条 `== 100.0` 断言锁死这个不变量。
+# 注意：RR 与 CVD 的**算法**是否启用由两个独立开关控制（`scoring_repair_v2` 控制 RR，
+# `repair_v2_cvd_enabled` 控制 CVD），见 `fib_pa_component_scores`。
 #
 # **只有 `scoring_repair_v2 == "on"` 才会被用到**；"shadow"/"off" 一律返回 V1 表，
 # 保证 action 不变（见 `dynamic_weights`）。
@@ -70,7 +69,7 @@ FIB_PA_WEIGHTS_V2 = {
     "cci_momentum_quality": 14.0,
     "price_action_structure": 20.0,
     "fibonacci_location": 18.0,
-    "risk_reward_geometry": 12.0,
+    "risk_reward_geometry": 14.0,
 }
 
 

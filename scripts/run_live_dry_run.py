@@ -688,6 +688,7 @@ def enrich_decision_payload(
     # P1 批次：只在开关打开时才写这些键，默认（off）payload 一个字节都不多。
     for key in (
         "repair_v2_mode",
+        "repair_v2_cvd_enabled",
         "repair_v2_score",
         "repair_v2_components",
         "repair_v2_skipped",
@@ -2748,6 +2749,11 @@ def synthetic_component_scores(symbol: str, timestamp: int, config: EntryChainCo
         ema200_gate_mode=config.ema200_gate_mode,
         use_fib_pa_architecture=config.use_fib_pa_architecture,
         use_repair_v2=repair_v2_enabled(config) and config.scoring_repair_v2 == "on",
+        use_cvd_v2=(
+            repair_v2_enabled(config)
+            and config.scoring_repair_v2 == "on"
+            and config.repair_v2_cvd_enabled
+        ),
     )
 
 
@@ -2995,6 +3001,7 @@ def attach_repair_v2_diagnostics(
         return
 
     mode = config.scoring_repair_v2
+    cvd_v2 = bool(config.repair_v2_cvd_enabled)
     if mode == "on":
         scores_v2 = dict(scores)
     else:
@@ -3006,9 +3013,12 @@ def attach_repair_v2_diagnostics(
             ema200_gate_mode=config.ema200_gate_mode,
             use_fib_pa_architecture=config.use_fib_pa_architecture,
             use_repair_v2=True,
+            # 裁定 2：CVD 是否也换成 v2 由独立开关决定，默认关
+            use_cvd_v2=cvd_v2,
         )
     v2_score, _points = repair_v2_score(scores_v2, config)
     debug["repair_v2_mode"] = mode
+    debug["repair_v2_cvd_enabled"] = bool(config.repair_v2_cvd_enabled)
     debug["repair_v2_score"] = v2_score
     debug["repair_v2_components"] = {
         key: round(float(scores_v2.get(key, 0.0)), 6) for key in FIB_PA_WEIGHTS_V2
@@ -3045,8 +3055,14 @@ def public_market_context(
         use_ema_architecture=config.use_ema_architecture,
         ema200_gate_mode=config.ema200_gate_mode,
         use_fib_pa_architecture=config.use_fib_pa_architecture,
-        # P1-1:只有 "on" 时主链路才用 v2 分量；"shadow"/"off" 一律走旧实现
+        # P1-1:只有 "on" 时主链路才用 v2 分量；"shadow"/"off" 一律走旧实现。
+        # 裁定 2（2026-11-21）：CVD 连续化有独立开关，默认不随 RR 一起上。
         use_repair_v2=repair_v2_enabled(config) and config.scoring_repair_v2 == "on",
+        use_cvd_v2=(
+            repair_v2_enabled(config)
+            and config.scoring_repair_v2 == "on"
+            and config.repair_v2_cvd_enabled
+        ),
     )
     score_diagnostics = {}
     if config.use_fib_pa_architecture:

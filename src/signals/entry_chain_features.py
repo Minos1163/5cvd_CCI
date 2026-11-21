@@ -74,6 +74,7 @@ def component_scores(
     ema200_gate_mode: str = "hard",
     use_fib_pa_architecture: bool = False,
     use_repair_v2: bool = False,
+    use_cvd_v2: bool = False,
 ) -> dict[str, float]:
     """四类结构分 + 波动/流动性/regime 基础分，外加 ema 子项与 fib_pa 六因子的**观测值**。
 
@@ -121,6 +122,7 @@ def component_scores(
                 atr_pct_value,
                 ema200_gate_mode=ema200_gate_mode,
                 use_repair_v2=use_repair_v2,
+                use_cvd_v2=use_cvd_v2,
             )
         )
     return scores
@@ -133,13 +135,19 @@ def fib_pa_component_scores(
     *,
     ema200_gate_mode: str = "soft",
     use_repair_v2: bool = False,
+    use_cvd_v2: bool = False,
 ) -> dict[str, float]:
     """fib_pa 六分量（归一化到 0-1）。
 
-    `use_repair_v2=True` 时把两个被证伪的分量换成 v2 实现（2026-11-21 P1-2/P1-3）：
-    - `risk_reward_geometry` 用两段式 `risk_reward_geometry_detail_v2`（base+bonus），
-      额外产出 `rr_base` / `rr_bonus` 诊断键（均 ≥0，不参与打分）；
-    - `flow_cvd_confirmation` 用连续化的 `volume_flow_score_v2`。
+    两个 v2 开关**互相独立**（2026-11-21 team-lead 裁定）：
+    - `use_repair_v2=True` → `risk_reward_geometry` 用两段式
+      `risk_reward_geometry_detail_v2`（base+bonus），额外产出 `rr_base` / `rr_bonus`
+      诊断键（均 ≥0，不参与打分）；
+    - `use_cvd_v2=True` → `flow_cvd_confirmation` 用连续化的 `volume_flow_score_v2`；
+      为 False 时**仍走旧二值** `volume_flow_score`（但权重按当前表，`on` 时即 14）。
+
+    为什么拆开：CVD 连续化在 47 笔上单项压 −11.7 分（`signed_ratio` 均值 −0.09、偏卖方），
+    把 DIRECT 从 16 笔压到 1 笔；与 RR 混在一起评估等于让 CVD 的副作用掩盖 RR 的效果。
     其余四个分量与 v1 逐位相同。
     """
     bars_15m = list(completed.get("15m", []))
@@ -164,15 +172,17 @@ def fib_pa_component_scores(
     )
 
     extra: dict[str, float] = {}
-    if use_repair_v2:
+    if use_cvd_v2:
         cvd_score = volume_flow_score_v2(side, bars_15m)["score"]
+    else:
+        cvd_score = volume_flow_score(side, bars_15m)
+    if use_repair_v2:
         rr_detail = risk_reward_geometry_detail_v2(
             latest_close, side, atr_value, atr_pct_value, swings_15m
         )
         extra["rr_base"] = float(rr_detail["base"])
         extra["rr_bonus"] = float(rr_detail["bonus"])
     else:
-        cvd_score = volume_flow_score(side, bars_15m)
         rr_detail = risk_reward_geometry_detail(latest_close, side, atr_value, atr_pct_value, swings_15m)
 
     return {

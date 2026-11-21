@@ -91,18 +91,20 @@ def test_mode_is_normalised_and_empty_means_off() -> None:
     assert repair_v2_enabled(cfg) is False
 
 
-def test_v2_weight_table_differs_exactly_in_three_keys() -> None:
-    """三项改动逐键核对。
+def test_v2_weight_table_sums_to_100() -> None:
+    """**合计必须正好 100**——`total_score` 与 V1 同尺度、入场阈值 82/77/72 才可比。
 
-    **已知未决**：三项增量净 −2（RR +4 / CVD −4 / PA −2），所以 V2 合计 **98** 而非 100。
-    这是任务书给的数值本身的算术结果，回测侧不擅自"补平"——补哪一项是评分决策，属评审。
-    下面把 98 钉住：谁改表都会被强制看见，并必须同步决定阈值（82/77/72）怎么处理。
-    在裁定前 `on` 只能用于离线对照。
+    初版任务书写 `RR→12` 使合计 98（+4/−4/−2 净 −2），已由 team-lead 裁定改为 RR→14，
+    合计 14+14+20+(20+14+18)=100。这条断言就是防止再有人改表时算错总量。
     """
-    assert sum(FIB_PA_WEIGHTS_V2.values()) == 98.0, "V2 权重合计变了，必须同步复核入场阈值"
+    assert sum(FIB_PA_WEIGHTS_V2.values()) == 100.0, "V2 权重合计不是 100，入场阈值不再可比"
+
+
+def test_v2_weight_table_differs_exactly_in_three_keys() -> None:
+    """三项改动逐键核对。"""
     changed = {k for k in FIB_PA_WEIGHTS if FIB_PA_WEIGHTS[k] != FIB_PA_WEIGHTS_V2.get(k)}
     assert changed == {"risk_reward_geometry", "flow_cvd_confirmation", "price_action_structure"}
-    assert FIB_PA_WEIGHTS_V2["risk_reward_geometry"] == 12.0
+    assert FIB_PA_WEIGHTS_V2["risk_reward_geometry"] == 14.0
     assert FIB_PA_WEIGHTS_V2["flow_cvd_confirmation"] == 14.0
     assert FIB_PA_WEIGHTS_V2["price_action_structure"] == 20.0
     assert set(FIB_PA_WEIGHTS_V2) == set(FIB_PA_WEIGHTS)
@@ -318,3 +320,52 @@ def test_on_mode_can_move_the_score_but_shadow_cannot() -> None:
     assert off.score == shadow.score, "shadow 不得改分"
     assert off.action == shadow.action
     assert on.weights == dict(FIB_PA_WEIGHTS_V2), "on 必须用 V2 权重表"
+
+
+# ---------------------------------------------------------------- 裁定 2：CVD 独立开关
+
+
+def test_cvd_switch_defaults_off() -> None:
+    assert EntryChainConfig().repair_v2_cvd_enabled is False
+
+
+def test_rr_and_cvd_are_independent_switches() -> None:
+    """RR v2 与 CVD v2 必须能单独开：只切 RR 时 CVD 仍是旧二值实现。"""
+    histories = _histories(0.2)
+    base = fib_pa_component_scores("LONG", histories, 0.01, use_repair_v2=False, use_cvd_v2=False)
+    rr_only = fib_pa_component_scores("LONG", histories, 0.01, use_repair_v2=True, use_cvd_v2=False)
+    cvd_only = fib_pa_component_scores("LONG", histories, 0.01, use_repair_v2=False, use_cvd_v2=True)
+    both = fib_pa_component_scores("LONG", histories, 0.01, use_repair_v2=True, use_cvd_v2=True)
+
+    # 只切 RR：CVD 分量必须与旧实现逐位相同
+    assert rr_only["flow_cvd_confirmation"] == base["flow_cvd_confirmation"]
+    assert "rr_base" in rr_only and "rr_base" not in base
+    # 只切 CVD：RR 分量必须与旧实现逐位相同
+    assert cvd_only["risk_reward_geometry"] == base["risk_reward_geometry"]
+    assert "rr_base" not in cvd_only
+    # 两个都切 = 各自单独切的结果拼起来
+    assert both["flow_cvd_confirmation"] == cvd_only["flow_cvd_confirmation"]
+    assert both["risk_reward_geometry"] == rr_only["risk_reward_geometry"]
+
+
+def test_component_scores_passes_cvd_flag_through() -> None:
+    histories = _histories(0.2)
+    off = component_scores("LONG", histories, 0.01, use_fib_pa_architecture=True)
+    rr_only = component_scores("LONG", histories, 0.01, use_fib_pa_architecture=True, use_repair_v2=True)
+    both = component_scores(
+        "LONG", histories, 0.01, use_fib_pa_architecture=True, use_repair_v2=True, use_cvd_v2=True
+    )
+    assert rr_only["flow_cvd_confirmation"] == off["flow_cvd_confirmation"]
+    # CVD 开时取值必须等于 v2 函数的输出（单调上行样本里 v1/v2 恰好都是 1.0，
+    # 所以这里不比较"是否不同"，而是钉住"取的是哪个实现"）
+    expected_v2 = volume_flow_score_v2("LONG", _histories(0.2)["15m"])["score"]
+    assert both["flow_cvd_confirmation"] == pytest.approx(expected_v2)
+
+
+def test_shadow_with_rr_only_keeps_cvd_weight_at_v2_but_value_at_v1() -> None:
+    """CVD 关 + `on` 时：CVD **取值**仍是旧二值，但**权重**用 V2 的 14（不是 18）。"""
+    off_cfg = EntryChainConfig(use_fib_pa_architecture=True)
+    on_cfg = EntryChainConfig(use_fib_pa_architecture=True, scoring_repair_v2="on")
+    assert dynamic_weights(0.02, off_cfg)[0]["flow_cvd_confirmation"] == 18.0
+    assert dynamic_weights(0.02, on_cfg)[0]["flow_cvd_confirmation"] == 14.0
+    assert on_cfg.repair_v2_cvd_enabled is False  # 默认不跟着开

@@ -238,11 +238,31 @@ class EntryChainConfig:
     #   `repair_v2_components` / `cvd_signed_ratio`），**action / score 仍用旧值**；
     # - "on"：v2 分量 + v2 权重生效（`score` 用 v2）。
     scoring_repair_v2: str = "off"
+    # CVD 连续化是否随 v2 一起启用（2026-11-21 team-lead 裁定：必须能单独关）。
+    #
+    # 为什么拆开：2026-11-21 实测 47 笔里，CVD 从 v1 的二值（恒 1.0×18=18 分）换成 v2 的
+    # 成交量加权方向比后，单项就压掉 **−11.7 分**（`signed_ratio` 均值 −0.09，偏卖方），
+    # 直接把 DIRECT 从 16 笔压到 1 笔——那是"全面收紧闸门"，不是"评分优化"。
+    # 而且 `signed_ratio` 测的是**短期反转**，与"趋势确认"的语义相反，方向本身就存疑。
+    # 与 RR 两段式混在一起评估，会让 CVD 的副作用掩盖 RR 的真实效果。
+    #
+    # 组合语义（与 `scoring_repair_v2` 正交）：
+    #   repair_v2_cvd_enabled=False + shadow → 只切 RR v2 + 新权重，CVD 仍走旧二值
+    #   repair_v2_cvd_enabled=True  + shadow → RR v2 + 新权重 + CVD v2
+    #   repair_v2_cvd_enabled=False + on     → RR v2 + 新权重生效，CVD 保持旧值
+    #   任何取值 + off                        → 完全不动
+    repair_v2_cvd_enabled: bool = False
     # probe 成本超时自适应（2026-11-21 评审 P1-4）：默认关闭 = 固定 `max_hold_bars//4`（8 根）。
     # 打开后仅对 `action == "PROBE"` 生效：成本占 R 越大，超时窗口越长（8→16 根），
     # 因为 20bps 往返成本在 probe 的小仓位上占到 0.19R，固定 8 根会让它们被系统性
     # 扫成小额亏损（11-14 的 19 笔 probe 里 12 笔死于该规则）。见
     # `paper_trading.adaptive_cost_timeout_bars`。
+    #
+    # **2026-11-21 实测：这个假设被数据否定，开关保留但不要启用。**
+    # 实际死于 `COST_BREAKEVEN_TIMEOUT` 的 14 笔 `cost_R` 全在 0.112–0.181（< 0.19 标定点），
+    # 公式对它们一根都不放宽（19 笔 probe 全部仍是 8 根）；根因是"8 根内价格几乎没动"，
+    # 不是"成本占比高"。拿到那 14 笔的价格位移分布之前，不要调 `typical_cost_r`
+    # 或取整方式。详见 `paper_trading.adaptive_cost_timeout_bars` 的 docstring。
     probe_cost_timeout_adaptive: bool = False
     dry_run_symbols: tuple[str, ...] = ()
     explicit_watchlist: tuple[ExplicitWatchlistEntry, ...] = ()
