@@ -162,6 +162,7 @@
   "dry_run_q1_trend_launch_enabled": true,
   "q1_trend_launch_shadow_only": false,
   "scoring_repair_v2": "off",
+  "repair_v2_cvd_enabled": false,
   "probe_cost_timeout_adaptive": false,
   "dry_run_q1_trend_launch_min_score": 82.0,
   "dry_run_q1_trend_launch_min_pa_score": 18.0,
