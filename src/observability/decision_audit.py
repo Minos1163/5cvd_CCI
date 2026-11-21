@@ -17,7 +17,11 @@ GATE_REJECTION_FIELDS = ["timestamp", "symbol", "action", "score", "primary_reas
 # 不要动 `component_points_v2` / `score_detail` / `entry_context` / `metadata` /
 # `sizing_trace` / `weights` / `kline` / `reasons`——这些有分析脚本依赖。
 _LEAN_ALWAYS_DROP = ("s1_core",)
-_LEAN_META_DROP = ("volatility_regime_gauss_v2",)
+# 2026-11-21 决定**不**剔除 `component_points_v2_meta.volatility_regime_gauss_v2`：
+# 它只值 103 B/行（21 天约 3.6 MB），但 `scripts/analysis/stage_c_20261019.py:329`
+# 会把它当描述性列 `v2_vol_gauss` 读走（缺失时静默变 None、不报错）。为了 3.6 MB
+# 让一个分析列无解释地变空，不值得——瘦身的前提是"不破坏分析能力"。
+_LEAN_META_DROP: tuple[str, ...] = ()
 
 
 class DecisionAuditWriter:

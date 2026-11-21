@@ -116,7 +116,10 @@ def test_lean_trims_three_heavy_fields(tmp_path):
     assert rows[1]["warmup"] is None
     assert "s1_core" not in rows[0] and "s1_core" not in rows[1]
     meta = rows[0]["component_points_v2_meta"]
-    assert "volatility_regime_gauss_v2" not in meta
+    # 2026-11-21 回退：这一项只值 103 B/行（21 天 3.6 MB），但
+    # scripts/analysis/stage_c_20261019.py:329 把它当描述性列 v2_vol_gauss 读走，
+    # 缺失会静默变 None。为 3.6 MB 让分析列无声变空不值得，故保留。
+    assert "volatility_regime_gauss_v2" in meta, "gauss_v2 必须保留（stage_c 描述性列依赖）"
     assert meta["volatility_regime_clip_v1"] == 1.0
     assert meta["normalized_values"] == {"trend": 0.5}
     # 有分析依赖的字段必须原样保留
