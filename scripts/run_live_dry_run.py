@@ -34,7 +34,12 @@ from src.risk.stress_simulator import stress_decision
 from src.signals.entry_chain import EntryChainContext, EntryChainDecision, _notional_cap_diagnostics, evaluate_entry_chain
 from src.signals.entry_chain_config import EntryChainConfig, load_entry_chain_config
 from src.signals.decision_provenance import annotate_replacement, annotate_shadow_decision
-from src.signals.entry_chain_scoring import resolve_architecture
+from src.signals.entry_chain_scoring import (
+    FIB_PA_WEIGHTS_V2,
+    repair_v2_enabled,
+    repair_v2_score,
+    resolve_architecture,
+)
 from src.signals.sizing_contract import assert_sizing_trace, summarize_sizing_trace
 from src.signals.entry_gate import EntryGate, build_gate_features
 from src.signals.entry_chain_gates import symbol_exposure_cap
@@ -49,6 +54,7 @@ from src.signals.entry_chain_features import (
     long_upper_wick_risk_active,
     quote_volume,
     risk_reward_geometry_detail,
+    volume_flow_score_v2,
     wick_anomaly,
 )
 from src.signals.entry_chain_gates import HIGH_BETA_SYMBOLS
@@ -679,6 +685,17 @@ def enrich_decision_payload(
         "total_score": enriched.get("score"),
     }
     enriched["entry_context"] = debug.get("entry_context", {})
+    # P1 批次：只在开关打开时才写这些键，默认（off）payload 一个字节都不多。
+    for key in (
+        "repair_v2_mode",
+        "repair_v2_score",
+        "repair_v2_components",
+        "repair_v2_skipped",
+        "cvd_signed_ratio",
+        "probe_cost_timeout_adaptive",
+    ):
+        if key in debug:
+            enriched[key] = debug[key]
     metadata = enriched.get("metadata", {})
     if isinstance(metadata, Mapping):
         for key in ("experiment_id", "entry_channel", "source_quadrant", "exit_mode"):
@@ -2730,6 +2747,7 @@ def synthetic_component_scores(symbol: str, timestamp: int, config: EntryChainCo
         use_ema_architecture=config.use_ema_architecture,
         ema200_gate_mode=config.ema200_gate_mode,
         use_fib_pa_architecture=config.use_fib_pa_architecture,
+        use_repair_v2=repair_v2_enabled(config) and config.scoring_repair_v2 == "on",
     )
 
 
@@ -2795,6 +2813,8 @@ def build_context(
     if args.market_data_source == "synthetic":
         context = synthetic_context(symbol, timestamp, config)
         debug = synthetic_debug_snapshot(symbol, timestamp, context)
+        if getattr(config, "probe_cost_timeout_adaptive", False):
+            debug["probe_cost_timeout_adaptive"] = True
         attach_five_factor_shadow(
             debug,
             side=context.side,
@@ -2821,6 +2841,8 @@ def build_context(
             return context, "DEGRADED", debug
         context = degraded_context(symbol, timestamp)
         debug = synthetic_debug_snapshot(symbol, timestamp, context)
+        if getattr(config, "probe_cost_timeout_adaptive", False):
+            debug["probe_cost_timeout_adaptive"] = True
         debug["warmup"]["error"] = exc.__class__.__name__
         debug["warmup"]["ready"] = False
         debug["component_points_v2_meta"] = {
@@ -2941,6 +2963,61 @@ def attach_five_factor_shadow(
     debug["component_points_v2_meta"] = meta
 
 
+def attach_repair_v2_diagnostics(
+    debug: dict,
+    *,
+    config: EntryChainConfig,
+    side: str,
+    histories,
+    scores,
+    atr_pct_value: float,
+) -> None:
+    """把评分修复 v2 的诊断字段挂到 debug（P1-1/P1-2/P1-3）。**不参与任何判定**。
+
+    - `scoring_repair_v2 == "off"`（默认）→ 直接返回，一个字节都不多写；
+    - `"shadow"` → 额外算一份 v2 分量（RR 两段式 + CVD 连续化），用 `FIB_PA_WEIGHTS_V2`
+      折算成 `repair_v2_score` 写进 payload。**`action` / `score` 仍用旧值**，这是
+      "影子模式不得改交易"的机械保证：本函数不碰 context、不碰 decision。
+    - `"on"` → 主链路已经用 v2 分量算过（`use_repair_v2=True`）、`dynamic_weights` 也已返回
+      V2 表，这里直接复用 `scores` 不再重算，只补诊断字段。
+
+    只有在 fib_pa 架构下才有意义：`FIB_PA_WEIGHTS_V2` 的键就是 fib_pa 六分量，
+    别的架构（ema/base/动态）没有可比对象，写了也是误导，因此直接跳过。
+    """
+    # P1-4 的开关与 v2 评分无关，必须先行生效（两者可以独立打开）
+    # 注意：只写 True，不在关闭时写 False——默认运行的 payload 保持一字节不多。
+    if config.probe_cost_timeout_adaptive:
+        debug["probe_cost_timeout_adaptive"] = True
+    if not repair_v2_enabled(config):
+        return
+    if resolve_architecture(config)[0] != "fib_pa":
+        debug["repair_v2_skipped"] = "architecture_not_fib_pa"
+        return
+
+    mode = config.scoring_repair_v2
+    if mode == "on":
+        scores_v2 = dict(scores)
+    else:
+        scores_v2 = component_scores(
+            side,
+            histories,
+            atr_pct_value,
+            use_ema_architecture=config.use_ema_architecture,
+            ema200_gate_mode=config.ema200_gate_mode,
+            use_fib_pa_architecture=config.use_fib_pa_architecture,
+            use_repair_v2=True,
+        )
+    v2_score, _points = repair_v2_score(scores_v2, config)
+    debug["repair_v2_mode"] = mode
+    debug["repair_v2_score"] = v2_score
+    debug["repair_v2_components"] = {
+        key: round(float(scores_v2.get(key, 0.0)), 6) for key in FIB_PA_WEIGHTS_V2
+    }
+    # CVD 原始方向强度（可为负）：单独算，不放进 component_scores，
+    # 否则会被 `_apply_long_context_discounts` 的 [0,1] 钳制抹掉符号。
+    debug["cvd_signed_ratio"] = volume_flow_score_v2(side, list(histories.get("15m", [])))["signed_ratio"]
+
+
 def public_market_context(
     symbol: str,
     timestamp: int,
@@ -2968,6 +3045,8 @@ def public_market_context(
         use_ema_architecture=config.use_ema_architecture,
         ema200_gate_mode=config.ema200_gate_mode,
         use_fib_pa_architecture=config.use_fib_pa_architecture,
+        # P1-1:只有 "on" 时主链路才用 v2 分量；"shadow"/"off" 一律走旧实现
+        use_repair_v2=repair_v2_enabled(config) and config.scoring_repair_v2 == "on",
     )
     score_diagnostics = {}
     if config.use_fib_pa_architecture:
@@ -3004,6 +3083,14 @@ def public_market_context(
     )
     debug = public_debug_snapshot(symbol, context, histories, scores, ready=True, required_15m=required_15m)
     debug["score_diagnostics"] = score_diagnostics
+    attach_repair_v2_diagnostics(
+        debug,
+        config=config,
+        side=side,
+        histories=histories,
+        scores=scores,
+        atr_pct_value=atr_pct_value,
+    )
     attach_five_factor_shadow(
         debug,
         side=side,

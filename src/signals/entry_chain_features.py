@@ -21,6 +21,7 @@ COST_BPS_USED_BY_SCORE = 10.0
 # 实盘往返成本更接近 20bps；20bps 口径的净 R 只作为 `net_tp1_r_at_20bps` 诊断输出。
 COST_BPS_LEDGER = 20.0
 GEOMETRY_VERSION = "1"
+GEOMETRY_VERSION_V2 = "2"
 
 RR_BAND_GE_1_3 = "GE_1_3"
 RR_BAND_GE_1_1 = "GE_1_1"
@@ -72,6 +73,7 @@ def component_scores(
     use_ema_architecture: bool = False,
     ema200_gate_mode: str = "hard",
     use_fib_pa_architecture: bool = False,
+    use_repair_v2: bool = False,
 ) -> dict[str, float]:
     """四类结构分 + 波动/流动性/regime 基础分，外加 ema 子项与 fib_pa 六因子的**观测值**。
 
@@ -112,7 +114,15 @@ def component_scores(
             scores["ema_50_quality"] = 0.0
             scores["ema_momentum"] = 0.0
     if use_fib_pa_architecture:
-        scores.update(fib_pa_component_scores(side, completed, atr_pct_value, ema200_gate_mode=ema200_gate_mode))
+        scores.update(
+            fib_pa_component_scores(
+                side,
+                completed,
+                atr_pct_value,
+                ema200_gate_mode=ema200_gate_mode,
+                use_repair_v2=use_repair_v2,
+            )
+        )
     return scores
 
 
@@ -122,14 +132,22 @@ def fib_pa_component_scores(
     atr_pct_value: float,
     *,
     ema200_gate_mode: str = "soft",
+    use_repair_v2: bool = False,
 ) -> dict[str, float]:
+    """fib_pa 六分量（归一化到 0-1）。
+
+    `use_repair_v2=True` 时把两个被证伪的分量换成 v2 实现（2026-11-21 P1-2/P1-3）：
+    - `risk_reward_geometry` 用两段式 `risk_reward_geometry_detail_v2`（base+bonus），
+      额外产出 `rr_base` / `rr_bonus` 诊断键（均 ≥0，不参与打分）；
+    - `flow_cvd_confirmation` 用连续化的 `volume_flow_score_v2`。
+    其余四个分量与 v1 逐位相同。
+    """
     bars_15m = list(completed.get("15m", []))
     bars_1h = list(completed.get("1h", []))
     latest_close = bars_15m[-1].close if bars_15m else 0.0
     atr_value = latest_close * max(0.0, atr_pct_value)
 
     ema_score = trend_ema_context_score(side, bars_15m, ema200_gate_mode)
-    cvd_score = volume_flow_score(side, bars_15m)
     cci_result = score_cci_momentum_quality(cci_series(bars_15m), side)
 
     swings_15m = detect_fractal_swings(bars_15m, atr=atr_value)
@@ -145,7 +163,17 @@ def fib_pa_component_scores(
         atr=atr_value,
     )
 
-    rr_detail = risk_reward_geometry_detail(latest_close, side, atr_value, atr_pct_value, swings_15m)
+    extra: dict[str, float] = {}
+    if use_repair_v2:
+        cvd_score = volume_flow_score_v2(side, bars_15m)["score"]
+        rr_detail = risk_reward_geometry_detail_v2(
+            latest_close, side, atr_value, atr_pct_value, swings_15m
+        )
+        extra["rr_base"] = float(rr_detail["base"])
+        extra["rr_bonus"] = float(rr_detail["bonus"])
+    else:
+        cvd_score = volume_flow_score(side, bars_15m)
+        rr_detail = risk_reward_geometry_detail(latest_close, side, atr_value, atr_pct_value, swings_15m)
 
     return {
         "trend_ema_context": ema_score,
@@ -155,6 +183,7 @@ def fib_pa_component_scores(
         "fibonacci_location": max(0.0, min(1.0, fib_result.score / 18.0)),
         "risk_reward_geometry": max(0.0, min(1.0, float(rr_detail["score"]) / 8.0)),
         "fib_action_cap": 0.0 if fib_result.action_cap == "NO_TRADE" else 1.0,
+        **extra,
     }
 
 
@@ -286,6 +315,81 @@ def risk_reward_geometry_detail(
     }
 
 
+def risk_reward_geometry_detail_v2(
+    close: float,
+    side: str,
+    atr_value: float,
+    atr_pct_value: float,
+    swings: Sequence[object],
+) -> dict[str, float | str | None]:
+    """RR 两段式打分（2026-11-21 P1-2）。**新函数，不改旧实现**（`off` 路径仍走 v1）。
+
+    为什么换：v1 的 `net_tp1_r = 1.2 − cost/stop_pct` 只依赖止损宽度，实测
+    Spearman(stop_pct, rr 分) = **+0.859** —— 它实质是"波动率分档"的另一种写法，
+    并不是在评估赔率。同时 `opposition_dist_r`（对手结构距离）在近失样本里
+    **49.5% 为 null**，所以也不能把整个分数压在这一项上。
+
+    两段式：
+    - **base**（0–4 分）：沿用 v1 的"ATR 是否在可交易区间"判断，与 v1 同源。
+      它的作用是保证"结构数据缺失"的样本不会归零（这正是 50% 缺失要解决的问题）。
+    - **bonus**（0–4 分）：用 `opposition_dist_r` 度量结构空间；缺失时只损失加分，
+      不扣分。分档 2.0R/1.5R/1.0R/0.7R → 4.0/3.0/1.5/0.5/0。
+
+    返回键：`score`(0–8)、`base`、`bonus`、`opposition_dist_r`、`rr_zero_reason`、
+    `geometry_version="2"`。
+
+    `rr_zero_reason`：`score` 恒 ≥ base ≥ 1.0，所以正常输入下恒为空串；仅在输入非法
+    （`close<=0` 或 `atr<=0`）时返回 `INVALID_INPUT`。不编造"零分理由"。
+    """
+    if close <= 0 or atr_value <= 0:
+        return {
+            "score": 0.0,
+            "base": 0.0,
+            "bonus": 0.0,
+            "opposition_dist_r": None,
+            "rr_zero_reason": "INVALID_INPUT",
+            "geometry_version": GEOMETRY_VERSION_V2,
+        }
+
+    # base：与 v1 的 atr 加分档同源（0.008–0.025 全额、0.005–0.008 半额、其余 1 分保底）
+    if 0.008 <= atr_pct_value <= 0.025:
+        base = 4.0
+    elif 0.005 <= atr_pct_value < 0.008:
+        base = 2.0
+    else:
+        base = 1.0
+
+    geometry = TradeGeometry(entry_price=close, side=side, atr=atr_value)
+    stop_dist = geometry.stop_dist
+    opposition = nearest_opposition_price(close, side, swings)
+    opposition_dist_r: float | None = None
+    if opposition is not None and stop_dist > 0:
+        distance = close - opposition if side.strip().upper() == "SHORT" else opposition - close
+        opposition_dist_r = distance / stop_dist
+
+    if opposition_dist_r is None:
+        bonus = 0.0  # 缺失只损失加分
+    elif opposition_dist_r >= 2.0:
+        bonus = 4.0
+    elif opposition_dist_r >= 1.5:
+        bonus = 3.0
+    elif opposition_dist_r >= 1.0:
+        bonus = 1.5
+    elif opposition_dist_r >= 0.7:
+        bonus = 0.5
+    else:
+        bonus = 0.0
+
+    return {
+        "score": round(max(0.0, min(8.0, base + bonus)), 4),
+        "base": base,
+        "bonus": bonus,
+        "opposition_dist_r": round(opposition_dist_r, 3) if opposition_dist_r is not None else None,
+        "rr_zero_reason": "",
+        "geometry_version": GEOMETRY_VERSION_V2,
+    }
+
+
 def nearest_opposition_price(close: float, side: str, swings: Sequence[object]) -> float | None:
     normalized = side.strip().upper()
     if normalized == "SHORT":
@@ -351,6 +455,39 @@ def volume_flow_score(side: str, bars: Sequence[BacktestBar]) -> float:
     if side == "LONG":
         return 1.0 if signed > 0 else 0.2
     return 1.0 if signed < 0 else 0.2
+
+
+def volume_flow_score_v2(side: str, bars: Sequence[BacktestBar]) -> dict[str, float]:
+    """成交量加权的方向强度（连续化，2026-11-21 P1-3）。
+
+    为什么换：v1 是二值（1.0 / 0.2），2026-11-14 的 47 笔成交样本里 **全部为 1.0、
+    方差为 0**（负控 3 已把这个事实钉死），等于 18% 的权重白给。v2 用成交量加权的
+    符号比把它变成连续量：
+
+        signed_ratio = Σ(sign(close−open) × vol) / Σ(vol)   ∈ [−1, 1]
+        aligned      = signed_ratio   （LONG）/ −signed_ratio（SHORT）
+        score        = clamp(0.5 + 0.5 × aligned, 0, 1)
+
+    返回 `{"score": 0-1, "signed_ratio": 原始值}`；`signed_ratio` 是**原始观测量**
+    （可为负），调用方负责写进 payload 做诊断，**不要**把它塞进会被钳到 [0,1] 的容器。
+
+    边界：不足 6 根或总成交量为 0 → `signed_ratio=0`、`score=0.5`（中性）。
+    这里刻意**不**沿用 v1 的"不足 6 根返回 0.0"——0.0 会把 14 分权重直接归零，
+    把"数据不足"变成"信号极差"，而 v2 的整个设计原则是"缺失只损失信息、不额外惩罚"。
+    """
+    window = list(bars)[-6:]
+    if len(window) < 6:
+        return {"score": 0.5, "signed_ratio": 0.0}
+    total_volume = sum(float(bar.volume) for bar in window)
+    if total_volume <= 0:
+        return {"score": 0.5, "signed_ratio": 0.0}
+    signed = 0.0
+    for bar in window:
+        direction = 1.0 if bar.close >= bar.open else -1.0
+        signed += direction * float(bar.volume)
+    signed_ratio = max(-1.0, min(1.0, signed / total_volume))
+    aligned = signed_ratio if str(side).strip().upper() == "LONG" else -signed_ratio
+    return {"score": max(0.0, min(1.0, 0.5 + 0.5 * aligned)), "signed_ratio": signed_ratio}
 
 
 def atr_pct(bars: Sequence[BacktestBar]) -> float:

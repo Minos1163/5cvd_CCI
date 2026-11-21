@@ -39,6 +39,9 @@ DEAD_CONFIG_KEYS: frozenset[str] = frozenset({
 _AUTO_ARCHITECTURE = "auto"
 _SCORING_ARCHITECTURES = frozenset({_AUTO_ARCHITECTURE, "fib_pa", "ema", "base"})
 
+# `scoring_repair_v2` 的合法取值（见 EntryChainConfig 字段注释）。空串按 "off" 处理。
+_SCORING_REPAIR_MODES = frozenset({"off", "shadow", "on"})
+
 
 @dataclass(frozen=True)
 class ExplicitWatchlistEntry:
@@ -223,6 +226,24 @@ class EntryChainConfig:
     scout_micro_exit_mode: str = "legacy"
     scout_micro_exit_trend_trigger_r: float = 1.5
     scout_micro_exit_trailing_r_mult: float = 1.0
+    # 评分修复 v2 三态（2026-11-21 评审 P1-1）：`"off" | "shadow" | "on"`。
+    #
+    # 背景：2026-11-14 的 47 笔样本里 `main_probe` 19 笔亏 129 USDT（胜率 10.5%），
+    # 其中 12 笔被 `COST_BREAKEVEN_TIMEOUT` 平掉；分项归因显示 RR 分量实际上只是
+    # **止损宽度的代理**（Spearman(stop_pct, rr)=+0.859），CVD 分量在成交样本上方差为 0。
+    # 修复方向是换权重（RR 8→12、CVD 18→14、PA 22→20）+ 换算法（RR 两段式、CVD 连续化），
+    # 但"改分就改交易"，所以默认必须关闭：
+    # - "off"（默认）：逐位等于当前行为，v2 一律不计算；
+    # - "shadow"：额外算一份 v2 分数写进 payload（`repair_v2_score` /
+    #   `repair_v2_components` / `cvd_signed_ratio`），**action / score 仍用旧值**；
+    # - "on"：v2 分量 + v2 权重生效（`score` 用 v2）。
+    scoring_repair_v2: str = "off"
+    # probe 成本超时自适应（2026-11-21 评审 P1-4）：默认关闭 = 固定 `max_hold_bars//4`（8 根）。
+    # 打开后仅对 `action == "PROBE"` 生效：成本占 R 越大，超时窗口越长（8→16 根），
+    # 因为 20bps 往返成本在 probe 的小仓位上占到 0.19R，固定 8 根会让它们被系统性
+    # 扫成小额亏损（11-14 的 19 笔 probe 里 12 笔死于该规则）。见
+    # `paper_trading.adaptive_cost_timeout_bars`。
+    probe_cost_timeout_adaptive: bool = False
     dry_run_symbols: tuple[str, ...] = ()
     explicit_watchlist: tuple[ExplicitWatchlistEntry, ...] = ()
     dry_run_symbol_source: str = "configured"
@@ -338,6 +359,13 @@ class EntryChainConfig:
             if mode not in {"active", "shadow_only"}:
                 raise ValueError(f"invalid mirror_ab_mode '{mode}' (allowed: active, shadow_only)")
             values["mirror_ab_mode"] = mode
+        if "scoring_repair_v2" in values:
+            repair = str(values["scoring_repair_v2"] or "off").strip().lower()
+            if repair not in _SCORING_REPAIR_MODES:
+                raise ValueError(
+                    f"invalid scoring_repair_v2 '{repair}' (allowed: {sorted(_SCORING_REPAIR_MODES)})"
+                )
+            values["scoring_repair_v2"] = repair
         if "scoring_architecture" in values:
             architecture = str(values["scoring_architecture"] or _AUTO_ARCHITECTURE).strip().lower()
             if architecture not in _SCORING_ARCHITECTURES:

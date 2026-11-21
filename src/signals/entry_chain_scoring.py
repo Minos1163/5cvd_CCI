@@ -49,6 +49,30 @@ FIB_PA_WEIGHTS = {
     "risk_reward_geometry": 8.0,
 }
 
+# 评分修复 v2 的权重表（2026-11-21 评审 P1-1）。与 V1 的差异只有三项：
+#   risk_reward_geometry   8 → 12（+4，RR 改成两段式、不再是止损宽度的纯代理）
+#   flow_cvd_confirmation 18 → 14（−4，成交量分量在成交样本上方差为 0）
+#   price_action_structure 22 → 20（−2）
+#
+# **已知未决（必须由评审裁定，不由回测侧擅自补平）**：三项增量净 −2，
+# 本表合计 **98** 而不是 100（V1 是 100）。后果：同一组分量下 V2 的总分比 V1 低约 2 分，
+# 因此 82/77/72 这套入场阈值**不能直接套用到 V2**。
+# 在裁定前 `scoring_repair_v2="on"` 只可用于离线对照，**不要上线**；
+# tests/test_scoring_repair_v2.py 里有一条断言把 98 钉住，改表时会被强制看见。
+# 补平的三种候选（都属评分决策，留给评审）：把 RR 提到 14（+6 净 0）、
+# 把 PA 回收成 22（不降）、或按比例把 6 项缩放到 100。
+#
+# **只有 `scoring_repair_v2 == "on"` 才会被用到**；"shadow"/"off" 一律返回 V1 表，
+# 保证 action 不变（见 `dynamic_weights`）。
+FIB_PA_WEIGHTS_V2 = {
+    "trend_ema_context": 20.0,
+    "flow_cvd_confirmation": 14.0,
+    "cci_momentum_quality": 14.0,
+    "price_action_structure": 20.0,
+    "fibonacci_location": 18.0,
+    "risk_reward_geometry": 12.0,
+}
+
 
 # `resolve_architecture` 会为了可诊断性产出这几类标记，但它们**不是**权重来源的说明：
 # - ARCHITECTURE_FLAGS_BOTH_TRUE 是告警
@@ -127,11 +151,20 @@ def resolve_architecture(
 
 
 def dynamic_weights(atr_pct: float, config: EntryChainConfig | None = None) -> tuple[dict[str, float], list[str]]:
+    """权重表 + "从哪来"的 reasons。
+
+    `scoring_repair_v2` 只在 `"on"` 时切到 `FIB_PA_WEIGHTS_V2`；`"shadow"`/`"off"` 一律用 V1 表，
+    这是"影子模式不得改 action"的机械保证（`shadow` 的新分数由
+    `repair_v2_score()` 单独算，不进这里）。
+    """
     cfg = config or EntryChainConfig()
     name, architecture_reasons = resolve_architecture(cfg, atr_pct)
     # 只保留"权重从哪来"的说明，丢掉告警/base 标记——见 _NON_WEIGHT_REASONS。
     reasons = [reason for reason in architecture_reasons if reason not in _NON_WEIGHT_REASONS]
     if name == "fib_pa":
+        if _repair_v2_mode(cfg) == "on":
+            reasons.append("FIB_PA_WEIGHTS_V2")
+            return dict(FIB_PA_WEIGHTS_V2), reasons
         return dict(FIB_PA_WEIGHTS), reasons
     if name == "ema":
         return dict(EMA_WEIGHTS), reasons
@@ -142,6 +175,32 @@ def dynamic_weights(atr_pct: float, config: EntryChainConfig | None = None) -> t
         fixed = {"trigger_15m": 18.0, "cvd_flow": 18.0}
         return rescale_weights(fixed), reasons
     return dict(BASE_WEIGHTS), reasons
+
+
+def _repair_v2_mode(cfg: EntryChainConfig) -> str:
+    """把 `scoring_repair_v2` 归一成 `off|shadow|on`（空串/未知值一律按 off）。"""
+    mode = str(getattr(cfg, "scoring_repair_v2", "off") or "off").strip().lower()
+    return mode if mode in {"off", "shadow", "on"} else "off"
+
+
+def repair_v2_enabled(cfg: EntryChainConfig) -> bool:
+    """是否需要计算 v2 分量（`shadow` 与 `on` 都要算；`off` 完全不碰，省掉重复计算）。"""
+    return _repair_v2_mode(cfg) in {"shadow", "on"}
+
+
+def repair_v2_score(
+    component_scores: Mapping[str, float],
+    config: EntryChainConfig | None = None,
+) -> tuple[float, dict[str, float]]:
+    """用 V2 权重把（v2 口径的）分量算成总分，返回 `(score, points)`。
+
+    纯函数、不改任何状态：`shadow` 模式下调用它只为了写 payload 诊断字段，
+    调用方**不得**把结果写回 `score`。`on` 模式下 `dynamic_weights` 已返回 V2 表，
+    主链路自然会算出同一个值，这里主要用于对照与测试。
+    """
+    cfg = config or EntryChainConfig()
+    points = component_points(component_scores, FIB_PA_WEIGHTS_V2)
+    return round(sum(points.values()), 4), points
 
 
 def rescale_weights(fixed: Mapping[str, float]) -> dict[str, float]:

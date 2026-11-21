@@ -144,6 +144,12 @@ class PaperPosition:
     # 事件配对键: OPEN/REDUCE/CLOSE 三类事件共用的稳定仓位标识。
     # 旧 paper_positions.json 无此键时由默认值兜底,保持向后兼容。
     position_id: str = ""
+    # 开仓时的动作（"PROBE" / "DIRECT"），供"仅对 probe 生效"的规则判定（P1-4）。
+    # 旧状态文件无此键 → 空串 → 所有按 action 分流的规则一律不生效（向后兼容）。
+    action: str = ""
+    # 该仓位专用的成本保本超时 bar 数（P1-4）。0 = 用全局默认 `max_hold_bars // 4`。
+    # 在开仓时一次性算好并落盘，避免后续配置漂移让同一仓位中途换规则。
+    cost_timeout_bars: int = 0
 
 
 @dataclass(frozen=True)
@@ -241,6 +247,12 @@ class PaperTradingLedger:
         tp_prices = [price + risk_distance * level if side == "LONG" else price - risk_distance * level for level in self.exit_config.tp_levels]
         notional = price * quantity
         position_id = f"{symbol}:{int(timestamp)}:{side}"
+        action = str(decision_payload.get("action") or "").upper()
+        cost_timeout_bars = _resolve_cost_timeout_bars(
+            action=action,
+            stop_pct=stop_pct,
+            adaptive_enabled=bool(decision_payload.get("probe_cost_timeout_adaptive")),
+        )
         position = PaperPosition(
             symbol=symbol,
             side=side,
@@ -274,6 +286,8 @@ class PaperTradingLedger:
             q4_streak=0,
             stop_pct=stop_pct,
             position_id=position_id,
+            action=action,
+            cost_timeout_bars=cost_timeout_bars,
         )
         self.positions[symbol] = position
         self.realized_pnl += position.realized_pnl
@@ -375,7 +389,11 @@ class PaperTradingLedger:
                     break
             if position.remaining_fraction <= 0:
                 self.positions.pop(symbol, None)
-            elif _cost_breakeven_timeout(position, close, check_bars=max(1, self.exit_config.max_hold_bars // 4)):
+            elif _cost_breakeven_timeout(
+                position,
+                close,
+                check_bars=_position_cost_timeout_bars(position, self.exit_config.max_hold_bars),
+            ):
                 net = self._close_fraction(position, timestamp, close, position.remaining_fraction, "COST_BREAKEVEN_TIMEOUT")
                 events.append(f"PAPER_CLOSE:{symbol}:COST_BREAKEVEN_TIMEOUT:{net:.4f}")
                 self.positions.pop(symbol, None)
@@ -780,6 +798,55 @@ def _gross_pnl(side: str, entry_price: float, exit_price: float, quantity: float
     if side == "SHORT":
         return (entry_price - exit_price) * quantity
     return (exit_price - entry_price) * quantity
+
+
+def adaptive_cost_timeout_bars(
+    stop_pct: float,
+    *,
+    base_bars: int = COST_BREAKEVEN_CHECK_BARS,
+    cost_bps: float = 20.0,
+    typical_cost_r: float = 0.19,
+    max_bars: int = 16,
+) -> int:
+    """按"往返成本占 R 的比例"放大成本保本超时窗口（P1-4）。
+
+    为什么需要：20bps 往返成本在小仓位上占 0.19R（probe 典型 stop_pct≈1.05%），
+    而超时规则固定 8 根 → 小仓位更容易在"成本还没赚回来"时被扫平。2026-11-14 的
+    19 笔 probe 里 **12 笔**死于 `COST_BREAKEVEN_TIMEOUT`，均亏 8.24 USDT。
+
+        cost_R      = (cost_bps/10000) / stop_pct
+        extra_bars  = round((cost_R / typical_cost_r − 1) × base_bars)
+        timeout     = clamp(base_bars + extra_bars, base_bars, max_bars)
+
+    即：`cost_R=0.19`（probe 典型）→ 8 根不变；`cost_R=0.38` → 16 根；
+    `cost_R=0.10`（宽止损）→ 触底仍 8 根（**只会放宽，绝不会收紧**）。
+
+    `stop_pct <= 0` 时返回 `base_bars`：没有止损宽度就没有 R 的定义，保持默认。
+    """
+    if stop_pct is None or stop_pct <= 0 or base_bars <= 0:
+        return max(1, int(base_bars))
+    cost_r = (float(cost_bps) / 10000.0) / float(stop_pct)
+    extra = round((cost_r / typical_cost_r - 1.0) * int(base_bars))
+    return int(max(int(base_bars), min(int(max_bars), int(base_bars) + extra)))
+
+
+def _resolve_cost_timeout_bars(*, action: str, stop_pct: float, adaptive_enabled: bool) -> int:
+    """开仓时定下该仓位的超时 bar 数；返回 0 表示"用全局默认"。
+
+    只有 `action == "PROBE"` 才走自适应：DIRECT 的仓位与成本占比不同（更宽的止损、
+    更大的名义），没有"被固定 8 根扫平"的证据，不动它。开关关闭时恒返回 0，
+    调用方回落到 `max_hold_bars // 4` —— 与引入本功能之前逐位一致。
+    """
+    if not adaptive_enabled or str(action).strip().upper() != "PROBE":
+        return 0
+    return adaptive_cost_timeout_bars(stop_pct)
+
+
+def _position_cost_timeout_bars(position: PaperPosition, max_hold_bars: int) -> int:
+    """仓位级超时 bar 数：仓位自带值优先，否则用全局默认 `max_hold_bars // 4`。"""
+    if position.cost_timeout_bars and position.cost_timeout_bars > 0:
+        return max(1, int(position.cost_timeout_bars))
+    return max(1, int(max_hold_bars) // 4)
 
 
 def _cost_breakeven_timeout(
